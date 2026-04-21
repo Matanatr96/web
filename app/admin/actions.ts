@@ -5,6 +5,7 @@ import { redirect } from "next/navigation";
 import { isAdmin, logIn, logOut } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 import type { RestaurantInput } from "@/lib/types";
+import { computeOverall } from "@/lib/utils";
 
 /** Parse a FormData value as a decimal number, or null if empty. */
 function num(fd: FormData, key: string): number | null {
@@ -40,19 +41,31 @@ async function assertAdmin() {
 }
 
 function buildInput(fd: FormData): RestaurantInput {
-  const overall = num(fd, "overall");
-  if (overall === null) throw new Error("Overall is required.");
+  const category = requiredStr(fd, "category");
+  const food = num(fd, "food");
+  const value = num(fd, "value");
+  const service = num(fd, "service");
+  const ambiance = num(fd, "ambiance");
+  const vegan_options = num(fd, "vegan_options");
+
+  // Use the form value first (from the hidden field), fall back to server-side compute
+  let overall = num(fd, "overall");
+  if (overall === null) {
+    overall = computeOverall(category, { food, value, service, ambiance, vegan_options });
+  }
+  if (overall === null) throw new Error("Overall could not be computed — fill in all sub-ratings.");
+
   return {
     name: requiredStr(fd, "name"),
     city: requiredStr(fd, "city"),
-    category: requiredStr(fd, "category"),
+    category,
     cuisine: requiredStr(fd, "cuisine"),
     overall,
-    food: num(fd, "food"),
-    value: num(fd, "value"),
-    service: num(fd, "service"),
-    ambiance: num(fd, "ambiance"),
-    vegan_options: num(fd, "vegan_options"),
+    food,
+    value,
+    service,
+    ambiance,
+    vegan_options,
     note: optionalStr(fd, "note"),
   };
 }

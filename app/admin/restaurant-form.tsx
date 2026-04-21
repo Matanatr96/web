@@ -1,7 +1,9 @@
 "use client";
 
+import { useState, useCallback } from "react";
 import Link from "next/link";
 import type { Restaurant } from "@/lib/types";
+import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
 
 type Props = {
   initial?: Partial<Restaurant>;
@@ -14,6 +16,28 @@ type Props = {
  * server action so we don't need to care whether this is a create or update.
  */
 export default function RestaurantForm({ initial, action, submitLabel }: Props) {
+  const [category, setCategory] = useState(initial?.category ?? "Food");
+  const [food, setFood] = useState<number | null>(initial?.food ?? null);
+  const [value, setValue] = useState<number | null>(initial?.value ?? null);
+  const [service, setService] = useState<number | null>(initial?.service ?? null);
+  const [ambiance, setAmbiance] = useState<number | null>(initial?.ambiance ?? null);
+  const [veganOptions, setVeganOptions] = useState<number | null>(initial?.vegan_options ?? null);
+
+  const computed = computeOverall(category, {
+    food, value, service, ambiance, vegan_options: veganOptions,
+  });
+
+  const handleNum = useCallback(
+    (setter: (v: number | null) => void) =>
+      (e: React.ChangeEvent<HTMLInputElement>) => {
+        const s = e.target.value.trim();
+        setter(s === "" ? null : Number(s));
+      },
+    []
+  );
+
+  const weights = RATING_WEIGHTS[category] ?? RATING_WEIGHTS.Food;
+
   return (
     <form action={action} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       <Field label="Place" name="name" required defaultValue={initial?.name} />
@@ -22,52 +46,74 @@ export default function RestaurantForm({ initial, action, submitLabel }: Props) 
         label="Category"
         name="category"
         required
-        defaultValue={initial?.category ?? "Food"}
+        defaultValue={category}
         options={["Food", "Drink", "Dessert"]}
+        onChange={(e) => setCategory(e.target.value)}
       />
-      <Field
+      <SelectField
         label="Cuisine"
         name="cuisine"
         required
-        defaultValue={initial?.cuisine}
+        defaultValue={initial?.cuisine ?? CUISINES[0]}
+        options={CUISINES}
       />
-      <NumField
-        label="Overall"
-        name="overall"
-        required
-        step="0.01"
-        defaultValue={initial?.overall ?? undefined}
-      />
+
+      {/* Sub-ratings with weight labels */}
       <NumField
         label="Food"
         name="food"
         step="0.1"
+        weight={weights.food}
         defaultValue={initial?.food ?? undefined}
+        onChange={handleNum(setFood)}
       />
       <NumField
         label="Value for Money"
         name="value"
         step="0.1"
+        weight={weights.value}
         defaultValue={initial?.value ?? undefined}
+        onChange={handleNum(setValue)}
       />
       <NumField
         label="Service"
         name="service"
         step="0.1"
+        weight={weights.service}
         defaultValue={initial?.service ?? undefined}
+        onChange={handleNum(setService)}
       />
       <NumField
         label="Ambiance"
         name="ambiance"
         step="0.1"
+        weight={weights.ambiance}
         defaultValue={initial?.ambiance ?? undefined}
+        onChange={handleNum(setAmbiance)}
       />
       <NumField
         label="Vegan Options"
         name="vegan_options"
         step="0.1"
+        weight={weights.vegan_options}
         defaultValue={initial?.vegan_options ?? undefined}
+        onChange={handleNum(setVeganOptions)}
       />
+
+      {/* Computed overall — shown live, sent as a hidden field */}
+      <div className="sm:col-span-2 rounded-md border border-stone-200 dark:border-stone-700 bg-stone-50 dark:bg-stone-800/50 px-4 py-3 flex items-center justify-between">
+        <div>
+          <span className="text-sm font-medium">Overall</span>
+          <span className="text-xs text-stone-500 ml-2">
+            (auto-computed from weights)
+          </span>
+        </div>
+        <span className="text-lg font-semibold tabular-nums">
+          {computed !== null ? fmt(computed, 2) : "—"}
+        </span>
+        <input type="hidden" name="overall" value={computed !== null ? computed.toFixed(2) : ""} />
+      </div>
+
       <div className="sm:col-span-2">
         <label className="block text-sm font-medium mb-1">Note</label>
         <textarea
@@ -125,19 +171,26 @@ function NumField({
   name,
   required,
   step,
+  weight,
   defaultValue,
+  onChange,
 }: {
   label: string;
   name: string;
   required?: boolean;
   step?: string;
+  weight?: number;
   defaultValue?: number | null;
+  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
     <div>
       <label className="block text-sm font-medium mb-1">
         {label}
         {required ? <span className="text-red-500"> *</span> : null}
+        {weight !== undefined && (
+          <span className="text-xs text-stone-400 ml-1.5">w={weight}</span>
+        )}
       </label>
       <input
         type="number"
@@ -149,6 +202,7 @@ function NumField({
         defaultValue={
           defaultValue === null || defaultValue === undefined ? "" : String(defaultValue)
         }
+        onChange={onChange}
         className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 tabular-nums"
       />
     </div>
@@ -161,12 +215,14 @@ function SelectField({
   required,
   defaultValue,
   options,
+  onChange,
 }: {
   label: string;
   name: string;
   required?: boolean;
   defaultValue?: string;
   options: string[];
+  onChange?: (e: React.ChangeEvent<HTMLSelectElement>) => void;
 }) {
   return (
     <div>
@@ -178,6 +234,7 @@ function SelectField({
         name={name}
         required={required}
         defaultValue={defaultValue}
+        onChange={onChange}
         className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
       >
         {options.map((o) => (
