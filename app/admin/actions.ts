@@ -1,0 +1,109 @@
+"use server";
+
+import { revalidatePath } from "next/cache";
+import { redirect } from "next/navigation";
+import { isAdmin, logIn, logOut } from "@/lib/auth";
+import { getServiceClient } from "@/lib/supabase";
+import type { RestaurantInput } from "@/lib/types";
+
+/** Parse a FormData value as a decimal number, or null if empty. */
+function num(fd: FormData, key: string): number | null {
+  const v = fd.get(key);
+  if (v === null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  const n = Number(s);
+  if (!Number.isFinite(n)) return null;
+  return n;
+}
+
+/** Parse a FormData value as a required, trimmed string. Throws if empty. */
+function requiredStr(fd: FormData, key: string): string {
+  const v = fd.get(key);
+  if (v === null) throw new Error(`Missing field: ${key}`);
+  const s = String(v).trim();
+  if (!s) throw new Error(`Field ${key} is required.`);
+  return s;
+}
+
+function optionalStr(fd: FormData, key: string): string | null {
+  const v = fd.get(key);
+  if (v === null) return null;
+  const s = String(v).trim();
+  return s || null;
+}
+
+async function assertAdmin() {
+  if (!(await isAdmin())) {
+    throw new Error("Not authorized.");
+  }
+}
+
+function buildInput(fd: FormData): RestaurantInput {
+  const overall = num(fd, "overall");
+  if (overall === null) throw new Error("Overall is required.");
+  return {
+    name: requiredStr(fd, "name"),
+    city: requiredStr(fd, "city"),
+    category: requiredStr(fd, "category"),
+    cuisine: requiredStr(fd, "cuisine"),
+    overall,
+    food: num(fd, "food"),
+    value: num(fd, "value"),
+    service: num(fd, "service"),
+    ambiance: num(fd, "ambiance"),
+    vegan_options: num(fd, "vegan_options"),
+    note: optionalStr(fd, "note"),
+  };
+}
+
+export async function loginAction(_state: unknown, fd: FormData) {
+  const password = String(fd.get("password") ?? "");
+  const ok = await logIn(password);
+  if (!ok) {
+    return { error: "Incorrect password." };
+  }
+  redirect("/admin");
+}
+
+export async function logoutAction() {
+  await logOut();
+  redirect("/admin/login");
+}
+
+export async function createRestaurant(fd: FormData) {
+  await assertAdmin();
+  const input = buildInput(fd);
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("restaurants").insert(input);
+  if (error) throw new Error(`Insert failed: ${error.message}`);
+  revalidatePath("/");
+  revalidatePath("/restaurants");
+  revalidatePath("/admin");
+  redirect("/admin");
+}
+
+export async function updateRestaurant(id: number, fd: FormData) {
+  await assertAdmin();
+  const input = buildInput(fd);
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("restaurants").update(input).eq("id", id);
+  if (error) throw new Error(`Update failed: ${error.message}`);
+  revalidatePath("/");
+  revalidatePath("/restaurants");
+  revalidatePath("/admin");
+  revalidatePath(`/restaurant/${id}`);
+  redirect("/admin");
+}
+
+// _fd is required for compatibility with <form action={...}>, which always
+// passes a FormData even when the action only needs the bound id.
+export async function deleteRestaurant(id: number, _fd?: FormData) {
+  await assertAdmin();
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("restaurants").delete().eq("id", id);
+  if (error) throw new Error(`Delete failed: ${error.message}`);
+  revalidatePath("/");
+  revalidatePath("/restaurants");
+  revalidatePath("/admin");
+}
