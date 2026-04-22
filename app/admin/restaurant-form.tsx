@@ -9,13 +9,16 @@ type Props = {
   initial?: Partial<Restaurant>;
   action: (fd: FormData) => Promise<void>;
   submitLabel: string;
+  /** Pass existing names to enable duplicate detection (used on "new" page). */
+  existingNames?: string[];
 };
 
 /**
  * Shared form used by "new" and "edit" pages. The parent passes a bound
  * server action so we don't need to care whether this is a create or update.
  */
-export default function RestaurantForm({ initial, action, submitLabel }: Props) {
+export default function RestaurantForm({ initial, action, submitLabel, existingNames }: Props) {
+  const [placeName, setPlaceName] = useState(initial?.name ?? "");
   const [category, setCategory] = useState(initial?.category ?? "Food");
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
@@ -38,9 +41,19 @@ export default function RestaurantForm({ initial, action, submitLabel }: Props) 
 
   const weights = RATING_WEIGHTS[category] ?? RATING_WEIGHTS.Food;
 
+  // Case-insensitive duplicate check
+  const duplicateMatch = existingNames?.find(
+    (n) => n.toLowerCase() === placeName.trim().toLowerCase()
+  );
+
   return (
     <form action={action} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-      <Field label="Place" name="name" required defaultValue={initial?.name} />
+      {duplicateMatch && (
+        <div className="sm:col-span-2 rounded-md border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
+          A restaurant named <strong>{duplicateMatch}</strong> already exists. Are you sure you want to create another?
+        </div>
+      )}
+      <Field label="Place" name="name" required defaultValue={initial?.name} onChange={(e) => setPlaceName(e.target.value)} />
       <Field label="City" name="city" required defaultValue={initial?.city} />
       <SelectField
         label="Category"
@@ -143,11 +156,13 @@ function Field({
   name,
   required,
   defaultValue,
+  onChange,
 }: {
   label: string;
   name: string;
   required?: boolean;
   defaultValue?: string | null;
+  onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
 }) {
   return (
     <div>
@@ -160,6 +175,7 @@ function Field({
         name={name}
         required={required}
         defaultValue={defaultValue ?? ""}
+        onChange={onChange}
         className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
       />
     </div>
