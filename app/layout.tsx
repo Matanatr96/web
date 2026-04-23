@@ -4,7 +4,7 @@ import "./globals.css";
 
 export const metadata: Metadata = {
   title: "Anush Mattapalli",
-  description: "Software engineer, food enthusiast, and photographer based in NYC.",
+  description: "Software engineer, food enthusiast, and photographer based in SF.",
 };
 
 export default function RootLayout({
@@ -20,12 +20,12 @@ export default function RootLayout({
             <Link href="/" className="text-lg font-semibold tracking-tight">
               Anush Mattapalli
             </Link>
-            <nav className="text-sm text-stone-500">
+            <nav className="flex items-center gap-6 text-sm text-stone-500">
               <Link
                 href="/restaurants"
-                className="hover:text-stone-900 dark:hover:text-stone-100"
+                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
               >
-                All restaurants
+                Food
               </Link>
             </nav>
           </div>
