@@ -3,8 +3,8 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Restaurant Ratings",
-  description: "A personal log of restaurants I've visited, with ratings.",
+  title: "Anush Mattapalli",
+  description: "Software engineer, food enthusiast, and photographer based in NYC.",
 };
 
 export default function RootLayout({
@@ -18,7 +18,7 @@ export default function RootLayout({
         <header className="border-b border-stone-200 dark:border-stone-800">
           <div className="mx-auto max-w-6xl px-4 py-4 flex items-baseline justify-between">
             <Link href="/" className="text-lg font-semibold tracking-tight">
-              Restaurant Ratings
+              Anush Mattapalli
             </Link>
             <nav className="text-sm text-stone-500">
               <Link
