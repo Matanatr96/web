@@ -67,6 +67,7 @@ function buildInput(fd: FormData): RestaurantInput {
     ambiance,
     vegan_options,
     note: optionalStr(fd, "note"),
+    last_visited: optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10),
   };
 }
 
