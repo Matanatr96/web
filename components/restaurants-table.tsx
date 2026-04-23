@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import type { Restaurant } from "@/lib/types";
-import { fmt, ratingColorClass, slugify } from "@/lib/utils";
+import { fmt, lastVisitedColorClass, ratingColorClass, slugify } from "@/lib/utils";
 
 type SortKey =
   | "name"
@@ -247,7 +247,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
                 >
                   {fmt(r.vegan_options)}
                 </td>
-                <td className="px-3 py-2 text-right text-stone-500 whitespace-nowrap">
+                <td className={`px-3 py-2 text-right whitespace-nowrap ${lastVisitedColorClass(r.last_visited)}`}>
                   {r.last_visited
                     ? new Date(r.last_visited + "T00:00:00").toLocaleDateString("en-US", {
                         month: "short",
