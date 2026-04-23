@@ -127,6 +127,12 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         <input type="hidden" name="overall" value={computed !== null ? computed.toFixed(2) : ""} />
       </div>
 
+      <DateField
+        label="Last Visited"
+        name="last_visited"
+        defaultValue={initial?.last_visited ?? new Date().toISOString().slice(0, 10)}
+      />
+
       <div className="sm:col-span-2">
         <label className="block text-sm font-medium mb-1">Note</label>
         <textarea
@@ -220,6 +226,28 @@ function NumField({
         }
         onChange={onChange}
         className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 tabular-nums"
+      />
+    </div>
+  );
+}
+
+function DateField({
+  label,
+  name,
+  defaultValue,
+}: {
+  label: string;
+  name: string;
+  defaultValue?: string;
+}) {
+  return (
+    <div>
+      <label className="block text-sm font-medium mb-1">{label}</label>
+      <input
+        type="date"
+        name={name}
+        defaultValue={defaultValue ?? ""}
+        className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
       />
     </div>
   );

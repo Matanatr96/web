@@ -11,6 +11,7 @@ export type Restaurant = {
   ambiance: number | null;
   vegan_options: number | null;
   note: string | null;
+  last_visited: string | null;
   created_at: string;
   updated_at: string;
 };
