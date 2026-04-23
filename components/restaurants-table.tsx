@@ -160,7 +160,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
 
       <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
         <table className="w-full text-sm">
-          <thead className="bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
+          <thead className="sticky top-0 bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
               <Th onClick={() => onSort("name")} label={`Place ${arrow("name")}`} />
               <Th onClick={() => onSort("city")} label={`City ${arrow("city")}`} />
