@@ -33,6 +33,19 @@ export function ratingColorClass(n: number | null | undefined): string {
 }
 
 /**
+ * Tailwind color class based on how recently a restaurant was visited.
+ * Accepts an ISO date string (YYYY-MM-DD) or null.
+ */
+export function lastVisitedColorClass(lastVisited: string | null | undefined): string {
+  if (!lastVisited) return "text-stone-400";
+  const ageMs = Date.now() - new Date(lastVisited + "T00:00:00").getTime();
+  const ageYears = ageMs / (1000 * 60 * 60 * 24 * 365.25);
+  if (ageYears < 1) return "text-emerald-600";
+  if (ageYears < 3) return "text-amber-600";
+  return "text-red-600";
+}
+
+/**
  * Rating weights per category. Each key maps to the weight used when
  * computing the overall score. The overall is a weighted average:
  *   overall = sum(score_i * weight_i) / sum(weight_i)
