@@ -134,3 +134,25 @@ export async function addCuisine(_state: unknown, fd: FormData) {
   revalidatePath("/admin");
   return { error: null };
 }
+
+export async function updateCuisine(_state: unknown, fd: FormData) {
+  await assertAdmin();
+  const id = Number(fd.get("id"));
+  const name = requiredStr(fd, "name");
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("cuisines").update({ name }).eq("id", id);
+  if (error) {
+    if (error.code === "23505") return { error: `"${name}" already exists.` };
+    throw new Error(`Update failed: ${error.message}`);
+  }
+  revalidatePath("/admin");
+  return { error: null };
+}
+
+export async function deleteCuisine(id: number, _fd?: FormData) {
+  await assertAdmin();
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("cuisines").delete().eq("id", id);
+  if (error) throw new Error(`Delete failed: ${error.message}`);
+  revalidatePath("/admin");
+}
