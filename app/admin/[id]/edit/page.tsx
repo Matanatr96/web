@@ -18,13 +18,14 @@ export default async function EditRestaurantPage({ params }: Props) {
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) notFound();
 
-  const { data, error } = await getSupabase()
-    .from("restaurants")
-    .select("*")
-    .eq("id", numericId)
-    .single();
+  const supabase = getSupabase();
+  const [{ data, error }, { data: cuisineData }] = await Promise.all([
+    supabase.from("restaurants").select("*").eq("id", numericId).single(),
+    supabase.from("cuisines").select("name").order("name"),
+  ]);
   if (error || !data) notFound();
   const r = data as Restaurant;
+  const cuisines = (cuisineData ?? []).map((c: { name: string }) => c.name);
 
   // Bind the row id into the server action so the form only carries the fields.
   const action = updateRestaurant.bind(null, r.id);
@@ -39,7 +40,12 @@ export default async function EditRestaurantPage({ params }: Props) {
       <h1 className="text-2xl font-bold tracking-tight mb-6">
         Edit: {r.name}
       </h1>
-      <RestaurantForm initial={r} action={action} submitLabel="Save changes" />
+      <RestaurantForm
+        initial={r}
+        action={action}
+        submitLabel="Save changes"
+        cuisines={cuisines.length ? cuisines : undefined}
+      />
     </div>
   );
 }

@@ -12,10 +12,13 @@ export default async function NewRestaurantPage() {
     redirect("/admin/login");
   }
 
-  const { data } = await getSupabase()
-    .from("restaurants")
-    .select("name");
-  const existingNames = (data ?? []).map((r) => r.name);
+  const supabase = getSupabase();
+  const [{ data }, { data: cuisineData }] = await Promise.all([
+    supabase.from("restaurants").select("name"),
+    supabase.from("cuisines").select("name").order("name"),
+  ]);
+  const existingNames = (data ?? []).map((r: { name: string }) => r.name);
+  const cuisines = (cuisineData ?? []).map((r: { name: string }) => r.name);
 
   return (
     <div className="max-w-3xl">
@@ -29,6 +32,7 @@ export default async function NewRestaurantPage() {
         action={createRestaurant}
         submitLabel="Create"
         existingNames={existingNames}
+        cuisines={cuisines.length ? cuisines : undefined}
       />
     </div>
   );

@@ -121,3 +121,16 @@ export async function deleteRestaurant(id: number, _fd?: FormData) {
   revalidatePath("/restaurants");
   revalidatePath("/admin");
 }
+
+export async function addCuisine(_state: unknown, fd: FormData) {
+  await assertAdmin();
+  const name = requiredStr(fd, "name");
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("cuisines").insert({ name });
+  if (error) {
+    if (error.code === "23505") return { error: `"${name}" already exists.` };
+    throw new Error(`Insert failed: ${error.message}`);
+  }
+  revalidatePath("/admin");
+  return { error: null };
+}

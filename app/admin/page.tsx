@@ -6,6 +6,7 @@ import type { Restaurant } from "@/lib/types";
 import { fmt } from "@/lib/utils";
 import { deleteRestaurant, logoutAction } from "./actions";
 import DeleteButton from "./delete-button";
+import AddCuisineForm from "./add-cuisine-form";
 
 export const dynamic = "force-dynamic";
 
@@ -14,10 +15,12 @@ export default async function AdminPage() {
     redirect("/admin/login");
   }
 
-  const { data, error } = await getSupabase()
-    .from("restaurants")
-    .select("*")
-    .order("overall", { ascending: false });
+  const supabase = getSupabase();
+
+  const [{ data, error }, { data: cuisineData }] = await Promise.all([
+    supabase.from("restaurants").select("*").order("overall", { ascending: false }),
+    supabase.from("cuisines").select("name").order("name"),
+  ]);
 
   if (error) {
     return (
@@ -25,6 +28,7 @@ export default async function AdminPage() {
     );
   }
   const restaurants = (data ?? []) as Restaurant[];
+  const cuisines = (cuisineData ?? []).map((r: { name: string }) => r.name);
 
   return (
     <div>
@@ -53,6 +57,22 @@ export default async function AdminPage() {
         </div>
       </div>
 
+      <section className="mt-10">
+        <h2 className="text-lg font-semibold tracking-tight mb-3">Cuisines</h2>
+        <div className="flex flex-wrap gap-2 mb-4">
+          {cuisines.map((c) => (
+            <span
+              key={c}
+              className="px-2 py-0.5 text-xs rounded-full border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400"
+            >
+              {c}
+            </span>
+          ))}
+        </div>
+        <AddCuisineForm />
+      </section>
+
+      <h2 className="text-lg font-semibold tracking-tight mt-10 mb-3">Restaurants</h2>
       <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
         <table className="w-full text-sm">
           <thead className="bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">

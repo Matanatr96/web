@@ -11,13 +11,16 @@ type Props = {
   submitLabel: string;
   /** Pass existing names to enable duplicate detection (used on "new" page). */
   existingNames?: string[];
+  /** Cuisine options fetched from the DB; falls back to hardcoded CUISINES. */
+  cuisines?: string[];
 };
 
 /**
  * Shared form used by "new" and "edit" pages. The parent passes a bound
  * server action so we don't need to care whether this is a create or update.
  */
-export default function RestaurantForm({ initial, action, submitLabel, existingNames }: Props) {
+export default function RestaurantForm({ initial, action, submitLabel, existingNames, cuisines: cuisinesProp }: Props) {
+  const cuisineList = cuisinesProp ?? CUISINES;
   const [placeName, setPlaceName] = useState(initial?.name ?? "");
   const [category, setCategory] = useState(initial?.category ?? "Food");
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
@@ -67,8 +70,8 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         label="Cuisine"
         name="cuisine"
         required
-        defaultValue={initial?.cuisine ?? CUISINES[0]}
-        options={CUISINES}
+        defaultValue={initial?.cuisine ?? cuisineList[0]}
+        options={cuisineList}
       />
 
       {/* Sub-ratings with weight labels */}
