@@ -1,74 +1,78 @@
 "use client";
 
-import { useActionState, useState } from "react";
+import { useActionState, useState, useRef, useEffect } from "react";
 import { addCuisine, updateCuisine, deleteCuisine } from "./actions";
 
 const emptyState = { error: null };
 
 type Cuisine = { id: number; name: string };
 
-function EditRow({ cuisine, onCancel }: { cuisine: Cuisine; onCancel: () => void }) {
-  const [state, formAction, pending] = useActionState(updateCuisine, emptyState);
-
-  return (
-    <form action={formAction} className="flex gap-2 items-start">
-      <input type="hidden" name="id" value={cuisine.id} />
-      <div className="flex flex-col gap-1">
-        <input
-          name="name"
-          required
-          defaultValue={cuisine.name}
-          className="px-2 py-1 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 focus:outline-none focus:ring-2 focus:ring-stone-400"
-        />
-        {state?.error && <p className="text-xs text-red-600">{state.error}</p>}
-      </div>
-      <button
-        type="submit"
-        disabled={pending}
-        className="px-2 py-1 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90 disabled:opacity-50"
-      >
-        Save
-      </button>
-      <button
-        type="button"
-        onClick={onCancel}
-        className="px-2 py-1 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800"
-      >
-        Cancel
-      </button>
-    </form>
-  );
-}
-
-function CuisineRow({ cuisine }: { cuisine: Cuisine }) {
+function CuisineChip({ cuisine }: { cuisine: Cuisine }) {
   const [editing, setEditing] = useState(false);
+  const [state, formAction, pending] = useActionState(updateCuisine, emptyState);
+  const inputRef = useRef<HTMLInputElement>(null);
   const deleteAction = deleteCuisine.bind(null, cuisine.id);
 
+  useEffect(() => {
+    if (editing) inputRef.current?.focus();
+  }, [editing]);
+
   if (editing) {
-    return <EditRow cuisine={cuisine} onCancel={() => setEditing(false)} />;
+    return (
+      <form action={formAction} className="flex flex-col gap-1">
+        <input type="hidden" name="id" value={cuisine.id} />
+        <div className="flex items-center gap-1 px-2 py-0.5 rounded-full border border-stone-400 dark:border-stone-500 bg-white dark:bg-stone-900">
+          <input
+            ref={inputRef}
+            name="name"
+            required
+            defaultValue={cuisine.name}
+            onKeyDown={(e) => e.key === "Escape" && setEditing(false)}
+            className="text-xs w-24 bg-transparent focus:outline-none"
+          />
+          <button
+            type="submit"
+            disabled={pending}
+            title="Save"
+            className="text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 disabled:opacity-50"
+          >
+            ✓
+          </button>
+          <button
+            type="button"
+            onClick={() => setEditing(false)}
+            title="Cancel"
+            className="text-stone-400 hover:text-stone-700 dark:hover:text-stone-200"
+          >
+            ✕
+          </button>
+        </div>
+        {state?.error && <p className="text-xs text-red-600 pl-2">{state.error}</p>}
+      </form>
+    );
   }
 
   return (
-    <div className="flex items-center gap-2 group">
-      <span className="text-sm">{cuisine.name}</span>
+    <div className="group flex items-center gap-1 px-2 py-0.5 rounded-full border border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400 hover:border-stone-400 dark:hover:border-stone-500 transition-colors">
+      <span className="text-xs">{cuisine.name}</span>
       <button
         type="button"
         onClick={() => setEditing(true)}
-        className="text-xs text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 opacity-0 group-hover:opacity-100 transition-opacity"
+        title="Edit"
+        className="hidden group-hover:inline text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 text-xs leading-none"
       >
-        Edit
+        ✎
       </button>
-      <form action={deleteAction}>
+      <form action={deleteAction} className="hidden group-hover:inline">
         <button
           type="submit"
+          title="Delete"
           onClick={(e) => {
-            if (!confirm(`Delete "${cuisine.name}"? Restaurants using this cuisine won't be affected.`)) {
-              e.preventDefault();
-            }
+            if (!confirm(`Delete "${cuisine.name}"?`)) e.preventDefault();
           }}
-          className="text-xs text-red-400 hover:text-red-600 opacity-0 group-hover:opacity-100 transition-opacity"
+          className="text-stone-400 hover:text-red-500 text-xs leading-none"
         >
-          Delete
+          ✕
         </button>
       </form>
     </div>
@@ -79,35 +83,34 @@ function AddForm() {
   const [state, formAction, pending] = useActionState(addCuisine, emptyState);
 
   return (
-    <form action={formAction} className="flex gap-2 items-start mt-4">
-      <div className="flex flex-col gap-1">
+    <form action={formAction} className="flex flex-col gap-1">
+      <div className="flex items-center gap-1 px-2 py-0.5 rounded-full border border-dashed border-stone-300 dark:border-stone-600 w-fit">
         <input
           name="name"
           required
-          placeholder="New cuisine…"
-          className="px-3 py-1.5 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 focus:outline-none focus:ring-2 focus:ring-stone-400"
+          placeholder="Add cuisine…"
+          className="text-xs w-28 bg-transparent focus:outline-none placeholder:text-stone-400"
         />
-        {state?.error && <p className="text-xs text-red-600">{state.error}</p>}
+        <button
+          type="submit"
+          disabled={pending}
+          title="Add"
+          className="text-stone-400 hover:text-stone-900 dark:hover:text-stone-100 disabled:opacity-50 text-xs"
+        >
+          +
+        </button>
       </div>
-      <button
-        type="submit"
-        disabled={pending}
-        className="px-3 py-1.5 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90 disabled:opacity-50"
-      >
-        Add
-      </button>
+      {state?.error && <p className="text-xs text-red-600 pl-2">{state.error}</p>}
     </form>
   );
 }
 
 export default function CuisineManager({ cuisines }: { cuisines: Cuisine[] }) {
   return (
-    <div>
-      <div className="flex flex-col gap-2">
-        {cuisines.map((c) => (
-          <CuisineRow key={c.id} cuisine={c} />
-        ))}
-      </div>
+    <div className="flex flex-wrap gap-2 items-center">
+      {cuisines.map((c) => (
+        <CuisineChip key={c.id} cuisine={c} />
+      ))}
       <AddForm />
     </div>
   );
