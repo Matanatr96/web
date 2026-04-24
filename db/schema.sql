@@ -45,3 +45,28 @@ drop policy if exists "Public can read restaurants" on restaurants;
 create policy "Public can read restaurants"
   on restaurants for select
   using (true);
+
+-- Cuisine options managed by admins.
+create table if not exists cuisines (
+  id   bigserial primary key,
+  name text not null unique
+);
+
+alter table cuisines enable row level security;
+
+drop policy if exists "Public can read cuisines" on cuisines;
+create policy "Public can read cuisines"
+  on cuisines for select
+  using (true);
+
+-- Seed with default cuisines (skips duplicates on re-run).
+insert into cuisines (name) values
+  ('American'), ('Arabic'), ('Asian'), ('Bagel'), ('Bakery'),
+  ('Bangladeshi'), ('Bowl'), ('Breakfast'), ('Brunch'), ('Burger'),
+  ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Ice Cream'),
+  ('Indian'), ('Indian Street'), ('Israeli'), ('Italian'), ('Japanese'),
+  ('Korean'), ('Latin'), ('Malaysian'), ('Mediterranean'), ('Mexican'),
+  ('Nepalese'), ('Pho'), ('Pizza'), ('Sandwich'), ('Sushi'),
+  ('Szechuan'), ('Taco'), ('Taiwanese'), ('Thai'), ('Tulum'),
+  ('Venezuelan'), ('Vietnamese'), ('Wings')
+on conflict (name) do nothing;
