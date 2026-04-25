@@ -1,8 +1,5 @@
 -- Options + equity trades schema.
 -- Run in the Supabase SQL editor after schema.sql.
---
--- If upgrading from the initial version (no `source` column), run the
--- migration block at the bottom of this file before re-running the rest.
 
 create table if not exists options_trades (
   id                bigserial    primary key,
@@ -96,21 +93,3 @@ drop policy if exists "Public can read equity_trades" on equity_trades;
 create policy "Public can read equity_trades"
   on equity_trades for select
   using (true);
-
--- ---------------------------------------------------------------
--- Migration: run this if the tables already exist without `source`.
--- ---------------------------------------------------------------
--- alter table options_trades drop constraint if exists options_trades_tradier_id_key;
--- alter table options_trades add column if not exists source text not null default 'prod' check (source in ('prod', 'sandbox'));
--- -- Expand strategy/side constraints if upgrading from the initial version:
--- alter table options_trades drop constraint if exists options_trades_strategy_check;
--- alter table options_trades add constraint options_trades_strategy_check check (strategy in ('covered_call', 'cash_secured_put', 'long_call', 'long_put'));
--- alter table options_trades drop constraint if exists options_trades_side_check;
--- alter table options_trades add constraint options_trades_side_check check (side in ('sell_to_open', 'buy_to_close', 'buy_to_open', 'sell_to_close'));
--- alter table options_trades add constraint options_trades_tradier_id_source_key unique (tradier_id, source);
--- create index if not exists options_trades_source_idx on options_trades (source);
---
--- alter table equity_trades drop constraint if exists equity_trades_tradier_id_key;
--- alter table equity_trades add column if not exists source text not null default 'prod' check (source in ('prod', 'sandbox'));
--- alter table equity_trades add constraint equity_trades_tradier_id_source_key unique (tradier_id, source);
--- create index if not exists equity_trades_source_idx on equity_trades (source);
