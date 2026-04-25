@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { isAdmin } from "@/lib/auth";
+import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -51,6 +52,7 @@ export default async function RootLayout({
         <footer className="mx-auto max-w-6xl px-4 py-8 text-xs text-stone-400">
           Built with Next.js + Supabase.
         </footer>
+        <Analytics />
       </body>
     </html>
   );
