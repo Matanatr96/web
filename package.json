@@ -7,7 +7,8 @@
     "build": "next build",
     "start": "next start",
     "lint": "next lint",
-    "db:import": "tsx scripts/import.ts"
+    "db:import": "tsx scripts/import.ts",
+    "test:pnl": "tsx scripts/pnl-test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",

@@ -67,6 +67,18 @@ export type CurrentHolding = {
   total_cost: number;       // shares * avg_cost_basis
 };
 
+// Per-ticker realized P/L across equity + options, derived from trade history.
+export type TickerPnL = {
+  ticker: string;
+  shares_open: number;          // net shares currently held
+  avg_cost_basis: number;       // running average cost per share
+  equity_total_cost: number;    // shares_open * avg_cost_basis
+  equity_realized_pl: number;   // profit/loss booked from share sells
+  options_realized_pl: number;  // profit/loss from closed/expired/assigned options
+  options_open_premium: number; // credit currently at risk on still-open short positions (net)
+  total_realized_pl: number;    // equity_realized_pl + options_realized_pl
+};
+
 // A position groups all open/close trades for one option contract cycle.
 export type OptionsPosition = {
   underlying: string;
