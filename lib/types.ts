@@ -18,8 +18,8 @@ export type Restaurant = {
 
 export type RestaurantInput = Omit<Restaurant, "id" | "created_at" | "updated_at">;
 
-export type OptionStrategy = "covered_call" | "cash_secured_put";
-export type OptionSide = "sell_to_open" | "buy_to_close";
+export type OptionStrategy = "covered_call" | "cash_secured_put" | "long_call" | "long_put";
+export type OptionSide = "sell_to_open" | "buy_to_close" | "buy_to_open" | "sell_to_close";
 export type OptionType = "call" | "put";
 
 export type OptionsTrade = {

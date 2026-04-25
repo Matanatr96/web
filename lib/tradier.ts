@@ -60,10 +60,14 @@ function toArray<T>(val: T | T[]): T[] {
 
 function inferStrategy(order: TradierOrder): OptionStrategy | null {
   const side = order.side.toLowerCase();
-  // We only track sell-to-open and buy-to-close on CSPs and CCs.
-  if (side !== "sell_to_open" && side !== "buy_to_close") return null;
-  if (order.option_type === "put")  return "cash_secured_put";
-  if (order.option_type === "call") return "covered_call";
+  if (side === "sell_to_open" || side === "buy_to_close") {
+    if (order.option_type === "put")  return "cash_secured_put";
+    if (order.option_type === "call") return "covered_call";
+  }
+  if (side === "buy_to_open" || side === "sell_to_close") {
+    if (order.option_type === "put")  return "long_put";
+    if (order.option_type === "call") return "long_call";
+  }
   return null;
 }
 

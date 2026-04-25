@@ -11,8 +11,8 @@ create table if not exists options_trades (
   underlying        text         not null,                 -- ticker, e.g. AAPL
   option_symbol     text         not null,                 -- OCC symbol, e.g. AAPL230120C00150000
   option_type       text         not null check (option_type in ('call', 'put')),
-  strategy          text         not null check (strategy in ('covered_call', 'cash_secured_put')),
-  side              text         not null check (side in ('sell_to_open', 'buy_to_close')),
+  strategy          text         not null check (strategy in ('covered_call', 'cash_secured_put', 'long_call', 'long_put')),
+  side              text         not null check (side in ('sell_to_open', 'buy_to_close', 'buy_to_open', 'sell_to_close')),
   strike            numeric(10,2) not null,
   expiration_date   date         not null,
   quantity          integer      not null,
@@ -102,6 +102,11 @@ create policy "Public can read equity_trades"
 -- ---------------------------------------------------------------
 -- alter table options_trades drop constraint if exists options_trades_tradier_id_key;
 -- alter table options_trades add column if not exists source text not null default 'prod' check (source in ('prod', 'sandbox'));
+-- -- Expand strategy/side constraints if upgrading from the initial version:
+-- alter table options_trades drop constraint if exists options_trades_strategy_check;
+-- alter table options_trades add constraint options_trades_strategy_check check (strategy in ('covered_call', 'cash_secured_put', 'long_call', 'long_put'));
+-- alter table options_trades drop constraint if exists options_trades_side_check;
+-- alter table options_trades add constraint options_trades_side_check check (side in ('sell_to_open', 'buy_to_close', 'buy_to_open', 'sell_to_close'));
 -- alter table options_trades add constraint options_trades_tradier_id_source_key unique (tradier_id, source);
 -- create index if not exists options_trades_source_idx on options_trades (source);
 --

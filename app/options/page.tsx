@@ -1,5 +1,5 @@
 import { getSupabase } from "@/lib/supabase";
-import type { OptionsTrade, OptionsPosition, OptionStrategy, EquityTrade, CurrentHolding, TradeSource } from "@/lib/types";
+import type { OptionsTrade, OptionsPosition, EquityTrade, CurrentHolding, TradeSource } from "@/lib/types";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
 
@@ -17,13 +17,17 @@ function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
   const positions: OptionsPosition[] = [];
 
   for (const [symbol, legs] of bySymbol) {
-    const open = legs.find((l) => l.side === "sell_to_open");
-    if (!open) continue;
-    const close = legs.find((l) => l.side === "buy_to_close");
+    const isLong = legs.some((l) => l.side === "buy_to_open");
+    const openSide  = isLong ? "buy_to_open"  : "sell_to_open";
+    const closeSide = isLong ? "sell_to_close" : "buy_to_close";
 
-    const premiumCollected = open.avg_fill_price;
-    const premiumPaid = close?.avg_fill_price ?? null;
-    const netPremium = premiumCollected - (premiumPaid ?? 0);
+    const open = legs.find((l) => l.side === openSide);
+    if (!open) continue;
+    const close = legs.find((l) => l.side === closeSide);
+
+    const premiumCollected = isLong ? (close?.avg_fill_price ?? 0) : open.avg_fill_price;
+    const premiumPaid      = isLong ? open.avg_fill_price : (close?.avg_fill_price ?? null);
+    const netPremium       = premiumCollected - (premiumPaid ?? 0);
 
     let status: OptionsPosition["status"];
     if (close) {
@@ -35,18 +39,18 @@ function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
     }
 
     positions.push({
-      underlying:      open.underlying,
-      option_symbol:   symbol,
-      strategy:        open.strategy,
-      strike:          open.strike,
-      expiration_date: open.expiration_date,
-      quantity:        open.quantity,
+      underlying:        open.underlying,
+      option_symbol:     symbol,
+      strategy:          open.strategy,
+      strike:            open.strike,
+      expiration_date:   open.expiration_date,
+      quantity:          open.quantity,
       premium_collected: premiumCollected,
-      premium_paid:    premiumPaid,
-      net_premium:     netPremium,
+      premium_paid:      premiumPaid,
+      net_premium:       netPremium,
       status,
-      open_date:   open.order_date,
-      close_date:  close?.order_date ?? null,
+      open_date:  open.order_date,
+      close_date: close?.order_date ?? null,
     });
   }
 
@@ -57,9 +61,6 @@ function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
   return positions;
 }
 
-// Compute current holdings using the average cost method.
-// Orders are processed chronologically: buys add to cost basis, sells reduce shares
-// while keeping the running avg cost per share.
 function buildHoldings(equityTrades: EquityTrade[]): CurrentHolding[] {
   const sorted = [...equityTrades].sort(
     (a, b) => new Date(a.order_date).getTime() - new Date(b.order_date).getTime(),
@@ -69,17 +70,14 @@ function buildHoldings(equityTrades: EquityTrade[]): CurrentHolding[] {
 
   for (const t of sorted) {
     const current = holdingMap.get(t.symbol) ?? { shares: 0, total_cost: 0 };
-
     if (t.side === "buy") {
       current.total_cost += t.quantity * t.avg_fill_price;
       current.shares += t.quantity;
     } else {
-      // Sell: reduce shares; avg cost per share stays the same.
       const avgCost = current.shares > 0 ? current.total_cost / current.shares : 0;
       current.shares -= t.quantity;
       current.total_cost = current.shares * avgCost;
     }
-
     holdingMap.set(t.symbol, current);
   }
 
@@ -90,8 +88,7 @@ function buildHoldings(equityTrades: EquityTrade[]): CurrentHolding[] {
       shares:         h.shares,
       avg_cost_basis: h.shares > 0 ? h.total_cost / h.shares : 0,
       total_cost:     h.total_cost,
-    }))
-    .sort((a, b) => a.symbol.localeCompare(b.symbol));
+    }));
 }
 
 function fmtUSD(n: number) {
@@ -118,17 +115,18 @@ export default async function OptionsPage({
   const positions = buildPositions(trades);
   const holdings  = buildHoldings(equity);
 
-  const totalPremium = positions.reduce(
-    (sum, p) => sum + p.net_premium * p.quantity * 100,
-    0,
-  );
-  const openCount   = positions.filter((p) => p.status === "open").length;
-  const closedCount = positions.filter((p) => p.status !== "open").length;
-  const winCount    = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
-  const winRate     = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
+  // All tickers that appear in either positions or holdings, sorted alphabetically.
+  const allTickers = Array.from(
+    new Set([...positions.map((p) => p.underlying), ...holdings.map((h) => h.symbol)]),
+  ).sort();
 
-  const ccPositions  = positions.filter((p) => p.strategy === "covered_call"     as OptionStrategy);
-  const cspPositions = positions.filter((p) => p.strategy === "cash_secured_put" as OptionStrategy);
+  const holdingsByTicker = new Map(holdings.map((h) => [h.symbol, h]));
+
+  const totalPremium = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
+  const openCount    = positions.filter((p) => p.status === "open").length;
+  const closedCount  = positions.filter((p) => p.status !== "open").length;
+  const winCount     = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
+  const winRate      = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
 
   const isEmpty = positions.length === 0 && holdings.length === 0;
 
@@ -138,7 +136,7 @@ export default async function OptionsPage({
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Options Trades</h1>
           <p className="mt-2 text-sm text-stone-500">
-            Covered calls &amp; cash-secured puts tracked from Tradier.
+            Options &amp; holdings tracked from Tradier.
           </p>
         </div>
         <SourcePicker current={source} />
@@ -150,81 +148,48 @@ export default async function OptionsPage({
         </p>
       ) : (
         <>
-          {/* Current Holdings */}
-          {holdings.length > 0 && (
-            <section>
-              <h2 className="text-lg font-semibold mb-3">Current Holdings</h2>
-              <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
-                <table className="w-full text-sm">
-                  <thead className="bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
-                    <tr>
-                      <th className="px-3 py-2">Ticker</th>
-                      <th className="px-3 py-2 text-right">Shares</th>
-                      <th className="px-3 py-2 text-right">Avg Cost Basis</th>
-                      <th className="px-3 py-2 text-right">Total Cost</th>
-                      <th className="px-3 py-2 text-right">Open CCs</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {holdings.map((h) => {
-                      const openCCs = ccPositions.filter(
-                        (p) => p.underlying === h.symbol && p.status === "open",
-                      );
-
-                      return (
-                        <tr
-                          key={h.symbol}
-                          className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
-                        >
-                          <td className="px-3 py-2 font-medium">{h.symbol}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{h.shares}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{fmtUSD(h.avg_cost_basis)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">{fmtUSD(h.total_cost)}</td>
-                          <td className="px-3 py-2 text-right tabular-nums">
-                            {openCCs.length > 0 ? openCCs.length : <span className="text-stone-400">—</span>}
-                          </td>
-                        </tr>
-                      );
-                    })}
-                  </tbody>
-                </table>
-              </div>
-            </section>
-          )}
-
-          {/* Options summary stats */}
+          {/* Summary stats */}
           {positions.length > 0 && (
-            <>
-              <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-                <Stat
-                  label="Net Premium"
-                  value={fmtUSD(totalPremium)}
-                  highlight={totalPremium >= 0 ? "green" : "red"}
-                />
-                <Stat label="Open Positions" value={String(openCount)} />
-                <Stat label="Closed / Expired" value={String(closedCount)} />
-                <Stat
-                  label="Win Rate"
-                  value={winRate !== null ? `${winRate}%` : "—"}
-                  highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
-                />
-              </dl>
-
-              {ccPositions.length > 0 && (
-                <section>
-                  <h2 className="text-lg font-semibold mb-3">Covered Calls</h2>
-                  <OptionsTable positions={ccPositions} />
-                </section>
-              )}
-
-              {cspPositions.length > 0 && (
-                <section>
-                  <h2 className="text-lg font-semibold mb-3">Cash-Secured Puts</h2>
-                  <OptionsTable positions={cspPositions} />
-                </section>
-              )}
-            </>
+            <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <Stat
+                label="Net Premium"
+                value={fmtUSD(totalPremium)}
+                highlight={totalPremium >= 0 ? "green" : "red"}
+              />
+              <Stat label="Open Positions" value={String(openCount)} />
+              <Stat label="Closed / Expired" value={String(closedCount)} />
+              <Stat
+                label="Win Rate"
+                value={winRate !== null ? `${winRate}%` : "—"}
+                highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
+              />
+            </dl>
           )}
+
+          {/* Per-ticker sections */}
+          {allTickers.map((ticker) => {
+            const holding  = holdingsByTicker.get(ticker);
+            const tickerPositions = positions.filter((p) => p.underlying === ticker);
+
+            return (
+              <section key={ticker} className="flex flex-col gap-4">
+                <div className="flex items-baseline gap-3">
+                  <h2 className="text-xl font-bold tracking-tight">{ticker}</h2>
+                  {holding && (
+                    <span className="text-sm text-stone-500">
+                      {holding.shares} shares · {fmtUSD(holding.avg_cost_basis)} avg cost · {fmtUSD(holding.total_cost)} total
+                    </span>
+                  )}
+                </div>
+
+                {tickerPositions.length > 0 ? (
+                  <OptionsTable positions={tickerPositions} />
+                ) : (
+                  <p className="text-sm text-stone-400">No options activity.</p>
+                )}
+              </section>
+            );
+          })}
         </>
       )}
     </div>

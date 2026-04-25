@@ -3,8 +3,15 @@
 import { useMemo, useState } from "react";
 import type { OptionsPosition } from "@/lib/types";
 
-type SortKey = "underlying" | "strike" | "expiration_date" | "net_premium" | "status" | "open_date";
+type SortKey = "strategy" | "strike" | "expiration_date" | "net_premium" | "status" | "open_date";
 type SortDir = "asc" | "desc";
+
+const STRATEGY_LABEL: Record<OptionsPosition["strategy"], string> = {
+  covered_call:     "Covered Call",
+  cash_secured_put: "Cash-Secured Put",
+  long_call:        "Long Call",
+  long_put:         "Long Put",
+};
 
 const STATUS_LABEL: Record<OptionsPosition["status"], string> = {
   open:     "Open",
@@ -37,19 +44,12 @@ function fmtUSD(n: number) {
 }
 
 export default function OptionsTable({ positions }: { positions: OptionsPosition[] }) {
-  const [tickerFilter, setTickerFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
-  const [sortKey, setSortKey]  = useState<SortKey>("open_date");
+  const [sortKey, setSortKey] = useState<SortKey>("open_date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
-
-  const tickers = useMemo(
-    () => Array.from(new Set(positions.map((p) => p.underlying))).sort(),
-    [positions],
-  );
 
   const visible = useMemo(() => {
     const list = positions.filter((p) => {
-      if (tickerFilter && p.underlying !== tickerFilter) return false;
       if (statusFilter && p.status !== statusFilter) return false;
       return true;
     });
@@ -61,14 +61,14 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
       return String(av ?? "").localeCompare(String(bv ?? "")) * dir;
     });
     return list;
-  }, [positions, tickerFilter, statusFilter, sortKey, sortDir]);
+  }, [positions, statusFilter, sortKey, sortDir]);
 
   const onSort = (key: SortKey) => {
     if (key === sortKey) {
       setSortDir((d) => (d === "asc" ? "desc" : "asc"));
     } else {
       setSortKey(key);
-      setSortDir(["net_premium"].includes(key) ? "desc" : "asc");
+      setSortDir(key === "net_premium" ? "desc" : "asc");
     }
   };
 
@@ -77,16 +77,6 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
   return (
     <div>
       <div className="flex flex-wrap gap-3 mb-3">
-        <select
-          value={tickerFilter}
-          onChange={(e) => setTickerFilter(e.target.value)}
-          className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-        >
-          <option value="">All tickers</option>
-          {tickers.map((t) => (
-            <option key={t} value={t}>{t}</option>
-          ))}
-        </select>
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
@@ -100,22 +90,18 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
         </select>
       </div>
 
-      <p className="text-xs text-stone-500 mb-2">
-        Showing {visible.length} of {positions.length}
-      </p>
-
       <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
-              <Th onClick={() => onSort("underlying")}    label={`Ticker ${arrow("underlying")}`} />
-              <Th onClick={() => onSort("strike")}        label={`Strike ${arrow("strike")}`}        align="right" />
+              <Th onClick={() => onSort("strategy")}        label={`Strategy ${arrow("strategy")}`} />
+              <Th onClick={() => onSort("strike")}          label={`Strike ${arrow("strike")}`}          align="right" />
               <Th onClick={() => onSort("expiration_date")} label={`Expiration ${arrow("expiration_date")}`} />
               <th className="px-3 py-2">Qty</th>
-              <Th onClick={() => onSort("net_premium")}   label={`Net Premium ${arrow("net_premium")}`} align="right" />
+              <Th onClick={() => onSort("net_premium")}     label={`Net Premium ${arrow("net_premium")}`} align="right" />
               <th className="px-3 py-2 text-right">Total P&amp;L</th>
-              <Th onClick={() => onSort("status")}        label={`Status ${arrow("status")}`} />
-              <Th onClick={() => onSort("open_date")}     label={`Opened ${arrow("open_date")}`} />
+              <Th onClick={() => onSort("status")}          label={`Status ${arrow("status")}`} />
+              <Th onClick={() => onSort("open_date")}       label={`Opened ${arrow("open_date")}`} />
             </tr>
           </thead>
           <tbody>
@@ -130,7 +116,9 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
                   key={p.option_symbol}
                   className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
                 >
-                  <td className="px-3 py-2 font-medium">{p.underlying}</td>
+                  <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
+                    {STRATEGY_LABEL[p.strategy]}
+                  </td>
                   <td className="px-3 py-2 text-right tabular-nums">${p.strike.toFixed(2)}</td>
                   <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.expiration_date)}</td>
                   <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
