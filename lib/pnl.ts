@@ -8,6 +8,7 @@ import type { EquityTrade, OptionsPosition, TickerPnL } from "@/lib/types";
 export function buildTickerPnL(
   equityTrades: EquityTrade[],
   optionsPositions: OptionsPosition[],
+  prices?: Map<string, number>,
 ): TickerPnL[] {
   type EquityState = { shares: number; avgCost: number; realized: number };
   const equityByTicker = new Map<string, EquityState>();
@@ -33,15 +34,30 @@ export function buildTickerPnL(
     equityByTicker.set(t.symbol, s);
   }
 
-  type OptionsState = { realized: number; openPremium: number };
+  type OptionsState = { realized: number; openPremium: number; unrealized: number };
   const optionsByTicker = new Map<string, OptionsState>();
 
   for (const p of optionsPositions) {
-    const o = optionsByTicker.get(p.underlying) ?? { realized: 0, openPremium: 0 };
+    const o = optionsByTicker.get(p.underlying) ?? { realized: 0, openPremium: 0, unrealized: 0 };
     const dollars = p.net_premium * p.quantity * 100;
 
     if (p.status === "open") {
       o.openPremium += dollars;
+
+      if (prices) {
+        const mark = prices.get(p.option_symbol);
+        if (mark !== undefined) {
+          const isLong = p.strategy === "long_call" || p.strategy === "long_put";
+          const entry = isLong ? (p.premium_paid ?? 0) : p.premium_collected;
+          // Long: profit when mark rises above entry debit
+          // Short: profit when mark falls below entry credit
+          const pl = isLong
+            ? (mark - entry) * p.quantity * 100
+            : (entry - mark) * p.quantity * 100;
+          p.unrealized_pl = pl;
+          o.unrealized += pl;
+        }
+      }
     } else {
       o.realized += dollars;
     }
@@ -55,8 +71,9 @@ export function buildTickerPnL(
     .sort()
     .map((ticker) => {
       const eq = equityByTicker.get(ticker) ?? { shares: 0, avgCost: 0, realized: 0 };
-      const op = optionsByTicker.get(ticker) ?? { realized: 0, openPremium: 0 };
-      return {
+      const op = optionsByTicker.get(ticker) ?? { realized: 0, openPremium: 0, unrealized: 0 };
+
+      const result: TickerPnL = {
         ticker,
         shares_open: eq.shares,
         avg_cost_basis: eq.avgCost,
@@ -66,5 +83,18 @@ export function buildTickerPnL(
         options_open_premium: op.openPremium,
         total_realized_pl: eq.realized + op.realized,
       };
+
+      if (prices) {
+        const currentPrice = prices.get(ticker);
+        const unrealizedEquity =
+          eq.shares > 0 && currentPrice !== undefined
+            ? eq.shares * (currentPrice - eq.avgCost)
+            : 0;
+        result.unrealized_equity_pl = unrealizedEquity;
+        result.unrealized_options_pl = op.unrealized;
+        result.total_pl = result.total_realized_pl + unrealizedEquity + op.unrealized;
+      }
+
+      return result;
     });
 }

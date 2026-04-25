@@ -121,6 +121,68 @@ function assertClose(got: number, want: number, label: string) {
   }
 }
 
+// --- Scenario 7: open short put, mark below entry → profit ──────────────────
+// Sold 1 CSP for $3.00 credit; current mark is $1.00.
+// Unrealized = (3.00 - 1.00) * 1 * 100 = +$200
+{
+  const p = pos({
+    underlying: "AAPL",
+    option_symbol: "AAPL250117P00150000",
+    strategy: "cash_secured_put",
+    premium_collected: 3.00,
+    premium_paid: null,
+    net_premium: 3.00,
+    status: "open",
+  });
+  const prices = new Map([["AAPL250117P00150000", 1.00]]);
+  const r = buildTickerPnL([], [p], prices)[0];
+  assertClose(r.unrealized_options_pl ?? -999, 200, "s7 short put profit unrealized");
+  assertClose(p.unrealized_pl ?? -999,          200, "s7 position.unrealized_pl annotated");
+}
+
+// --- Scenario 8: open long call, mark above entry → profit ───────────────────
+// Bought 1 call for $5.00 debit; current mark is $8.00.
+// Unrealized = (8.00 - 5.00) * 1 * 100 = +$300
+{
+  const p = pos({
+    underlying: "TSLA",
+    option_symbol: "TSLA250117C00250000",
+    strategy: "long_call",
+    premium_collected: 0,
+    premium_paid: 5.00,
+    net_premium: -5.00,
+    status: "open",
+  });
+  const prices = new Map([["TSLA250117C00250000", 8.00]]);
+  const r = buildTickerPnL([], [p], prices)[0];
+  assertClose(r.unrealized_options_pl ?? -999, 300, "s8 long call profit unrealized");
+  assertClose(p.unrealized_pl ?? -999,          300, "s8 position.unrealized_pl annotated");
+}
+
+// --- Scenario 9: equity with live price, unrealized equity P/L ───────────────
+// 10 shares bought at $300; current price $350.
+// Unrealized equity = 10 * (350 - 300) = +$500
+{
+  const prices = new Map([["MSFT", 350]]);
+  const r = buildTickerPnL([
+    eq({ symbol: "MSFT", side: "buy", quantity: 10, avg_fill_price: 300, order_date: "2026-01-01" }),
+  ], [], prices)[0];
+  assertClose(r.unrealized_equity_pl ?? -999, 500, "s9 equity unrealized P/L");
+  assertClose(r.total_pl ?? -999, r.total_realized_pl + 500, "s9 total_pl includes unrealized");
+}
+
+// --- Scenario 10: no quotes → unrealized fields are undefined ────────────────
+{
+  const p = pos({ underlying: "AAPL", status: "open" });
+  const r = buildTickerPnL([], [p])[0];
+  if (r.unrealized_options_pl !== undefined) {
+    console.error("FAIL s10: unrealized_options_pl should be undefined without quotes");
+    failures++;
+  } else {
+    console.log("PASS s10 unrealized absent when no quotes");
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);

@@ -65,6 +65,8 @@ export type CurrentHolding = {
   shares: number;           // net shares currently held
   avg_cost_basis: number;   // average cost per share (avg cost method)
   total_cost: number;       // shares * avg_cost_basis
+  current_price?: number;
+  unrealized_pl?: number;   // shares * (current_price - avg_cost_basis)
 };
 
 // Per-ticker realized P/L across equity + options, derived from trade history.
@@ -77,6 +79,10 @@ export type TickerPnL = {
   options_realized_pl: number;  // profit/loss from closed/expired/assigned options
   options_open_premium: number; // credit currently at risk on still-open short positions (net)
   total_realized_pl: number;    // equity_realized_pl + options_realized_pl
+  // Populated only when live quotes are available
+  unrealized_equity_pl?: number;   // shares * (current_price - avg_cost_basis)
+  unrealized_options_pl?: number;  // sum of per-position unrealized across open contracts
+  total_pl?: number;               // total_realized_pl + unrealized_equity_pl + unrealized_options_pl
 };
 
 // A position groups all open/close trades for one option contract cycle.
@@ -93,4 +99,5 @@ export type OptionsPosition = {
   status: "open" | "closed" | "expired" | "assigned";
   open_date: string;
   close_date: string | null;
+  unrealized_pl?: number;   // (mark - entry) * qty * 100, sign-correct per long/short
 };

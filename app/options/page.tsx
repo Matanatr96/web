@@ -1,6 +1,7 @@
 import { getSupabase } from "@/lib/supabase";
 import type { OptionsTrade, OptionsPosition, EquityTrade, TradeSource } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
+import { getLiveQuotes } from "@/lib/quotes";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
 
@@ -84,7 +85,17 @@ export default async function OptionsPage({
   const trades    = (optionsData ?? []) as OptionsTrade[];
   const equity    = (equityData  ?? []) as EquityTrade[];
   const positions = buildPositions(trades);
-  const pnl       = buildTickerPnL(equity, positions);
+
+  const equitySymbols = [...new Set(equity.map((t) => t.symbol))];
+  const openOptionSymbols = positions
+    .filter((p) => p.status === "open")
+    .map((p) => p.option_symbol);
+
+  const quotes = source === "prod"
+    ? await getLiveQuotes(equitySymbols, openOptionSymbols)
+    : { prices: new Map<string, number>(), available: false };
+
+  const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
 
   const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
 
@@ -93,12 +104,16 @@ export default async function OptionsPage({
     new Set([...positions.map((p) => p.underlying), ...pnl.map((p) => p.ticker)]),
   ).sort();
 
-  const totalPremium     = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
-  const totalRealizedPnL = pnl.reduce((sum, p) => sum + p.total_realized_pl, 0);
-  const openCount        = positions.filter((p) => p.status === "open").length;
-  const closedCount      = positions.filter((p) => p.status !== "open").length;
-  const winCount         = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
-  const winRate          = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
+  const totalPremium      = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
+  const totalRealizedPnL  = pnl.reduce((sum, p) => sum + p.total_realized_pl, 0);
+  const openCount         = positions.filter((p) => p.status === "open").length;
+  const closedCount       = positions.filter((p) => p.status !== "open").length;
+  const winCount          = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
+  const winRate           = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
+  const hasUnrealized     = quotes.available;
+  const totalUnrealizedPnL = hasUnrealized
+    ? pnl.reduce((sum, p) => sum + (p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0), 0)
+    : null;
 
   const isEmpty = positions.length === 0 && pnl.length === 0;
 
@@ -121,11 +136,21 @@ export default async function OptionsPage({
       ) : (
         <>
           {/* Summary stats */}
-          <dl className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
             <Stat
               label="Realized P/L"
               value={fmtUSD(totalRealizedPnL)}
               highlight={totalRealizedPnL >= 0 ? "green" : "red"}
+            />
+            <Stat
+              label="Unrealized P/L"
+              value={totalUnrealizedPnL !== null ? fmtUSD(totalUnrealizedPnL) : "—"}
+              highlight={
+                totalUnrealizedPnL !== null
+                  ? totalUnrealizedPnL >= 0 ? "green" : "red"
+                  : undefined
+              }
+              dim={totalUnrealizedPnL === null}
             />
             <Stat
               label="Net Premium"
@@ -166,6 +191,19 @@ export default async function OptionsPage({
                       </span>
                     </span>
                   )}
+                  {p && hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
+                    <span className="text-sm text-stone-500">
+                      Unrealized:{" "}
+                      <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                        {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
+                      </span>
+                      {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
+                        <span className="text-stone-400">
+                          {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
+                        </span>
+                      )}
+                    </span>
+                  )}
                 </div>
 
                 {tickerPositions.length > 0 ? (
@@ -186,13 +224,16 @@ function Stat({
   label,
   value,
   highlight,
+  dim,
 }: {
   label: string;
   value: string;
   highlight?: "green" | "red";
+  dim?: boolean;
 }) {
-  const valueClass =
-    highlight === "green"
+  const valueClass = dim
+    ? "text-stone-400 dark:text-stone-600"
+    : highlight === "green"
       ? "text-green-600 dark:text-green-400"
       : highlight === "red"
         ? "text-red-600 dark:text-red-400"
