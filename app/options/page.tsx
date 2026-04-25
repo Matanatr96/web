@@ -1,5 +1,6 @@
 import { getSupabase } from "@/lib/supabase";
-import type { OptionsTrade, OptionsPosition, EquityTrade, CurrentHolding, TradeSource } from "@/lib/types";
+import type { OptionsTrade, OptionsPosition, EquityTrade, TradeSource } from "@/lib/types";
+import { buildTickerPnL } from "@/lib/pnl";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
 
@@ -61,36 +62,6 @@ function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
   return positions;
 }
 
-function buildHoldings(equityTrades: EquityTrade[]): CurrentHolding[] {
-  const sorted = [...equityTrades].sort(
-    (a, b) => new Date(a.order_date).getTime() - new Date(b.order_date).getTime(),
-  );
-
-  const holdingMap = new Map<string, { shares: number; total_cost: number }>();
-
-  for (const t of sorted) {
-    const current = holdingMap.get(t.symbol) ?? { shares: 0, total_cost: 0 };
-    if (t.side === "buy") {
-      current.total_cost += t.quantity * t.avg_fill_price;
-      current.shares += t.quantity;
-    } else {
-      const avgCost = current.shares > 0 ? current.total_cost / current.shares : 0;
-      current.shares -= t.quantity;
-      current.total_cost = current.shares * avgCost;
-    }
-    holdingMap.set(t.symbol, current);
-  }
-
-  return Array.from(holdingMap.entries())
-    .filter(([, h]) => h.shares > 0)
-    .map(([symbol, h]) => ({
-      symbol,
-      shares:         h.shares,
-      avg_cost_basis: h.shares > 0 ? h.total_cost / h.shares : 0,
-      total_cost:     h.total_cost,
-    }));
-}
-
 function fmtUSD(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 }
@@ -110,25 +81,26 @@ export default async function OptionsPage({
     db.from("equity_trades").select("*").eq("source", source).order("order_date", { ascending: true }),
   ]);
 
-  const trades   = (optionsData ?? []) as OptionsTrade[];
-  const equity   = (equityData  ?? []) as EquityTrade[];
+  const trades    = (optionsData ?? []) as OptionsTrade[];
+  const equity    = (equityData  ?? []) as EquityTrade[];
   const positions = buildPositions(trades);
-  const holdings  = buildHoldings(equity);
+  const pnl       = buildTickerPnL(equity, positions);
 
-  // All tickers that appear in either positions or holdings, sorted alphabetically.
+  const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
+
+  // All tickers that appear in positions or have equity activity, sorted alphabetically.
   const allTickers = Array.from(
-    new Set([...positions.map((p) => p.underlying), ...holdings.map((h) => h.symbol)]),
+    new Set([...positions.map((p) => p.underlying), ...pnl.map((p) => p.ticker)]),
   ).sort();
 
-  const holdingsByTicker = new Map(holdings.map((h) => [h.symbol, h]));
+  const totalPremium     = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
+  const totalRealizedPnL = pnl.reduce((sum, p) => sum + p.total_realized_pl, 0);
+  const openCount        = positions.filter((p) => p.status === "open").length;
+  const closedCount      = positions.filter((p) => p.status !== "open").length;
+  const winCount         = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
+  const winRate          = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
 
-  const totalPremium = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
-  const openCount    = positions.filter((p) => p.status === "open").length;
-  const closedCount  = positions.filter((p) => p.status !== "open").length;
-  const winCount     = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
-  const winRate      = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
-
-  const isEmpty = positions.length === 0 && holdings.length === 0;
+  const isEmpty = positions.length === 0 && pnl.length === 0;
 
   return (
     <div className="flex flex-col gap-10 pt-10 sm:pt-16 max-w-5xl mx-auto px-4">
@@ -149,35 +121,49 @@ export default async function OptionsPage({
       ) : (
         <>
           {/* Summary stats */}
-          {positions.length > 0 && (
-            <dl className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-              <Stat
-                label="Net Premium"
-                value={fmtUSD(totalPremium)}
-                highlight={totalPremium >= 0 ? "green" : "red"}
-              />
-              <Stat label="Open Positions" value={String(openCount)} />
-              <Stat label="Closed / Expired" value={String(closedCount)} />
-              <Stat
-                label="Win Rate"
-                value={winRate !== null ? `${winRate}%` : "—"}
-                highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
-              />
-            </dl>
-          )}
+          <dl className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+            <Stat
+              label="Realized P/L"
+              value={fmtUSD(totalRealizedPnL)}
+              highlight={totalRealizedPnL >= 0 ? "green" : "red"}
+            />
+            <Stat
+              label="Net Premium"
+              value={fmtUSD(totalPremium)}
+              highlight={totalPremium >= 0 ? "green" : "red"}
+            />
+            <Stat label="Open Positions" value={String(openCount)} />
+            <Stat label="Closed / Expired" value={String(closedCount)} />
+            <Stat
+              label="Win Rate"
+              value={winRate !== null ? `${winRate}%` : "—"}
+              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
+            />
+          </dl>
 
           {/* Per-ticker sections */}
           {allTickers.map((ticker) => {
-            const holding  = holdingsByTicker.get(ticker);
-            const tickerPositions = positions.filter((p) => p.underlying === ticker);
+            const p = pnlByTicker.get(ticker);
+            const tickerPositions = positions.filter((pos) => pos.underlying === ticker);
 
             return (
               <section key={ticker} className="flex flex-col gap-4">
-                <div className="flex items-baseline gap-3">
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                   <h2 className="text-xl font-bold tracking-tight">{ticker}</h2>
-                  {holding && (
+                  {p && p.shares_open > 0 && (
                     <span className="text-sm text-stone-500">
-                      {holding.shares} shares · {fmtUSD(holding.avg_cost_basis)} avg cost · {fmtUSD(holding.total_cost)} total
+                      {p.shares_open} shares · {fmtUSD(p.avg_cost_basis)} avg cost · {fmtUSD(p.equity_total_cost)} total
+                    </span>
+                  )}
+                  {p && (p.total_realized_pl !== 0 || p.equity_realized_pl !== 0 || p.options_realized_pl !== 0) && (
+                    <span className="text-sm text-stone-500">
+                      Realized:{" "}
+                      <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                        {fmtUSD(p.total_realized_pl)}
+                      </span>
+                      <span className="text-stone-400">
+                        {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
+                      </span>
                     </span>
                   )}
                 </div>
