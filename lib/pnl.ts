@@ -10,7 +10,13 @@ export function buildTickerPnL(
   optionsPositions: OptionsPosition[],
   prices?: Map<string, number>,
 ): TickerPnL[] {
-  type EquityState = { shares: number; avgCost: number; realized: number };
+  type EquityState = {
+    shares: number;
+    avgCost: number;
+    realized: number;
+    tradeCount: number;
+    grossSpend: number;
+  };
   const equityByTicker = new Map<string, EquityState>();
 
   const sorted = [...equityTrades].sort(
@@ -18,12 +24,21 @@ export function buildTickerPnL(
   );
 
   for (const t of sorted) {
-    const s = equityByTicker.get(t.symbol) ?? { shares: 0, avgCost: 0, realized: 0 };
+    const s = equityByTicker.get(t.symbol) ?? {
+      shares: 0,
+      avgCost: 0,
+      realized: 0,
+      tradeCount: 0,
+      grossSpend: 0,
+    };
+
+    s.tradeCount += 1;
 
     if (t.side === "buy") {
       const totalCost = s.shares * s.avgCost + t.quantity * t.avg_fill_price;
       s.shares += t.quantity;
       s.avgCost = s.shares > 0 ? totalCost / s.shares : 0;
+      s.grossSpend += t.quantity * t.avg_fill_price;
     } else {
       const qty = Math.min(t.quantity, s.shares);
       s.realized += qty * (t.avg_fill_price - s.avgCost);
@@ -34,15 +49,29 @@ export function buildTickerPnL(
     equityByTicker.set(t.symbol, s);
   }
 
-  type OptionsState = { realized: number; openPremium: number; unrealized: number };
+  type OptionsState = {
+    realized: number;
+    openPremium: number;
+    unrealized: number;
+    cspCollateral: number;
+  };
   const optionsByTicker = new Map<string, OptionsState>();
 
   for (const p of optionsPositions) {
-    const o = optionsByTicker.get(p.underlying) ?? { realized: 0, openPremium: 0, unrealized: 0 };
+    const o = optionsByTicker.get(p.underlying) ?? {
+      realized: 0,
+      openPremium: 0,
+      unrealized: 0,
+      cspCollateral: 0,
+    };
     const dollars = p.net_premium * p.quantity * 100;
 
     if (p.status === "open") {
       o.openPremium += dollars;
+
+      if (p.strategy === "cash_secured_put") {
+        o.cspCollateral += p.strike * 100 * p.quantity;
+      }
 
       if (prices) {
         const mark = prices.get(p.option_symbol);
@@ -70,18 +99,35 @@ export function buildTickerPnL(
   return Array.from(tickers)
     .sort()
     .map((ticker) => {
-      const eq = equityByTicker.get(ticker) ?? { shares: 0, avgCost: 0, realized: 0 };
-      const op = optionsByTicker.get(ticker) ?? { realized: 0, openPremium: 0, unrealized: 0 };
+      const eq = equityByTicker.get(ticker) ?? {
+        shares: 0,
+        avgCost: 0,
+        realized: 0,
+        tradeCount: 0,
+        grossSpend: 0,
+      };
+      const op = optionsByTicker.get(ticker) ?? {
+        realized: 0,
+        openPremium: 0,
+        unrealized: 0,
+        cspCollateral: 0,
+      };
+
+      const equityTotalCost = eq.shares * eq.avgCost;
 
       const result: TickerPnL = {
         ticker,
         shares_open: eq.shares,
         avg_cost_basis: eq.avgCost,
-        equity_total_cost: eq.shares * eq.avgCost,
+        equity_total_cost: equityTotalCost,
         equity_realized_pl: eq.realized,
         options_realized_pl: op.realized,
         options_open_premium: op.openPremium,
         total_realized_pl: eq.realized + op.realized,
+        trade_count: eq.tradeCount,
+        total_gross_spend: eq.grossSpend,
+        csp_collateral: op.cspCollateral,
+        total_capital_tied_up: equityTotalCost + op.cspCollateral,
       };
 
       if (prices) {

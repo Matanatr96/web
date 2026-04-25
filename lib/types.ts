@@ -79,6 +79,10 @@ export type TickerPnL = {
   options_realized_pl: number;  // profit/loss from closed/expired/assigned options
   options_open_premium: number; // credit currently at risk on still-open short positions (net)
   total_realized_pl: number;    // equity_realized_pl + options_realized_pl
+  trade_count: number;          // total equity trades (buys + sells) for this ticker
+  total_gross_spend: number;    // sum of all buy trades: quantity * avg_fill_price
+  csp_collateral: number;       // cash tied up in open CSPs: strike * 100 * quantity
+  total_capital_tied_up: number; // equity_total_cost + csp_collateral
   // Populated only when live quotes are available
   unrealized_equity_pl?: number;   // shares * (current_price - avg_cost_basis)
   unrealized_options_pl?: number;  // sum of per-position unrealized across open contracts
