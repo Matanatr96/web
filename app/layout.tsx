@@ -27,6 +27,12 @@ export default function RootLayout({
               >
                 Food
               </Link>
+              <Link
+                href="/stonks"
+                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
+              >
+                Stonks
+              </Link>
             </nav>
           </div>
         </header>
