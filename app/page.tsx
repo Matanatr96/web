@@ -1,21 +1,44 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import type { Restaurant, OptionsTrade, EquityTrade } from "@/lib/types";
 import { fmt, ratingColorClass } from "@/lib/utils";
+import { buildTickerPnL } from "@/lib/pnl";
+import { buildPositions } from "@/lib/positions";
 
 export const dynamic = "force-dynamic";
 
+function fmtUSD(n: number) {
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 0, maximumFractionDigits: 0 });
+}
+
 export default async function HomePage() {
-  const { data } = await getSupabase()
-    .from("restaurants")
-    .select("*")
-    .order("overall", { ascending: false });
-  const restaurants = (data ?? []) as Restaurant[];
+  const db = getSupabase();
+
+  const [{ data: restaurantData }, { data: optionsData }, { data: equityData }] =
+    await Promise.all([
+      db.from("restaurants").select("*").order("overall", { ascending: false }),
+      db.from("options_trades").select("*").eq("source", "prod").order("order_date", { ascending: false }),
+      db.from("equity_trades").select("*").eq("source", "prod").order("order_date", { ascending: true }),
+    ]);
+
+  const restaurants = (restaurantData ?? []) as Restaurant[];
+  const trades = (optionsData ?? []) as OptionsTrade[];
+  const equity = (equityData ?? []) as EquityTrade[];
+  const positions = buildPositions(trades);
+  const pnl = buildTickerPnL(equity, positions);
 
   const total = restaurants.length;
   const cities = new Set(restaurants.map((r) => r.city)).size;
   const cuisines = new Set(restaurants.map((r) => r.cuisine)).size;
   const topThree = restaurants.slice(0, 3);
+
+  const totalRealizedPnL = pnl.reduce((sum, p) => sum + p.total_realized_pl, 0);
+  const closedCount = positions.filter((p) => p.status !== "open").length;
+  const winCount = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
+  const winRate = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
+  const topTickers = [...pnl]
+    .sort((a, b) => b.total_realized_pl - a.total_realized_pl)
+    .slice(0, 3);
 
   return (
     <div className="flex flex-col gap-16 pt-10 sm:pt-16 max-w-2xl mx-auto">
@@ -106,6 +129,67 @@ export default async function HomePage() {
           </>
         ) : (
           <p className="text-sm text-stone-500">No restaurants yet.</p>
+        )}
+      </section>
+
+      <div className="border-t border-stone-200 dark:border-stone-800" />
+
+      {/* Stocks leaderboard */}
+      <section>
+        <div className="flex items-baseline justify-between mb-6">
+          <div>
+            <h2 className="text-xl font-semibold">Stocks &amp; Options</h2>
+            <p className="mt-1 text-sm text-stone-500">
+              Trades tracked from Tradier.
+            </p>
+          </div>
+          <Link
+            href="/stonks"
+            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition"
+          >
+            View all →
+          </Link>
+        </div>
+
+        {pnl.length > 0 ? (
+          <>
+            <dl className="grid grid-cols-3 gap-3 mb-8">
+              <Stat label="Realized P/L" value={fmtUSD(totalRealizedPnL)} />
+              <Stat label="Positions" value={String(closedCount)} />
+              <Stat label="Win Rate" value={winRate !== null ? `${winRate}%` : "—"} />
+            </dl>
+
+            <p className="text-xs uppercase tracking-wide text-stone-500 mb-3">
+              Top tickers
+            </p>
+            <ul className="divide-y divide-stone-200 dark:divide-stone-800 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+              {topTickers.map((t) => (
+                <li key={t.ticker}>
+                  <div className="flex items-baseline justify-between gap-3 px-4 py-3">
+                    <div className="min-w-0">
+                      <div className="font-medium">{t.ticker}</div>
+                      {t.shares_open > 0 && (
+                        <div className="text-xs text-stone-500">
+                          {t.shares_open} shares held
+                        </div>
+                      )}
+                    </div>
+                    <div
+                      className={`text-lg font-semibold tabular-nums shrink-0 ${
+                        t.total_realized_pl >= 0
+                          ? "text-green-600 dark:text-green-400"
+                          : "text-red-600 dark:text-red-400"
+                      }`}
+                    >
+                      {fmtUSD(t.total_realized_pl)}
+                    </div>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </>
+        ) : (
+          <p className="text-sm text-stone-500">No trades yet.</p>
         )}
       </section>
     </div>
