@@ -7,6 +7,7 @@ import { fmt } from "@/lib/utils";
 import { deleteRestaurant, logoutAction } from "./actions";
 import DeleteButton from "./delete-button";
 import CuisineManager from "./add-cuisine-form";
+import SyncTradesButton from "@/components/sync-trades-button";
 
 export const dynamic = "force-dynamic";
 
@@ -39,7 +40,8 @@ export default async function AdminPage() {
             {restaurants.length} restaurants.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap gap-2">
+          <SyncTradesButton />
           <Link
             href="/admin/new"
             className="px-3 py-2 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90"
