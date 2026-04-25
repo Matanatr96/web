@@ -12,7 +12,7 @@ export default function SourcePicker({ current }: { current: TradeSource }) {
   function select(source: TradeSource) {
     const next = new URLSearchParams(params.toString());
     next.set("source", source);
-    startTransition(() => router.replace(`/options?${next.toString()}`));
+    startTransition(() => router.replace(`/stonks?${next.toString()}`));
   }
 
   return (

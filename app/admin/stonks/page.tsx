@@ -182,7 +182,7 @@ export default async function StonksAdminPage() {
       <section className="mt-10">
         <h2 className="text-lg font-semibold tracking-tight mb-3">View</h2>
         <Link
-          href="/options"
+          href="/stonks"
           className="text-sm hover:underline text-stone-600 dark:text-stone-400"
         >
           Options &amp; trades dashboard →
