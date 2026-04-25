@@ -33,8 +33,8 @@ export default async function EditRestaurantPage({ params }: Props) {
   return (
     <div className="max-w-3xl">
       <nav className="text-sm text-stone-500 mb-4">
-        <Link href="/admin" className="hover:underline">
-          ← Admin
+        <Link href="/admin/food" className="hover:underline">
+          ← Food
         </Link>
       </nav>
       <h1 className="text-2xl font-bold tracking-tight mb-6">
