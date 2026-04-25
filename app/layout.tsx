@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { isAdmin } from "@/lib/auth";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -7,11 +8,13 @@ export const metadata: Metadata = {
   description: "Software engineer, food enthusiast, and photographer based in SF.",
 };
 
-export default function RootLayout({
+export default async function RootLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const admin = await isAdmin();
+
   return (
     <html lang="en">
       <body className="min-h-screen">
@@ -33,6 +36,14 @@ export default function RootLayout({
               >
                 Stonks
               </Link>
+              {admin && (
+                <Link
+                  href="/admin"
+                  className="hover:text-stone-900 dark:hover:text-stone-100 transition"
+                >
+                  Admin
+                </Link>
+              )}
             </nav>
           </div>
         </header>
