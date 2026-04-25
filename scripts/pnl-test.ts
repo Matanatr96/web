@@ -101,6 +101,26 @@ function assertClose(got: number, want: number, label: string) {
   assertClose(r.avg_cost_basis, 300,       "s5 avg_cost stable on sell");
 }
 
+// --- Scenario 6: fully-closed ticker keeps its realized P/L visible ---
+// Verifies the "reset" only zeros current-shares cost basis; realized P/L
+// survives and the ticker still appears in the per-ticker list.
+{
+  const result = buildTickerPnL([
+    eq({ symbol: "GME", side: "buy",  quantity: 10, avg_fill_price: 100, order_date: "2026-01-01" }),
+    eq({ symbol: "GME", side: "sell", quantity: 10, avg_fill_price: 80,  order_date: "2026-01-02" }),
+  ], []);
+  const gme = result.find((r) => r.ticker === "GME");
+  if (!gme) {
+    console.error("FAIL s6 GME missing from result");
+    failures++;
+  } else {
+    assertClose(gme.shares_open, 0,           "s6 shares closed out");
+    assertClose(gme.avg_cost_basis, 0,        "s6 avg_cost zeroed (no shares to value)");
+    assertClose(gme.equity_realized_pl, -200, "s6 realized loss preserved after close");
+    assertClose(gme.total_realized_pl, -200,  "s6 total realized survives full close");
+  }
+}
+
 if (failures > 0) {
   console.error(`\n${failures} failure(s).`);
   process.exit(1);
