@@ -3,7 +3,7 @@
 import { useState } from "react";
 
 export default function SyncTradesButton() {
-  const [source, setSource] = useState<"prod" | "sandbox">("prod");
+  const [source, setSource] = useState<"prod" | "sandbox">("sandbox");
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
