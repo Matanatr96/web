@@ -10,7 +10,7 @@ import CuisineManager from "../add-cuisine-form";
 
 export const dynamic = "force-dynamic";
 
-export default async function FoodAdminPage() {
+export default async function RestaurantsAdminPage() {
   if (!(await isAdmin())) {
     redirect("/admin/login");
   }
@@ -40,7 +40,7 @@ export default async function FoodAdminPage() {
 
       <div className="flex flex-wrap items-center justify-between gap-3 mb-6">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight">Food</h1>
+          <h1 className="text-2xl font-bold tracking-tight">Restaurants</h1>
           <p className="text-sm text-stone-500 mt-1">
             {restaurants.length} restaurants.
           </p>

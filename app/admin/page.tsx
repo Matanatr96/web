@@ -26,10 +26,10 @@ export default async function AdminPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
         <Link
-          href="/admin/food"
+          href="/admin/restaurants"
           className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
         >
-          <span className="font-semibold">Food</span>
+          <span className="font-semibold">Restaurants</span>
           <span className="text-sm text-stone-500">Manage restaurants &amp; cuisines</span>
         </Link>
 

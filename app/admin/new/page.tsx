@@ -23,8 +23,8 @@ export default async function NewRestaurantPage() {
   return (
     <div className="max-w-3xl">
       <nav className="text-sm text-stone-500 mb-4">
-        <Link href="/admin/food" className="hover:underline">
-          ← Food
+        <Link href="/admin/restaurants" className="hover:underline">
+          ← Restaurants
         </Link>
       </nav>
       <h1 className="text-2xl font-bold tracking-tight mb-6">Add restaurant</h1>
