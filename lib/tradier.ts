@@ -17,15 +17,32 @@ function getConfig(sandbox: boolean) {
 
 async function tradierFetch<T>(path: string, sandbox: boolean): Promise<T> {
   const { base, key } = getConfig(sandbox);
-  const res = await fetch(`${base}${path}`, {
-    headers: {
-      Authorization: `Bearer ${key}`,
-      Accept: "application/json",
-    },
-    cache: "no-store",
-  });
-  if (!res.ok) throw new Error(`Tradier ${res.status}: ${await res.text()}`);
-  return res.json() as Promise<T>;
+  const url = `${base}${path}`;
+  let res: Response;
+  try {
+    res = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${key}`,
+        Accept: "application/json",
+      },
+      cache: "no-store",
+    });
+  } catch (e) {
+    throw new Error(`Tradier network error fetching ${url}: ${e instanceof Error ? e.message : e}`);
+  }
+
+  const text = await res.text();
+  if (!res.ok) {
+    throw new Error(`Tradier ${res.status} from ${url}: ${text}`);
+  }
+  if (!text) {
+    throw new Error(`Tradier returned empty response from ${url}`);
+  }
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    throw new Error(`Tradier returned non-JSON from ${url} (status ${res.status}): ${text.slice(0, 200)}`);
+  }
 }
 
 // Raw shapes returned by Tradier's orders API.
