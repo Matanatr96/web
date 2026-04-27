@@ -2,6 +2,7 @@ import { getSupabase } from "@/lib/supabase";
 import type { OptionsTrade, EquityTrade, TradeSource } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
+import { annotateAssignments } from "@/lib/assignment";
 import { getLiveQuotes } from "@/lib/quotes";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
@@ -30,6 +31,7 @@ export default async function OptionsPage({
   const trades    = (optionsData ?? []) as OptionsTrade[];
   const equity    = (equityData  ?? []) as EquityTrade[];
   const positions = buildPositions(trades);
+  annotateAssignments(positions, equity);
 
   const equitySymbols = [...new Set(equity.map((t) => t.symbol))];
   const openOptionSymbols = positions
@@ -59,6 +61,9 @@ export default async function OptionsPage({
   const totalUnrealizedPnL = hasUnrealized
     ? pnl.reduce((sum, p) => sum + (p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0), 0)
     : null;
+  const totalPL = hasUnrealized
+    ? pnl.reduce((sum, p) => sum + (p.total_pl ?? p.total_realized_pl), 0)
+    : null;
 
   const isEmpty = positions.length === 0 && pnl.length === 0;
 
@@ -81,7 +86,15 @@ export default async function OptionsPage({
       ) : (
         <>
           {/* Summary stats */}
-          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+            <Stat
+              label="Total P/L"
+              value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
+              highlight={
+                (totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"
+              }
+              dim={totalPL === null}
+            />
             <Stat
               label="Realized P/L"
               value={fmtUSD(totalRealizedPnL)}
@@ -125,29 +138,44 @@ export default async function OptionsPage({
                       {p.shares_open} shares · {fmtUSD(p.avg_cost_basis)} avg cost · {fmtUSD(p.equity_total_cost)} total
                     </span>
                   )}
-                  {p && (p.total_realized_pl !== 0 || p.equity_realized_pl !== 0 || p.options_realized_pl !== 0) && (
-                    <span className="text-sm text-stone-500">
-                      Realized:{" "}
-                      <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                        {fmtUSD(p.total_realized_pl)}
-                      </span>
-                      <span className="text-stone-400">
-                        {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
-                      </span>
-                    </span>
-                  )}
-                  {p && hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
-                    <span className="text-sm text-stone-500">
-                      Unrealized:{" "}
-                      <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                        {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
-                      </span>
-                      {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
-                        <span className="text-stone-400">
-                          {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
+                  {p && (p.total_pl !== undefined || p.total_realized_pl !== 0) && (
+                    <>
+                      {/* Total P&L — prominent when live quotes available */}
+                      {p.total_pl !== undefined && (
+                        <span className="text-sm font-medium">
+                          <span className="text-stone-500">Total P&L: </span>
+                          <span className={p.total_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                            {fmtUSD(p.total_pl)}
+                          </span>
                         </span>
                       )}
-                    </span>
+                      {/* Realized breakdown */}
+                      {p.total_realized_pl !== 0 && (
+                        <span className="text-sm text-stone-500">
+                          Realized:{" "}
+                          <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                            {fmtUSD(p.total_realized_pl)}
+                          </span>
+                          <span className="text-stone-400">
+                            {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
+                          </span>
+                        </span>
+                      )}
+                      {/* Unrealized breakdown */}
+                      {hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
+                        <span className="text-sm text-stone-500">
+                          Unrealized:{" "}
+                          <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                            {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
+                          </span>
+                          {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
+                            <span className="text-stone-400">
+                              {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
+                            </span>
+                          )}
+                        </span>
+                      )}
+                    </>
                   )}
                 </div>
 

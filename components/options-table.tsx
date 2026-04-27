@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import type { OptionsPosition } from "@/lib/types";
 
 type SortKey = "strategy" | "strike" | "expiration_date" | "net_premium" | "status" | "open_date";
@@ -112,30 +112,44 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
                 : "text-red-600 dark:text-red-400";
 
               return (
-                <tr
-                  key={p.option_symbol}
-                  className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
-                >
-                  <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                    {STRATEGY_LABEL[p.strategy]}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">${p.strike.toFixed(2)}</td>
-                  <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.expiration_date)}</td>
-                  <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
-                  <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
-                    {fmtUSD(p.net_premium)}
-                    <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
-                  </td>
-                  <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
-                    {fmtUSD(totalPnl)}
-                  </td>
-                  <td className="px-3 py-2">
-                    <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[p.status]}`}>
-                      {STATUS_LABEL[p.status]}
-                    </span>
-                  </td>
-                  <td className="px-3 py-2 whitespace-nowrap text-stone-500">{fmtDate(p.open_date)}</td>
-                </tr>
+                <React.Fragment key={p.option_symbol}>
+                  <tr
+                    className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
+                  >
+                    <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
+                      {STRATEGY_LABEL[p.strategy]}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">${p.strike.toFixed(2)}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.expiration_date)}</td>
+                    <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
+                    <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
+                      {fmtUSD(p.net_premium)}
+                      <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
+                    </td>
+                    <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
+                      {fmtUSD(totalPnl)}
+                    </td>
+                    <td className="px-3 py-2">
+                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[p.status]}`}>
+                        {STATUS_LABEL[p.status]}
+                      </span>
+                    </td>
+                    <td className="px-3 py-2 whitespace-nowrap text-stone-500">{fmtDate(p.open_date)}</td>
+                  </tr>
+                  {p.assigned_equity_trades?.map((t) => (
+                    <tr
+                      key={`${p.option_symbol}-assignment-${t.id}`}
+                      className="bg-amber-50 dark:bg-amber-900/10"
+                    >
+                      <td colSpan={8} className="px-3 py-1.5 text-xs text-stone-500">
+                        ↳{" "}
+                        {t.quantity} shares{" "}
+                        {t.side === "sell" ? "called away" : "put to you"}{" "}
+                        at {fmtUSD(t.avg_fill_price)} · {fmtDate(t.order_date)}
+                      </td>
+                    </tr>
+                  ))}
+                </React.Fragment>
               );
             })}
             {visible.length === 0 && (

@@ -103,5 +103,6 @@ export type OptionsPosition = {
   status: "open" | "closed" | "expired" | "assigned";
   open_date: string;
   close_date: string | null;
-  unrealized_pl?: number;   // (mark - entry) * qty * 100, sign-correct per long/short
+  unrealized_pl?: number;            // (mark - entry) * qty * 100, sign-correct per long/short
+  assigned_equity_trades?: EquityTrade[]; // heuristically matched equity trades from assignment
 };
