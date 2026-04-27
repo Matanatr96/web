@@ -154,6 +154,7 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
   if (!data.orders || data.orders === "null") return [];
 
   const raw = toArray(data.orders.order);
+  console.log("[fetchOrders] raw orders from Tradier:", JSON.stringify(raw, null, 2));
 
   return raw
     .filter((o) => o.class === "option" && o.status?.toLowerCase() === "filled")
