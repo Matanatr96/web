@@ -77,7 +77,7 @@ function toArray<T>(val: T | T[]): T[] {
 
 function inferStrategy(order: TradierOrder): OptionStrategy | null {
   const side = order.side.toLowerCase();
-  const optionType = order.option_type.toLowerCase();
+  const optionType = order.option_type?.toLowerCase() ?? "";
   if (side === "sell_to_open" || side === "buy_to_close") {
     if (optionType === "put")  return "cash_secured_put";
     if (optionType === "call") return "covered_call";
@@ -130,7 +130,7 @@ export async function fetchEquityOrders(sandbox = false): Promise<NormalizedEqui
   const raw = toArray(data.orders.order);
 
   return raw
-    .filter((o) => o.class === "equity" && o.status.toLowerCase() === "filled")
+    .filter((o) => o.class === "equity" && o.status?.toLowerCase() === "filled")
     .map((o): NormalizedEquityOrder => ({
       tradier_id:      o.id,
       source:          sandbox ? "sandbox" : "prod",
@@ -156,7 +156,7 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
   const raw = toArray(data.orders.order);
 
   return raw
-    .filter((o) => o.class === "option" && o.status.toLowerCase() === "filled")
+    .filter((o) => o.class === "option" && o.status?.toLowerCase() === "filled")
     .flatMap((o): NormalizedOrder[] => {
       const strategy = inferStrategy(o);
       if (!strategy) return [];
