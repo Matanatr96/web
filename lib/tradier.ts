@@ -75,9 +75,23 @@ function toArray<T>(val: T | T[]): T[] {
   return Array.isArray(val) ? val : [val];
 }
 
+// Parse OCC option symbol (e.g. "GOOG260522C00360000") into its components.
+// Exported for testing.
+// Sandbox omits option_type, strike, and expiration_date as separate fields.
+export function parseOptionSymbol(symbol: string): { option_type: string; strike: number; expiration_date: string } | null {
+  const match = symbol.match(/^.+?(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/);
+  if (!match) return null;
+  const [, yy, mm, dd, type, strikeStr] = match;
+  return {
+    option_type:     type === "C" ? "call" : "put",
+    strike:          parseInt(strikeStr, 10) / 1000,
+    expiration_date: `20${yy}-${mm}-${dd}`,
+  };
+}
+
 function inferStrategy(order: TradierOrder): OptionStrategy | null {
   const side = order.side.toLowerCase();
-  const optionType = order.option_type.toLowerCase();
+  const optionType = order.option_type?.toLowerCase() ?? "";
   if (side === "sell_to_open" || side === "buy_to_close") {
     if (optionType === "put")  return "cash_secured_put";
     if (optionType === "call") return "covered_call";
@@ -130,7 +144,7 @@ export async function fetchEquityOrders(sandbox = false): Promise<NormalizedEqui
   const raw = toArray(data.orders.order);
 
   return raw
-    .filter((o) => o.class === "equity" && o.status.toLowerCase() === "filled")
+    .filter((o) => o.class === "equity" && o.status?.toLowerCase() === "filled")
     .map((o): NormalizedEquityOrder => ({
       tradier_id:      o.id,
       source:          sandbox ? "sandbox" : "prod",
@@ -154,22 +168,37 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
   if (!data.orders || data.orders === "null") return [];
 
   const raw = toArray(data.orders.order);
+  console.log("[fetchOrders] raw orders from Tradier:", JSON.stringify(raw, null, 2));
 
   return raw
-    .filter((o) => o.class === "option" && o.status.toLowerCase() === "filled")
+    .filter((o) => o.class === "option" && o.status?.toLowerCase() === "filled")
     .flatMap((o): NormalizedOrder[] => {
-      const strategy = inferStrategy(o);
-      if (!strategy) return [];
+      // Sandbox omits option_type/strike/expiration_date — parse from option_symbol.
+      const parsed = parseOptionSymbol(o.option_symbol ?? "");
+      if (!parsed && !o.option_type) {
+        console.warn("[fetchOrders] could not parse option_symbol, dropping trade:", JSON.stringify(o));
+      }
+      const resolved = {
+        option_type:     o.option_type ?? parsed?.option_type,
+        strike:          o.strike      ?? parsed?.strike,
+        expiration_date: o.expiration_date ?? parsed?.expiration_date,
+      };
+      const orderWithResolved = { ...o, ...resolved };
+      const strategy = inferStrategy(orderWithResolved);
+      if (!strategy) {
+        console.warn("[fetchOrders] could not infer strategy, dropping trade:", JSON.stringify({ id: o.id, side: o.side, option_type: resolved.option_type, symbol: o.option_symbol }));
+        return [];
+      }
       return [{
         tradier_id:      o.id,
         source:          sandbox ? "sandbox" : "prod",
         underlying:      o.symbol.toUpperCase(),
         option_symbol:   o.option_symbol,
-        option_type:     o.option_type as OptionType,
+        option_type:     resolved.option_type as OptionType,
         strategy,
         side:            o.side as OptionSide,
-        strike:          o.strike,
-        expiration_date: o.expiration_date,
+        strike:          resolved.strike!,
+        expiration_date: resolved.expiration_date!,
         quantity:        o.exec_quantity || o.quantity,
         avg_fill_price:  o.avg_fill_price,
         status:          o.status,
