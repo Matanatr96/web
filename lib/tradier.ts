@@ -175,6 +175,9 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
     .flatMap((o): NormalizedOrder[] => {
       // Sandbox omits option_type/strike/expiration_date — parse from option_symbol.
       const parsed = parseOptionSymbol(o.option_symbol ?? "");
+      if (!parsed && !o.option_type) {
+        console.warn("[fetchOrders] could not parse option_symbol, dropping trade:", JSON.stringify(o));
+      }
       const resolved = {
         option_type:     o.option_type ?? parsed?.option_type,
         strike:          o.strike      ?? parsed?.strike,
@@ -182,7 +185,10 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
       };
       const orderWithResolved = { ...o, ...resolved };
       const strategy = inferStrategy(orderWithResolved);
-      if (!strategy) return [];
+      if (!strategy) {
+        console.warn("[fetchOrders] could not infer strategy, dropping trade:", JSON.stringify({ id: o.id, side: o.side, option_type: resolved.option_type, symbol: o.option_symbol }));
+        return [];
+      }
       return [{
         tradier_id:      o.id,
         source:          sandbox ? "sandbox" : "prod",
