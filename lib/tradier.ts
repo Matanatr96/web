@@ -76,8 +76,9 @@ function toArray<T>(val: T | T[]): T[] {
 }
 
 // Parse OCC option symbol (e.g. "GOOG260522C00360000") into its components.
+// Exported for testing.
 // Sandbox omits option_type, strike, and expiration_date as separate fields.
-function parseOptionSymbol(symbol: string): { option_type: string; strike: number; expiration_date: string } | null {
+export function parseOptionSymbol(symbol: string): { option_type: string; strike: number; expiration_date: string } | null {
   const match = symbol.match(/^.+?(\d{2})(\d{2})(\d{2})([CP])(\d{8})$/);
   if (!match) return null;
   const [, yy, mm, dd, type, strikeStr] = match;
