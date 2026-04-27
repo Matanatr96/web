@@ -18,7 +18,7 @@ export default async function OptionsPage({
   searchParams: Promise<{ source?: string }>;
 }) {
   const { source: sourceParam } = await searchParams;
-  const source: TradeSource = sourceParam === "sandbox" ? "sandbox" : "prod";
+  const source: TradeSource = sourceParam === "prod" ? "prod" : "sandbox";
 
   const db = getSupabase();
 
