@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import sharp from "sharp";
 import { isAdmin, logIn, logOut } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 import type { RestaurantInput } from "@/lib/types";
@@ -81,12 +82,15 @@ async function uploadPhotos(restaurantId: number, files: File[]): Promise<string
   const supabase = getServiceClient();
   const urls: string[] = [];
   for (const file of files) {
-    const ext = file.name.split(".").pop() ?? "jpg";
-    const path = `${restaurantId}/${crypto.randomUUID()}.${ext}`;
-    const buffer = Buffer.from(await file.arrayBuffer());
+    const raw = Buffer.from(await file.arrayBuffer());
+    const compressed = await sharp(raw)
+      .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer();
+    const path = `${restaurantId}/${crypto.randomUUID()}.webp`;
     const { error } = await supabase.storage
       .from("restaurant-photos")
-      .upload(path, buffer, { contentType: file.type, upsert: false });
+      .upload(path, compressed, { contentType: "image/webp", upsert: false });
     if (error) throw new Error(`Photo upload failed: ${error.message}`);
     const { data } = supabase.storage.from("restaurant-photos").getPublicUrl(path);
     urls.push(data.publicUrl);
