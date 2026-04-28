@@ -53,11 +53,20 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
     const set = new Set(allPoints.map((p) => p.city));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [allPoints]);
+  const cuisines = useMemo(() => {
+    const set = new Set(allPoints.map((p) => p.cuisine));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [allPoints]);
   const [cityFilter, setCityFilter] = useState<string>("");
-  const points = useMemo(
-    () => (cityFilter ? allPoints.filter((p) => p.city === cityFilter) : allPoints),
-    [allPoints, cityFilter],
-  );
+  const [cuisineFilter, setCuisineFilter] = useState<string>("");
+  const [minRating, setMinRating] = useState<string>("");
+  const points = useMemo(() => {
+    let filtered = allPoints;
+    if (cityFilter) filtered = filtered.filter((p) => p.city === cityFilter);
+    if (cuisineFilter) filtered = filtered.filter((p) => p.cuisine === cuisineFilter);
+    if (minRating) filtered = filtered.filter((p) => p.overall >= parseFloat(minRating));
+    return filtered;
+  }, [allPoints, cityFilter, cuisineFilter, minRating]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = points.find((p) => p.id === selectedId) ?? null;
 
@@ -75,27 +84,52 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
 
   return (
     <APIProvider apiKey={apiKey}>
-      <div className="mb-3 flex items-center gap-2 text-sm">
-        <label htmlFor="city-filter" className="text-stone-500">City:</label>
-        <select
-          id="city-filter"
-          value={cityFilter}
-          onChange={(e) => {
-            setCityFilter(e.target.value);
-            setSelectedId(null);
-          }}
-          className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-        >
-          <option value="">All cities ({allPoints.length})</option>
-          {cities.map((c) => (
-            <option key={c} value={c}>
-              {c} ({allPoints.filter((p) => p.city === c).length})
-            </option>
-          ))}
-        </select>
-        {cityFilter && points.length === 0 && (
-          <span className="text-stone-500">No pinned restaurants in {cityFilter}.</span>
-        )}
+      <div className="mb-3 flex flex-wrap items-center gap-3 text-sm">
+        <div className="flex items-center gap-2">
+          <label htmlFor="city-filter" className="text-stone-500">City:</label>
+          <select
+            id="city-filter"
+            value={cityFilter}
+            onChange={(e) => { setCityFilter(e.target.value); setSelectedId(null); }}
+            className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+          >
+            <option value="">All</option>
+            {cities.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="cuisine-filter" className="text-stone-500">Cuisine:</label>
+          <select
+            id="cuisine-filter"
+            value={cuisineFilter}
+            onChange={(e) => { setCuisineFilter(e.target.value); setSelectedId(null); }}
+            className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+          >
+            <option value="">All</option>
+            {cuisines.map((c) => (
+              <option key={c} value={c}>{c}</option>
+            ))}
+          </select>
+        </div>
+        <div className="flex items-center gap-2">
+          <label htmlFor="rating-filter" className="text-stone-500">Min rating:</label>
+          <select
+            id="rating-filter"
+            value={minRating}
+            onChange={(e) => { setMinRating(e.target.value); setSelectedId(null); }}
+            className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+          >
+            <option value="">Any</option>
+            {[5, 6, 7, 8, 9].map((n) => (
+              <option key={n} value={n}>{n}+</option>
+            ))}
+          </select>
+        </div>
+        <span className="text-stone-400">
+          {points.length} of {allPoints.length} shown
+        </span>
       </div>
       <div className="h-[70vh] w-full rounded-md overflow-hidden border border-stone-200 dark:border-stone-700">
         <Map
