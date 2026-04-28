@@ -41,7 +41,7 @@ async function assertAdmin() {
   }
 }
 
-function buildInput(fd: FormData): RestaurantInput {
+function buildInput(fd: FormData): Omit<RestaurantInput, "photos"> {
   const category = requiredStr(fd, "category");
   const food = num(fd, "food");
   const value = num(fd, "value");
@@ -73,7 +73,6 @@ function buildInput(fd: FormData): RestaurantInput {
     lat: num(fd, "lat"),
     lng: num(fd, "lng"),
     place_id: optionalStr(fd, "place_id"),
-    photos: null, // managed separately after upload
   };
 }
 
