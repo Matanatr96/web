@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { hasStonksAccess, isAdmin } from "@/lib/auth";
+import { isAdmin } from "@/lib/auth";
 import { Analytics } from "@vercel/analytics/next";
 import "./globals.css";
 
@@ -14,7 +14,7 @@ export default async function RootLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const [admin, stonks] = await Promise.all([isAdmin(), hasStonksAccess()]);
+  const admin = await isAdmin();
 
   return (
     <html lang="en">
@@ -31,14 +31,12 @@ export default async function RootLayout({
               >
                 Food
               </Link>
-              {stonks && (
-                <Link
-                  href="/stonks"
-                  className="hover:text-stone-900 dark:hover:text-stone-100 transition"
-                >
-                  Stonks
-                </Link>
-              )}
+              <Link
+                href="/stonks"
+                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
+              >
+                Stonks
+              </Link>
               {admin && (
                 <Link
                   href="/admin"
