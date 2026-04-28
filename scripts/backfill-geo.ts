@@ -103,7 +103,9 @@ async function main() {
       try {
         candidates = await textSearch(query);
       } catch (e) {
-        console.error(`  API error: ${(e as Error).message}`);
+        const err = e as Error & { cause?: unknown };
+        const cause = err.cause instanceof Error ? ` (${err.cause.message})` : err.cause ? ` (${String(err.cause)})` : "";
+        console.error(`  API error: ${err.message}${cause}`);
         const retry = (await rl.question("  Retry? [y/n]: ")).trim().toLowerCase();
         if (retry === "y" || retry === "") continue;
         skipped++;
