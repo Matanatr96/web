@@ -326,7 +326,7 @@ export async function getWheelOptions(
   quotes: Map<string, StockQuote>,
 ): Promise<Map<string, WheelOptions>> {
   if (tickers.length === 0) return new Map();
-
+  try {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
@@ -388,6 +388,10 @@ export async function getWheelOptions(
   }
 
   return result;
+  } catch (err) {
+    console.error("[getWheelOptions]", err);
+    return new Map();
+  }
 }
 
 export type LiveQuotes = {
