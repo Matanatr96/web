@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import Link from "next/link";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
@@ -37,6 +37,11 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
     lng: initial?.lng ?? null,
     placeId: initial?.place_id ?? "",
   });
+  const [existingPhotos, setExistingPhotos] = useState<string[]>(initial?.photos ?? []);
+  const [deletedPhotos, setDeletedPhotos] = useState<string[]>([]);
+  const [newFilePreviews, setNewFilePreviews] = useState<string[]>([]);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
   const [category, setCategory] = useState(initial?.category ?? "Food");
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
@@ -67,6 +72,21 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
       },
     []
   );
+
+  const handleFilesChange = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = Array.from(e.target.files ?? []);
+    setNewFilePreviews((prev) => {
+      prev.forEach(URL.revokeObjectURL);
+      return files.map((f) => URL.createObjectURL(f));
+    });
+  }, []);
+
+  useEffect(() => () => newFilePreviews.forEach(URL.revokeObjectURL), []);
+
+  const removeExistingPhoto = useCallback((url: string) => {
+    setExistingPhotos((prev) => prev.filter((u) => u !== url));
+    setDeletedPhotos((prev) => [...prev, url]);
+  }, []);
 
   const weights = RATING_WEIGHTS[category] ?? RATING_WEIGHTS.Food;
 
@@ -218,6 +238,57 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
           className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
         />
       </div>
+      {/* Photos */}
+      <div className="sm:col-span-2">
+        <label className="block text-sm font-medium mb-2">Photos</label>
+        {existingPhotos.length > 0 && (
+          <div className="flex flex-wrap gap-3 mb-3">
+            {existingPhotos.map((url) => (
+              <div key={url} className="relative group w-24 h-24">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt=""
+                  className="w-24 h-24 object-cover rounded-md border border-stone-200 dark:border-stone-700"
+                />
+                <button
+                  type="button"
+                  onClick={() => removeExistingPhoto(url)}
+                  className="absolute -top-1.5 -right-1.5 w-5 h-5 rounded-full bg-red-500 text-white text-xs flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity"
+                  aria-label="Remove photo"
+                >
+                  ×
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {newFilePreviews.length > 0 && (
+          <div className="flex flex-wrap gap-3 mb-3">
+            {newFilePreviews.map((url, i) => (
+              // eslint-disable-next-line @next/next/no-img-element
+              <img
+                key={i}
+                src={url}
+                alt=""
+                className="w-24 h-24 object-cover rounded-md border border-stone-300 dark:border-stone-700 opacity-70"
+              />
+            ))}
+          </div>
+        )}
+        <input
+          ref={fileInputRef}
+          type="file"
+          name="photos"
+          accept="image/*"
+          multiple
+          onChange={handleFilesChange}
+          className="block w-full text-sm text-stone-500 file:mr-3 file:py-1.5 file:px-3 file:rounded-md file:border-0 file:text-sm file:bg-stone-100 dark:file:bg-stone-800 file:text-stone-700 dark:file:text-stone-300 hover:file:bg-stone-200 dark:hover:file:bg-stone-700"
+        />
+        <input type="hidden" name="existing_photos" value={JSON.stringify(existingPhotos)} />
+        <input type="hidden" name="deleted_photos" value={JSON.stringify(deletedPhotos)} />
+      </div>
+
       <div className="sm:col-span-2 flex items-center gap-3 pt-2">
         <button
           type="submit"

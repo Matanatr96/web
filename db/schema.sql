@@ -28,6 +28,11 @@ alter table restaurants add column if not exists lat      double precision;
 alter table restaurants add column if not exists lng      double precision;
 alter table restaurants add column if not exists place_id text;
 
+-- Photos: array of public Supabase Storage URLs.
+-- Before using photo uploads, create a public Storage bucket named "restaurant-photos"
+-- in the Supabase dashboard (Storage → New bucket → name: restaurant-photos, public: true).
+alter table restaurants add column if not exists photos text[];
+
 create index if not exists restaurants_city_idx     on restaurants (city);
 create index if not exists restaurants_cuisine_idx  on restaurants (cuisine);
 create index if not exists restaurants_category_idx on restaurants (category);

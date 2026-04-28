@@ -2,6 +2,7 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
+import sharp from "sharp";
 import { isAdmin, logIn, logOut } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 import type { RestaurantInput } from "@/lib/types";
@@ -72,7 +73,41 @@ function buildInput(fd: FormData): RestaurantInput {
     lat: num(fd, "lat"),
     lng: num(fd, "lng"),
     place_id: optionalStr(fd, "place_id"),
+    photos: null, // managed separately after upload
   };
+}
+
+async function uploadPhotos(restaurantId: number, files: File[]): Promise<string[]> {
+  if (files.length === 0) return [];
+  const supabase = getServiceClient();
+  const urls: string[] = [];
+  for (const file of files) {
+    const raw = Buffer.from(await file.arrayBuffer());
+    const compressed = await sharp(raw)
+      .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
+      .webp({ quality: 82 })
+      .toBuffer();
+    const path = `${restaurantId}/${crypto.randomUUID()}.webp`;
+    const { error } = await supabase.storage
+      .from("restaurant-photos")
+      .upload(path, compressed, { contentType: "image/webp", upsert: false });
+    if (error) throw new Error(`Photo upload failed: ${error.message}`);
+    const { data } = supabase.storage.from("restaurant-photos").getPublicUrl(path);
+    urls.push(data.publicUrl);
+  }
+  return urls;
+}
+
+async function deletePhotosFromStorage(urls: string[]): Promise<void> {
+  if (urls.length === 0) return;
+  const supabase = getServiceClient();
+  const marker = "/restaurant-photos/";
+  const paths = urls
+    .map((url) => { const idx = url.indexOf(marker); return idx >= 0 ? url.slice(idx + marker.length) : null; })
+    .filter((p): p is string => p !== null);
+  if (paths.length === 0) return;
+  const { error } = await supabase.storage.from("restaurant-photos").remove(paths);
+  if (error) throw new Error(`Photo delete failed: ${error.message}`);
 }
 
 export async function loginAction(_state: unknown, fd: FormData) {
@@ -93,8 +128,15 @@ export async function createRestaurant(fd: FormData) {
   await assertAdmin();
   const input = buildInput(fd);
   const supabase = getServiceClient();
-  const { error } = await supabase.from("restaurants").insert(input);
+  const { data, error } = await supabase.from("restaurants").insert(input).select("id").single();
   if (error) throw new Error(`Insert failed: ${error.message}`);
+
+  const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  if (files.length > 0) {
+    const photos = await uploadPhotos(data.id, files);
+    await supabase.from("restaurants").update({ photos }).eq("id", data.id);
+  }
+
   revalidatePath("/");
   revalidatePath("/restaurants");
   revalidatePath("/map");
@@ -106,7 +148,17 @@ export async function updateRestaurant(id: number, fd: FormData) {
   await assertAdmin();
   const input = buildInput(fd);
   const supabase = getServiceClient();
-  const { error } = await supabase.from("restaurants").update(input).eq("id", id);
+
+  const deletedPhotos: string[] = JSON.parse(optionalStr(fd, "deleted_photos") ?? "[]");
+  await deletePhotosFromStorage(deletedPhotos);
+
+  const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
+  const newUrls = await uploadPhotos(id, files);
+
+  const existingPhotos: string[] = JSON.parse(optionalStr(fd, "existing_photos") ?? "[]");
+  const photos = [...existingPhotos, ...newUrls];
+
+  const { error } = await supabase.from("restaurants").update({ ...input, photos: photos.length ? photos : null }).eq("id", id);
   if (error) throw new Error(`Update failed: ${error.message}`);
   revalidatePath("/");
   revalidatePath("/restaurants");
@@ -121,6 +173,10 @@ export async function updateRestaurant(id: number, fd: FormData) {
 export async function deleteRestaurant(id: number, _fd?: FormData) {
   await assertAdmin();
   const supabase = getServiceClient();
+
+  const { data } = await supabase.from("restaurants").select("photos").eq("id", id).single();
+  if (data?.photos?.length) await deletePhotosFromStorage(data.photos);
+
   const { error } = await supabase.from("restaurants").delete().eq("id", id);
   if (error) throw new Error(`Delete failed: ${error.message}`);
   revalidatePath("/");

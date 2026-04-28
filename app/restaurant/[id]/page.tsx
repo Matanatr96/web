@@ -80,6 +80,23 @@ export default async function RestaurantDetail({ params }: Props) {
         </dl>
       </div>
 
+      {r.photos && r.photos.length > 0 && (
+        <div className="mb-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            {r.photos.map((url) => (
+              <a key={url} href={url} target="_blank" rel="noopener noreferrer">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                <img
+                  src={url}
+                  alt={r.name}
+                  className="w-full aspect-square object-cover rounded-md border border-stone-200 dark:border-stone-800 hover:opacity-90 transition-opacity"
+                />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
       {r.note ? (
         <div className="rounded-md border border-stone-200 dark:border-stone-800 p-6 bg-white dark:bg-stone-900">
           <h2 className="text-sm uppercase tracking-wide text-stone-500 mb-2">
