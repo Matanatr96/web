@@ -4,6 +4,7 @@ import { useState, useCallback } from "react";
 import Link from "next/link";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
+import PlaceAutocomplete, { type PlacePick } from "@/components/place-autocomplete";
 
 type Props = {
   initial?: Partial<Restaurant>;
@@ -13,21 +14,46 @@ type Props = {
   existingNames?: string[];
   /** Cuisine options fetched from the DB; falls back to hardcoded CUISINES. */
   cuisines?: string[];
+  /** When set, "Place" becomes a Google Places Autocomplete that auto-fills city/coords. */
+  googleMapsApiKey?: string;
 };
 
 /**
  * Shared form used by "new" and "edit" pages. The parent passes a bound
  * server action so we don't need to care whether this is a create or update.
  */
-export default function RestaurantForm({ initial, action, submitLabel, existingNames, cuisines: cuisinesProp }: Props) {
+export default function RestaurantForm({ initial, action, submitLabel, existingNames, cuisines: cuisinesProp, googleMapsApiKey }: Props) {
   const cuisineList = cuisinesProp ?? CUISINES;
   const [placeName, setPlaceName] = useState(initial?.name ?? "");
+  const [city, setCity] = useState(initial?.city ?? "");
+  const [geo, setGeo] = useState<{
+    address: string;
+    lat: number | null;
+    lng: number | null;
+    placeId: string;
+  }>({
+    address: initial?.address ?? "",
+    lat: initial?.lat ?? null,
+    lng: initial?.lng ?? null,
+    placeId: initial?.place_id ?? "",
+  });
   const [category, setCategory] = useState(initial?.category ?? "Food");
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
   const [service, setService] = useState<number | null>(initial?.service ?? null);
   const [ambiance, setAmbiance] = useState<number | null>(initial?.ambiance ?? null);
   const [veganOptions, setVeganOptions] = useState<number | null>(initial?.vegan_options ?? null);
+
+  const handlePick = useCallback((pick: PlacePick) => {
+    setPlaceName(pick.name);
+    if (pick.city) setCity(pick.city);
+    setGeo({
+      address: pick.address,
+      lat: pick.lat,
+      lng: pick.lng,
+      placeId: pick.placeId,
+    });
+  }, []);
 
   const computed = computeOverall(category, {
     food, value, service, ambiance, vegan_options: veganOptions,
@@ -56,8 +82,55 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
           A restaurant named <strong>{duplicateMatch}</strong> already exists. Are you sure you want to create another?
         </div>
       )}
-      <Field label="Place" name="name" required defaultValue={initial?.name} onChange={(e) => setPlaceName(e.target.value)} />
-      <Field label="City" name="city" required defaultValue={initial?.city} />
+      <div>
+        <label className="block text-sm font-medium mb-1">
+          Place<span className="text-red-500"> *</span>
+          {googleMapsApiKey && (
+            <span className="text-xs text-stone-400 ml-1.5">Google Places</span>
+          )}
+        </label>
+        {googleMapsApiKey ? (
+          <PlaceAutocomplete
+            apiKey={googleMapsApiKey}
+            initialName={initial?.name}
+            inputName="name"
+            required
+            onPick={handlePick}
+            onTextChange={setPlaceName}
+          />
+        ) : (
+          <input
+            type="text"
+            name="name"
+            required
+            defaultValue={initial?.name ?? ""}
+            onChange={(e) => setPlaceName(e.target.value)}
+            className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+          />
+        )}
+        {geo.address && (
+          <p className="text-xs text-stone-500 mt-1 truncate" title={geo.address}>
+            📍 {geo.address}
+          </p>
+        )}
+      </div>
+      <div>
+        <label className="block text-sm font-medium mb-1">
+          City<span className="text-red-500"> *</span>
+        </label>
+        <input
+          type="text"
+          name="city"
+          required
+          value={city}
+          onChange={(e) => setCity(e.target.value)}
+          className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+        />
+      </div>
+      <input type="hidden" name="address" value={geo.address} />
+      <input type="hidden" name="lat" value={geo.lat ?? ""} />
+      <input type="hidden" name="lng" value={geo.lng ?? ""} />
+      <input type="hidden" name="place_id" value={geo.placeId} />
       <SelectField
         label="Category"
         name="category"

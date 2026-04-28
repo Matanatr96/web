@@ -9,11 +9,13 @@
     "test": "vitest run",
     "lint": "next lint",
     "db:import": "tsx scripts/import.ts",
+    "db:backfill-geo": "tsx scripts/backfill-geo.ts",
     "test:pnl": "tsx scripts/pnl-test.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.47.10",
     "@vercel/analytics": "^2.0.1",
+    "@vis.gl/react-google-maps": "^1.8.3",
     "next": "15.1.11",
     "react": "19.0.0",
     "react-dom": "19.0.0"

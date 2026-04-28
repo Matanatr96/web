@@ -68,6 +68,10 @@ function buildInput(fd: FormData): RestaurantInput {
     vegan_options,
     note: optionalStr(fd, "note"),
     last_visited: optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10),
+    address: optionalStr(fd, "address"),
+    lat: num(fd, "lat"),
+    lng: num(fd, "lng"),
+    place_id: optionalStr(fd, "place_id"),
   };
 }
 
@@ -93,6 +97,7 @@ export async function createRestaurant(fd: FormData) {
   if (error) throw new Error(`Insert failed: ${error.message}`);
   revalidatePath("/");
   revalidatePath("/restaurants");
+  revalidatePath("/map");
   revalidatePath("/admin");
   redirect("/admin");
 }
@@ -105,6 +110,7 @@ export async function updateRestaurant(id: number, fd: FormData) {
   if (error) throw new Error(`Update failed: ${error.message}`);
   revalidatePath("/");
   revalidatePath("/restaurants");
+  revalidatePath("/map");
   revalidatePath("/admin");
   revalidatePath(`/restaurant/${id}`);
   redirect("/admin");
@@ -119,6 +125,7 @@ export async function deleteRestaurant(id: number, _fd?: FormData) {
   if (error) throw new Error(`Delete failed: ${error.message}`);
   revalidatePath("/");
   revalidatePath("/restaurants");
+  revalidatePath("/map");
   revalidatePath("/admin");
 }
 
