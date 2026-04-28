@@ -213,24 +213,39 @@ function pickExpiration(dates: string[], targetDte = 35): string | null {
   return pool[0].date;
 }
 
-// Find the option (put or call) closest to a given OTM% target with a non-zero bid.
+// Find the option closest to a target delta (absolute value, e.g. 0.25).
+// Falls back to OTM% selection if greeks are unavailable.
 function pickClosest(
   options: TradierOption[],
   type: "put" | "call",
   currentPrice: number,
-  otmPct: number,
+  deltaTarget: number,
 ): TradierOption | null {
+  const filtered = options.filter((o) => o.option_type === type && (o.bid ?? 0) > 0);
+  if (filtered.length === 0) return null;
+
+  const withGreeks = filtered.filter((o) => o.greeks?.delta != null);
+  if (withGreeks.length > 0) {
+    const target = type === "put" ? -deltaTarget : deltaTarget;
+    withGreeks.sort(
+      (a, b) =>
+        Math.abs((a.greeks!.delta ?? 0) - target) -
+        Math.abs((b.greeks!.delta ?? 0) - target),
+    );
+    return withGreeks[0];
+  }
+
+  // Fallback: rough OTM% approximation when greeks aren't available.
+  const otmPct = deltaTarget * 40; // ~0.25 delta ≈ 10% OTM
   const targetStrike =
     type === "put"
       ? currentPrice * (1 - otmPct / 100)
       : currentPrice * (1 + otmPct / 100);
-  const filtered = options.filter((o) => o.option_type === type && (o.bid ?? 0) > 0);
-  if (filtered.length === 0) return null;
   filtered.sort((a, b) => Math.abs(a.strike - targetStrike) - Math.abs(b.strike - targetStrike));
   return filtered[0];
 }
 
-// Pick up to 2 options at the given OTM targets, deduplicated by strike.
+// Pick up to 2 options at the given delta targets, deduplicated by strike.
 function pickTwo(
   options: TradierOption[],
   type: "put" | "call",
@@ -298,8 +313,8 @@ export async function getWheelOptions(
     );
 
     result.set(ticker, {
-      puts: pickTwo(chain, "put", last, [5, 10]).map((o) => toCandidate(o, expiration, dte, last, "put")),
-      calls: pickTwo(chain, "call", last, [2, 5]).map((o) => toCandidate(o, expiration, dte, last, "call")),
+      puts: pickTwo(chain, "put", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "put")),
+      calls: pickTwo(chain, "call", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "call")),
     });
   }
 
