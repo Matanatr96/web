@@ -133,26 +133,39 @@ type TradierOption = {
   bid: number | null;
   ask: number | null;
   expiration_date: string;
-  greeks?: { delta: number | null } | null;
+  greeks?: { delta: number | null; mid_iv: number | null } | null;
 };
 
 type TradierChainResponse = {
   options: { option: TradierOption | TradierOption[] } | null;
 };
 
+type TradierHistoryDay = { date: string; close: number };
+type TradierHistoryResponse = {
+  history: { day: TradierHistoryDay | TradierHistoryDay[] } | null;
+};
+
 export type OptionCandidate = {
-  expiration: string;   // ISO date of chosen expiration
-  dte: number;          // days to expiration
+  expiration: string;
+  dte: number;
   strike: number;
-  bid: number;          // premium per share (bid)
-  mid: number;          // premium per share (mid)
+  bid: number;
+  mid: number;
   delta: number | null;
-  otm_pct: number;      // % from current price (positive = OTM)
+  otm_pct: number;
+  monthly_return_pct: number; // (bid / capital) * (30 / dte) * 100
+};
+
+export type IvData = {
+  current: number;  // IV of selected option as % (e.g. 65)
+  hv30: number;     // 30-day historical volatility as % (e.g. 42)
+  ratio: number;    // current / hv30 — >1 means options are "expensive"
 };
 
 export type WheelOptions = {
-  puts: OptionCandidate[];   // up to 2, ~5% and ~10% OTM
-  calls: OptionCandidate[];  // up to 2, ~2% and ~5% OTM
+  puts: OptionCandidate[];
+  calls: OptionCandidate[];
+  iv: IvData | null;
 };
 
 async function fetchExpirationsRaw(symbol: string): Promise<string[]> {
@@ -192,6 +205,34 @@ const fetchOptionChainCached = unstable_cache(
   ["tradier-option-chain"],
   { revalidate: 300, tags: ["watchlist-data"] },
 );
+
+async function fetchPriceHistoryRaw(symbol: string, start: string, end: string): Promise<number[]> {
+  const key = process.env.TRADIER_API_KEY;
+  if (!key) return [];
+  const res = await fetch(
+    `${PROD_BASE}/markets/history?symbol=${encodeURIComponent(symbol)}&interval=daily&start=${start}&end=${end}`,
+    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as TradierHistoryResponse;
+  return toArray(data.history?.day).map((d) => d.close);
+}
+
+const fetchPriceHistoryCached = unstable_cache(
+  fetchPriceHistoryRaw,
+  ["tradier-price-history"],
+  { revalidate: 14400, tags: ["watchlist-data"] }, // 4h — daily prices update EOD
+);
+
+// Annualized 30-day historical volatility from a series of closing prices.
+function calcHv30(closes: number[]): number {
+  if (closes.length < 31) return 0;
+  const recent = closes.slice(-31);
+  const logReturns = recent.slice(1).map((p, i) => Math.log(p / recent[i]));
+  const mean = logReturns.reduce((s, r) => s + r, 0) / logReturns.length;
+  const variance = logReturns.reduce((s, r) => s + (r - mean) ** 2, 0) / (logReturns.length - 1);
+  return Math.sqrt(variance * 252) * 100;
+}
 
 // Pick the expiration closest to targetDte (default 35) within the 21–60 DTE window.
 function pickExpiration(dates: string[], targetDte = 35): string | null {
@@ -274,7 +315,10 @@ function toCandidate(
     type === "put"
       ? ((currentPrice - opt.strike) / currentPrice) * 100
       : ((opt.strike - currentPrice) / currentPrice) * 100;
-  return { expiration, dte, strike: opt.strike, bid, mid: (bid + ask) / 2, delta: opt.greeks?.delta ?? null, otm_pct };
+  // Capital at risk per share: strike for CSPs, current price for CCs.
+  const capital = type === "put" ? opt.strike : currentPrice;
+  const monthly_return_pct = dte > 0 ? (bid / capital) * (30 / dte) * 100 : 0;
+  return { expiration, dte, strike: opt.strike, bid, mid: (bid + ask) / 2, delta: opt.greeks?.delta ?? null, otm_pct, monthly_return_pct };
 }
 
 export async function getWheelOptions(
@@ -293,15 +337,30 @@ export async function getWheelOptions(
     })),
   );
 
-  const chains = await Promise.all(
-    expirations
-      .filter((r) => r.expiration !== null)
-      .map(async ({ ticker, expiration }) => ({
+  const startDate = new Date(today);
+  startDate.setFullYear(startDate.getFullYear() - 1);
+  const startStr = startDate.toISOString().slice(0, 10);
+  const endStr = today.toISOString().slice(0, 10);
+
+  const valid = expirations.filter((r) => r.expiration !== null);
+
+  const [chains, histories] = await Promise.all([
+    Promise.all(
+      valid.map(async ({ ticker, expiration }) => ({
         ticker,
         expiration: expiration!,
         chain: await fetchOptionChainCached(ticker, expiration!),
       })),
-  );
+    ),
+    Promise.all(
+      valid.map(async ({ ticker }) => ({
+        ticker,
+        closes: await fetchPriceHistoryCached(ticker, startStr, endStr),
+      })),
+    ),
+  ]);
+
+  const historyMap = new Map(histories.map(({ ticker, closes }) => [ticker, closes]));
 
   const result = new Map<string, WheelOptions>();
   for (const { ticker, expiration, chain } of chains) {
@@ -312,10 +371,20 @@ export async function getWheelOptions(
       (new Date(expiration + "T00:00:00").getTime() - today.getTime()) / 86_400_000,
     );
 
-    result.set(ticker, {
-      puts: pickTwo(chain, "put", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "put")),
-      calls: pickTwo(chain, "call", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "call")),
-    });
+    const puts = pickTwo(chain, "put", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "put"));
+    const calls = pickTwo(chain, "call", last, [0.25, 0.20]).map((o) => toCandidate(o, expiration, dte, last, "call"));
+
+    // IV from the 0.25-delta put (first put); HV from price history.
+    const ivSource = puts[0];
+    const rawIv = ivSource ? (chain.find((o) => o.option_type === "put" && o.strike === ivSource.strike)?.greeks?.mid_iv ?? null) : null;
+    const hv30 = calcHv30(historyMap.get(ticker) ?? []);
+    const currentIv = rawIv != null ? rawIv * 100 : null;
+    const iv: IvData | null =
+      currentIv != null && hv30 > 0
+        ? { current: currentIv, hv30, ratio: currentIv / hv30 }
+        : null;
+
+    result.set(ticker, { puts, calls, iv });
   }
 
   return result;
