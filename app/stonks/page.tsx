@@ -1,3 +1,5 @@
+import { redirect } from "next/navigation";
+import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
 import type { OptionsTrade, EquityTrade, TradeSource } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
@@ -18,6 +20,10 @@ export default async function OptionsPage({
 }: {
   searchParams: Promise<{ source?: string }>;
 }) {
+  if (!(await hasStonksAccess())) {
+    redirect("/stonks/login");
+  }
+
   const { source: sourceParam } = await searchParams;
   const source: TradeSource = sourceParam === "prod" ? "prod" : "sandbox";
 

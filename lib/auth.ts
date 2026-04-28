@@ -1,26 +1,19 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import { cookies } from "next/headers";
 
-const COOKIE_NAME = "admin_session";
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
-/**
- * Hash the admin password into the value we store in the cookie.
- * Keeps the literal password out of the cookie jar + any access logs.
- */
+type Scope = "admin" | "stonks";
+
+const SCOPES: Record<Scope, { cookie: string; envVar: string }> = {
+  admin:  { cookie: "admin_session",  envVar: "ADMIN_PASSWORD" },
+  stonks: { cookie: "stonks_session", envVar: "STONKS_PASSWORD" },
+};
+
 function tokenFor(password: string): string {
   return createHash("sha256").update(password).digest("hex");
 }
 
-function expected(): string {
-  const pw = process.env.ADMIN_PASSWORD;
-  if (!pw) throw new Error("Missing ADMIN_PASSWORD env var.");
-  return tokenFor(pw);
-}
-
-/**
- * Constant-time string compare to avoid timing attacks on the cookie check.
- */
 function safeEqual(a: string, b: string): boolean {
   const ab = Buffer.from(a);
   const bb = Buffer.from(b);
@@ -28,31 +21,37 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
-/**
- * Check the request's admin cookie against the expected token.
- * Must be called from a Server Component, route handler, or server action.
- */
-export async function isAdmin(): Promise<boolean> {
+async function hasScope(scope: Scope): Promise<boolean> {
+  const { cookie, envVar } = SCOPES[scope];
+  const pw = process.env[envVar];
+  if (!pw) return false;
   const jar = await cookies();
-  const val = jar.get(COOKIE_NAME)?.value;
+  const val = jar.get(cookie)?.value;
   if (!val) return false;
   try {
-    return safeEqual(val, expected());
+    return safeEqual(val, tokenFor(pw));
   } catch {
     return false;
   }
 }
 
-/**
- * Validate a password submission and, if correct, set the session cookie.
- * Returns true on success.
- */
-export async function logIn(password: string): Promise<boolean> {
-  const pw = process.env.ADMIN_PASSWORD;
+export async function isAdmin(): Promise<boolean> {
+  return hasScope("admin");
+}
+
+/** Admin always implies stonks access. */
+export async function hasStonksAccess(): Promise<boolean> {
+  if (await hasScope("admin")) return true;
+  return hasScope("stonks");
+}
+
+async function logInScope(scope: Scope, password: string): Promise<boolean> {
+  const { cookie, envVar } = SCOPES[scope];
+  const pw = process.env[envVar];
   if (!pw) return false;
   if (!safeEqual(password, pw)) return false;
   const jar = await cookies();
-  jar.set(COOKIE_NAME, tokenFor(pw), {
+  jar.set(cookie, tokenFor(pw), {
     httpOnly: true,
     sameSite: "lax",
     secure: process.env.NODE_ENV === "production",
@@ -62,7 +61,23 @@ export async function logIn(password: string): Promise<boolean> {
   return true;
 }
 
-export async function logOut(): Promise<void> {
+async function logOutScope(scope: Scope): Promise<void> {
   const jar = await cookies();
-  jar.delete(COOKIE_NAME);
+  jar.delete(SCOPES[scope].cookie);
+}
+
+export async function logIn(password: string): Promise<boolean> {
+  return logInScope("admin", password);
+}
+
+export async function logOut(): Promise<void> {
+  return logOutScope("admin");
+}
+
+export async function logInStonks(password: string): Promise<boolean> {
+  return logInScope("stonks", password);
+}
+
+export async function logOutStonks(): Promise<void> {
+  return logOutScope("stonks");
 }
