@@ -38,6 +38,9 @@ create index if not exists restaurants_cuisine_idx  on restaurants (cuisine);
 create index if not exists restaurants_category_idx on restaurants (category);
 create index if not exists restaurants_overall_idx  on restaurants (overall desc);
 
+-- Prevent duplicate Google Places entries; nulls are excluded so un-geocoded rows are unaffected.
+create unique index if not exists restaurants_place_id_unique on restaurants (place_id) where place_id is not null;
+
 -- Auto-update updated_at on row changes.
 create or replace function set_updated_at()
 returns trigger as $$

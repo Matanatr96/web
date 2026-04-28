@@ -1,13 +1,13 @@
 /**
- * Interactive backfill: geocode existing restaurants via Google Places Text Search.
+ * Backfill place_id for restaurants that already have lat/lng but no place_id.
  *
  * Usage:
- *   1. Ensure .env.local has NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SECRET_KEY, GOOGLE_MAPS_SERVER_KEY
- *   2. Run: npx tsx scripts/backfill-geo.ts
+ *   npx tsx scripts/backfill-place-id.ts
  *
- * For each restaurant where lat is null, fetches up to 5 candidate places from
- * Google and prompts you to pick one (Enter = top match). Resumable: ctrl-c
- * any time and re-run; finished rows are skipped on the next pass.
+ * For each qualifying row it runs a Google Places Text Search, ranks candidates
+ * by distance from the existing coordinates, and auto-selects if the closest
+ * match is within AUTO_PICK_METERS. Otherwise it prompts you to pick manually.
+ * Resumable: rows that already have a place_id are skipped.
  */
 
 import { resolve } from "node:path";
@@ -34,12 +34,29 @@ const supabase = createClient(SUPABASE_URL, SECRET_KEY, {
   auth: { persistSession: false },
 });
 
+const AUTO_PICK_METERS = 50;
+
 type Candidate = {
   id: string;
   displayName: string;
   formattedAddress: string;
   location: { latitude: number; longitude: number };
+  distanceMeters?: number;
 };
+
+function haversineMeters(
+  lat1: number, lng1: number,
+  lat2: number, lng2: number,
+): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
 
 async function textSearch(query: string): Promise<Candidate[]> {
   const res = await fetch("https://places.googleapis.com/v1/places:searchText", {
@@ -77,28 +94,36 @@ async function textSearch(query: string): Promise<Candidate[]> {
 async function main() {
   const { data, error } = await supabase
     .from("restaurants")
-    .select("id, name, city")
-    .is("lat", null)
+    .select("id, name, city, lat, lng")
+    .is("place_id", null)
+    .not("lat", "is", null)
     .order("id");
   if (error) throw error;
 
   const rows = data ?? [];
   if (rows.length === 0) {
-    console.log("All restaurants already have coordinates. Nothing to do.");
+    console.log("All geocoded restaurants already have a place_id. Nothing to do.");
     return;
   }
 
-  console.log(`Found ${rows.length} restaurant(s) to geocode.\n`);
+  console.log(`Found ${rows.length} restaurant(s) missing a place_id.\n`);
   const rl = createInterface({ input, output });
   let saved = 0;
   let skipped = 0;
 
   for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+    const row = rows[i] as {
+      id: number;
+      name: string;
+      city: string;
+      lat: number;
+      lng: number;
+    };
     let query = `${row.name} ${row.city}`;
 
     while (true) {
-      console.log(`\n[${i + 1}/${rows.length}] "${row.name}" in ${row.city}`);
+      console.log(`\n[${i + 1}/${rows.length}] "${row.name}" in ${row.city} (lat=${row.lat.toFixed(5)}, lng=${row.lng.toFixed(5)})`);
+
       let candidates: Candidate[];
       try {
         candidates = await textSearch(query);
@@ -112,12 +137,44 @@ async function main() {
         break;
       }
 
+      // Annotate candidates with distance from existing coordinates.
+      candidates = candidates.map((c) => ({
+        ...c,
+        distanceMeters: haversineMeters(
+          row.lat, row.lng,
+          c.location.latitude, c.location.longitude,
+        ),
+      }));
+      candidates.sort((a, b) => (a.distanceMeters ?? 0) - (b.distanceMeters ?? 0));
+
+      const closest = candidates[0];
+
+      // Auto-pick if the nearest result is clearly right.
+      if (closest && (closest.distanceMeters ?? Infinity) <= AUTO_PICK_METERS) {
+        console.log(`  Auto-picking closest match (${Math.round(closest.distanceMeters!)}m away):`);
+        console.log(`    ${closest.displayName} — ${closest.formattedAddress}`);
+        const { error: upErr } = await supabase
+          .from("restaurants")
+          .update({ place_id: closest.id })
+          .eq("id", row.id);
+        if (upErr) {
+          console.error(`  Update failed: ${upErr.message}`);
+          skipped++;
+        } else {
+          console.log("  ✓ Saved.");
+          saved++;
+        }
+        break;
+      }
+
+      // Otherwise prompt.
       if (candidates.length === 0) {
         console.log("  No matches.");
       } else {
         candidates.forEach((c, idx) => {
+          const dist = c.distanceMeters !== undefined ? ` ~${Math.round(c.distanceMeters)}m` : "";
           const marker = idx === 0 ? " ←" : "";
-          console.log(`  ${idx + 1}. ${c.displayName} — ${c.formattedAddress}${marker}`);
+          console.log(`  ${idx + 1}. ${c.displayName} — ${c.formattedAddress}${dist}${marker}`);
         });
       }
       const skipNum = candidates.length + 1;
@@ -125,7 +182,7 @@ async function main() {
       console.log(`  ${skipNum}. Skip`);
       console.log(`  ${customNum}. Type custom search query`);
 
-      const answer = (await rl.question(`  Pick [1]: `)).trim();
+      const answer = (await rl.question("  Pick [1]: ")).trim();
       const choice = answer === "" ? 1 : Number(answer);
 
       if (!Number.isFinite(choice) || choice < 1 || choice > customNum) {
@@ -147,18 +204,13 @@ async function main() {
       const picked = candidates[choice - 1];
       const { error: upErr } = await supabase
         .from("restaurants")
-        .update({
-          place_id: picked.id,
-          address: picked.formattedAddress,
-          lat: picked.location.latitude,
-          lng: picked.location.longitude,
-        })
+        .update({ place_id: picked.id })
         .eq("id", row.id);
       if (upErr) {
         console.error(`  Update failed: ${upErr.message}`);
         skipped++;
       } else {
-        console.log(`  ✓ Saved.`);
+        console.log("  ✓ Saved.");
         saved++;
       }
       break;

@@ -19,3 +19,27 @@ body {
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     "Helvetica Neue", Arial, sans-serif;
 }
+
+/* Match the gmp-place-autocomplete web component to the site's input style */
+gmp-place-autocomplete {
+  width: 100%;
+  --gmpx-color-surface: #ffffff;
+  --gmpx-color-on-surface: #1c1917;
+  --gmpx-color-on-surface-variant: #78716c;
+  --gmpx-color-outline: #d6d3d1; /* stone-300 */
+  --gmpx-color-primary: #1c1917;
+  --gmpx-font-family-base: ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --gmpx-font-size-base: 0.875rem;
+  --gmpx-border-radius-control: 0.375rem; /* rounded-md */
+}
+
+@media (prefers-color-scheme: dark) {
+  gmp-place-autocomplete {
+    --gmpx-color-surface: #0c0a09; /* stone-950 */
+    --gmpx-color-on-surface: #f5f5f4;
+    --gmpx-color-on-surface-variant: #a8a29e;
+    --gmpx-color-outline: #44403c; /* stone-700 */
+    --gmpx-color-primary: #f5f5f4;
+  }
+}

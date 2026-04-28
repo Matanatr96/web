@@ -117,7 +117,7 @@ function AutocompleteInner({
 
   return (
     <div>
-      <div ref={containerRef} className="gmp-place-autocomplete-wrapper" />
+      <div ref={containerRef} className="w-full" />
       <input type="hidden" name={inputName} value={name} required={required} />
       {initialName && name === initialName && (
         <p className="text-xs text-stone-500 mt-1">
