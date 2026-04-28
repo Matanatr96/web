@@ -16,6 +16,7 @@ export type Restaurant = {
   lat: number | null;
   lng: number | null;
   place_id: string | null;
+  photos: string[] | null;
   created_at: string;
   updated_at: string;
 };
