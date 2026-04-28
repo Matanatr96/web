@@ -89,6 +89,12 @@ export type TickerPnL = {
   total_pl?: number;               // total_realized_pl + unrealized_equity_pl + unrealized_options_pl
 };
 
+export type WatchlistItem = {
+  id: number;
+  ticker: string;
+  created_at: string;
+};
+
 // A position groups all open/close trades for one option contract cycle.
 export type OptionsPosition = {
   underlying: string;

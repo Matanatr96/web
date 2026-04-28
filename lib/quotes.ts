@@ -57,6 +57,67 @@ const fetchQuotesCached = unstable_cache(
   { revalidate: 60 },
 );
 
+export type StockQuote = {
+  symbol: string;
+  last: number | null;
+  change: number | null;
+  change_percentage: number | null;
+};
+
+type TradierFullQuote = {
+  symbol: string;
+  last: number | null;
+  change: number | null;
+  change_percentage: number | null;
+  bid: number;
+  ask: number;
+};
+
+type TradierFullQuotesResponse = {
+  quotes: { quote: TradierFullQuote | TradierFullQuote[] } | null;
+};
+
+async function fetchStockQuotesRaw(symbols: string[]): Promise<StockQuote[]> {
+  const key = process.env.TRADIER_API_KEY;
+  if (!key || symbols.length === 0) return [];
+
+  const joined = symbols.join(",");
+  const res = await fetch(
+    `${PROD_BASE}/markets/quotes?symbols=${encodeURIComponent(joined)}&greeks=false`,
+    {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      cache: "no-store",
+    },
+  );
+  if (!res.ok) return [];
+
+  const data = (await res.json()) as TradierFullQuotesResponse;
+  const quotes = toArray(data.quotes?.quote);
+  return quotes.map((q) => ({
+    symbol: q.symbol,
+    last: q.last ?? null,
+    change: q.change ?? null,
+    change_percentage: q.change_percentage ?? null,
+  }));
+}
+
+const fetchStockQuotesCached = unstable_cache(
+  fetchStockQuotesRaw,
+  ["tradier-stock-quotes"],
+  { revalidate: 60 },
+);
+
+// Always fetches regardless of market hours so the last known price is visible.
+export async function getWatchlistQuotes(symbols: string[]): Promise<Map<string, StockQuote>> {
+  if (symbols.length === 0) return new Map();
+  try {
+    const quotes = await fetchStockQuotesCached([...symbols].sort());
+    return new Map(quotes.map((q) => [q.symbol, q]));
+  } catch {
+    return new Map();
+  }
+}
+
 export type LiveQuotes = {
   prices: Map<string, number>; // equity symbol or OCC option symbol → mid price
   available: boolean;
