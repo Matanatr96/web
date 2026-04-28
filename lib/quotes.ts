@@ -140,14 +140,19 @@ type TradierChainResponse = {
   options: { option: TradierOption | TradierOption[] } | null;
 };
 
-export type WheelCandidate = {
+export type OptionCandidate = {
   expiration: string;   // ISO date of chosen expiration
   dte: number;          // days to expiration
-  strike: number;       // put strike
+  strike: number;
   bid: number;          // premium per share (bid)
   mid: number;          // premium per share (mid)
-  delta: number | null; // put delta (negative, e.g. -0.25)
-  otm_pct: number;      // % below current price (positive = OTM)
+  delta: number | null;
+  otm_pct: number;      // % from current price (positive = OTM)
+};
+
+export type WheelOptions = {
+  puts: OptionCandidate[];   // up to 2, ~5% and ~10% OTM
+  calls: OptionCandidate[];  // up to 2, ~2% and ~5% OTM
 };
 
 async function fetchExpirationsRaw(symbol: string): Promise<string[]> {
@@ -208,25 +213,64 @@ function pickExpiration(dates: string[], targetDte = 35): string | null {
   return pool[0].date;
 }
 
-// Pick the put closest to 8% OTM with a non-zero bid.
-function pickPut(options: TradierOption[], currentPrice: number): TradierOption | null {
-  const target = currentPrice * 0.92;
-  const puts = options.filter((o) => o.option_type === "put" && (o.bid ?? 0) > 0);
-  if (puts.length === 0) return null;
-  puts.sort((a, b) => Math.abs(a.strike - target) - Math.abs(b.strike - target));
-  return puts[0];
+// Find the option (put or call) closest to a given OTM% target with a non-zero bid.
+function pickClosest(
+  options: TradierOption[],
+  type: "put" | "call",
+  currentPrice: number,
+  otmPct: number,
+): TradierOption | null {
+  const targetStrike =
+    type === "put"
+      ? currentPrice * (1 - otmPct / 100)
+      : currentPrice * (1 + otmPct / 100);
+  const filtered = options.filter((o) => o.option_type === type && (o.bid ?? 0) > 0);
+  if (filtered.length === 0) return null;
+  filtered.sort((a, b) => Math.abs(a.strike - targetStrike) - Math.abs(b.strike - targetStrike));
+  return filtered[0];
 }
 
-export async function getWheelCandidates(
+// Pick up to 2 options at the given OTM targets, deduplicated by strike.
+function pickTwo(
+  options: TradierOption[],
+  type: "put" | "call",
+  currentPrice: number,
+  targets: [number, number],
+): TradierOption[] {
+  const first = pickClosest(options, type, currentPrice, targets[0]);
+  const second = pickClosest(options, type, currentPrice, targets[1]);
+  if (!first) return second ? [second] : [];
+  if (!second || second.strike === first.strike) return [first];
+  return type === "put"
+    ? [first, second].sort((a, b) => b.strike - a.strike) // higher strike first for puts
+    : [first, second].sort((a, b) => a.strike - b.strike); // lower strike first for calls
+}
+
+function toCandidate(
+  opt: TradierOption,
+  expiration: string,
+  dte: number,
+  currentPrice: number,
+  type: "put" | "call",
+): OptionCandidate {
+  const bid = opt.bid ?? 0;
+  const ask = opt.ask ?? bid;
+  const otm_pct =
+    type === "put"
+      ? ((currentPrice - opt.strike) / currentPrice) * 100
+      : ((opt.strike - currentPrice) / currentPrice) * 100;
+  return { expiration, dte, strike: opt.strike, bid, mid: (bid + ask) / 2, delta: opt.greeks?.delta ?? null, otm_pct };
+}
+
+export async function getWheelOptions(
   tickers: string[],
   quotes: Map<string, StockQuote>,
-): Promise<Map<string, WheelCandidate>> {
+): Promise<Map<string, WheelOptions>> {
   if (tickers.length === 0) return new Map();
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
 
-  // Fetch all expirations in parallel, then all chains in parallel.
   const expirations = await Promise.all(
     tickers.map(async (ticker) => ({
       ticker,
@@ -244,28 +288,18 @@ export async function getWheelCandidates(
       })),
   );
 
-  const result = new Map<string, WheelCandidate>();
+  const result = new Map<string, WheelOptions>();
   for (const { ticker, expiration, chain } of chains) {
     const last = quotes.get(ticker)?.last;
     if (!last) continue;
 
-    const put = pickPut(chain, last);
-    if (!put) continue;
-
     const dte = Math.round(
       (new Date(expiration + "T00:00:00").getTime() - today.getTime()) / 86_400_000,
     );
-    const bid = put.bid ?? 0;
-    const ask = put.ask ?? bid;
 
     result.set(ticker, {
-      expiration,
-      dte,
-      strike: put.strike,
-      bid,
-      mid: (bid + ask) / 2,
-      delta: put.greeks?.delta ?? null,
-      otm_pct: ((last - put.strike) / last) * 100,
+      puts: pickTwo(chain, "put", last, [5, 10]).map((o) => toCandidate(o, expiration, dte, last, "put")),
+      calls: pickTwo(chain, "call", last, [2, 5]).map((o) => toCandidate(o, expiration, dte, last, "call")),
     });
   }
 
