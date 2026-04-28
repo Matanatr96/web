@@ -42,17 +42,26 @@ function FitBounds({ points }: { points: Geolocated[] }) {
 }
 
 export default function RestaurantsMap({ restaurants, apiKey }: Props) {
-  const points = useMemo(
+  const allPoints = useMemo(
     () =>
       restaurants.filter(
         (r): r is Geolocated => r.lat !== null && r.lng !== null,
       ),
     [restaurants],
   );
+  const cities = useMemo(() => {
+    const set = new Set(allPoints.map((p) => p.city));
+    return Array.from(set).sort((a, b) => a.localeCompare(b));
+  }, [allPoints]);
+  const [cityFilter, setCityFilter] = useState<string>("");
+  const points = useMemo(
+    () => (cityFilter ? allPoints.filter((p) => p.city === cityFilter) : allPoints),
+    [allPoints, cityFilter],
+  );
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = points.find((p) => p.id === selectedId) ?? null;
 
-  if (points.length === 0) {
+  if (allPoints.length === 0) {
     return (
       <div className="rounded-md border border-stone-200 dark:border-stone-700 p-8 text-center text-sm text-stone-500">
         No restaurants have coordinates yet. Run{" "}
@@ -61,11 +70,33 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
     );
   }
 
-  // Initial center is the first point; FitBounds widens it once the map mounts.
-  const initialCenter = { lat: points[0].lat, lng: points[0].lng };
+  // Initial center is the first available point; FitBounds widens it on mount.
+  const initialCenter = { lat: allPoints[0].lat, lng: allPoints[0].lng };
 
   return (
     <APIProvider apiKey={apiKey}>
+      <div className="mb-3 flex items-center gap-2 text-sm">
+        <label htmlFor="city-filter" className="text-stone-500">City:</label>
+        <select
+          id="city-filter"
+          value={cityFilter}
+          onChange={(e) => {
+            setCityFilter(e.target.value);
+            setSelectedId(null);
+          }}
+          className="px-2 py-1 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+        >
+          <option value="">All cities ({allPoints.length})</option>
+          {cities.map((c) => (
+            <option key={c} value={c}>
+              {c} ({allPoints.filter((p) => p.city === c).length})
+            </option>
+          ))}
+        </select>
+        {cityFilter && points.length === 0 && (
+          <span className="text-stone-500">No pinned restaurants in {cityFilter}.</span>
+        )}
+      </div>
       <div className="h-[70vh] w-full rounded-md overflow-hidden border border-stone-200 dark:border-stone-700">
         <Map
           mapId="restaurants-map"
