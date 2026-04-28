@@ -12,6 +12,8 @@ type Props = {
   submitLabel: string;
   /** Pass existing names to enable duplicate detection (used on "new" page). */
   existingNames?: string[];
+  /** Map of place_id → restaurant name for duplicate place detection. */
+  existingPlaceIds?: Record<string, string>;
   /** Cuisine options fetched from the DB; falls back to hardcoded CUISINES. */
   cuisines?: string[];
   /** When set, "Place" becomes a Google Places Autocomplete that auto-fills city/coords. */
@@ -22,7 +24,7 @@ type Props = {
  * Shared form used by "new" and "edit" pages. The parent passes a bound
  * server action so we don't need to care whether this is a create or update.
  */
-export default function RestaurantForm({ initial, action, submitLabel, existingNames, cuisines: cuisinesProp, googleMapsApiKey }: Props) {
+export default function RestaurantForm({ initial, action, submitLabel, existingNames, existingPlaceIds, cuisines: cuisinesProp, googleMapsApiKey }: Props) {
   const cuisineList = cuisinesProp ?? CUISINES;
   const [placeName, setPlaceName] = useState(initial?.name ?? "");
   const [city, setCity] = useState(initial?.city ?? "");
@@ -41,7 +43,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
   const [deletedPhotos, setDeletedPhotos] = useState<string[]>([]);
   const [newFilePreviews, setNewFilePreviews] = useState<string[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
+  const [duplicatePlaceMatch, setDuplicatePlaceMatch] = useState<string | null>(null);
   const [category, setCategory] = useState(initial?.category ?? "Food");
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
@@ -58,7 +60,12 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
       lng: pick.lng,
       placeId: pick.placeId,
     });
-  }, []);
+    setDuplicatePlaceMatch(
+      pick.placeId && existingPlaceIds?.[pick.placeId]
+        ? existingPlaceIds[pick.placeId]
+        : null
+    );
+  }, [existingPlaceIds]);
 
   const computed = computeOverall(category, {
     food, value, service, ambiance, vegan_options: veganOptions,
@@ -100,6 +107,11 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
       {duplicateMatch && (
         <div className="sm:col-span-2 rounded-md border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           A restaurant named <strong>{duplicateMatch}</strong> already exists. Are you sure you want to create another?
+        </div>
+      )}
+      {duplicatePlaceMatch && (
+        <div className="sm:col-span-2 rounded-md border border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+          This exact place is already saved as <strong>{duplicatePlaceMatch}</strong>. Adding it again will be rejected.
         </div>
       )}
       <div>
