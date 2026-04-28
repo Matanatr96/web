@@ -33,6 +33,7 @@ export default async function NewRestaurantPage() {
         submitLabel="Create"
         existingNames={existingNames}
         cuisines={cuisines.length ? cuisines : undefined}
+        googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
       />
     </div>
   );

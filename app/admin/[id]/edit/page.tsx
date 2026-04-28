@@ -45,6 +45,7 @@ export default async function EditRestaurantPage({ params }: Props) {
         action={action}
         submitLabel="Save changes"
         cuisines={cuisines.length ? cuisines : undefined}
+        googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
       />
     </div>
   );

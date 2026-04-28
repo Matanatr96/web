@@ -29,6 +29,10 @@ export default async function RestaurantsPage() {
         <Link href="/" className="hover:underline">
           ← Home
         </Link>
+        <span className="mx-2">·</span>
+        <Link href="/map" className="hover:underline">
+          Map view
+        </Link>
       </nav>
       <div className="mb-6">
         <h1 className="text-2xl font-bold tracking-tight">All restaurants</h1>

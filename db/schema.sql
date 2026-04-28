@@ -14,9 +14,19 @@ create table if not exists restaurants (
   ambiance      numeric(4,2),
   vegan_options numeric(4,2),
   note          text,
+  address       text,
+  lat           double precision,
+  lng           double precision,
+  place_id      text,
   created_at    timestamptz  not null default now(),
   updated_at    timestamptz  not null default now()
 );
+
+-- For existing databases, add the geo columns if they don't yet exist.
+alter table restaurants add column if not exists address  text;
+alter table restaurants add column if not exists lat      double precision;
+alter table restaurants add column if not exists lng      double precision;
+alter table restaurants add column if not exists place_id text;
 
 create index if not exists restaurants_city_idx     on restaurants (city);
 create index if not exists restaurants_cuisine_idx  on restaurants (cuisine);
