@@ -2,7 +2,7 @@ import { unstable_cache } from "next/cache";
 
 const PROD_BASE = "https://api.tradier.com/v1";
 
-function isMarketOpen(): boolean {
+export function isMarketOpen(): boolean {
   const now = new Date();
   const day = now.getUTCDay(); // 0=Sun, 6=Sat
   if (day === 0 || day === 6) return false;
@@ -104,7 +104,7 @@ async function fetchStockQuotesRaw(symbols: string[]): Promise<StockQuote[]> {
 const fetchStockQuotesCached = unstable_cache(
   fetchStockQuotesRaw,
   ["tradier-stock-quotes"],
-  { revalidate: 60 },
+  { revalidate: 60, tags: ["watchlist-data"] },
 );
 
 // Always fetches regardless of market hours so the last known price is visible.
@@ -167,7 +167,7 @@ async function fetchExpirationsRaw(symbol: string): Promise<string[]> {
 const fetchExpirationsCached = unstable_cache(
   fetchExpirationsRaw,
   ["tradier-expirations"],
-  { revalidate: 3600 },
+  { revalidate: 3600, tags: ["watchlist-data"] },
 );
 
 async function fetchOptionChainRaw(symbol: string, expiration: string): Promise<TradierOption[]> {
@@ -185,7 +185,7 @@ async function fetchOptionChainRaw(symbol: string, expiration: string): Promise<
 const fetchOptionChainCached = unstable_cache(
   fetchOptionChainRaw,
   ["tradier-option-chain"],
-  { revalidate: 300 },
+  { revalidate: 300, tags: ["watchlist-data"] },
 );
 
 // Pick the expiration closest to targetDte (default 35) within the 21–60 DTE window.

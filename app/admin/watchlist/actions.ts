@@ -1,11 +1,17 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
+import { revalidatePath, revalidateTag } from "next/cache";
 import { isAdmin } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 
 async function assertAdmin() {
   if (!(await isAdmin())) throw new Error("Not authorized.");
+}
+
+export async function revalidateWatchlist() {
+  await assertAdmin();
+  revalidateTag("watchlist-data");
+  revalidatePath("/admin/watchlist");
 }
 
 export async function addToWatchlist(_state: unknown, fd: FormData) {

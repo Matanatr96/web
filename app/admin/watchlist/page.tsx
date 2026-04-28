@@ -2,11 +2,12 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { isAdmin } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
-import { getWatchlistQuotes, getWheelCandidates } from "@/lib/quotes";
+import { getWatchlistQuotes, getWheelCandidates, isMarketOpen } from "@/lib/quotes";
 import type { WatchlistItem } from "@/lib/types";
 import { removeFromWatchlist } from "./actions";
 import DeleteButton from "../delete-button";
 import AddTickerForm from "./add-ticker-form";
+import RefreshButton from "./refresh-button";
 
 export const dynamic = "force-dynamic";
 
@@ -66,7 +67,10 @@ export default async function WatchlistPage() {
             {items.length} ticker{items.length !== 1 ? "s" : ""}
           </p>
         </div>
-        <AddTickerForm />
+        <div className="flex items-center gap-2">
+          <RefreshButton marketOpen={isMarketOpen()} hasItems={items.length > 0} />
+          <AddTickerForm />
+        </div>
       </div>
 
       {items.length === 0 ? (
