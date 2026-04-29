@@ -14,9 +14,6 @@ import {
   stdev,
   percentile,
   regularSeasonOnly,
-  topScoringRecords,
-  lowestScoringRecords,
-  biggestBlowouts,
   buildTradeLeaderboard,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
@@ -73,11 +70,6 @@ export default async function FantasyPage({
   const regSeasonAll = regularSeasonOnly(matchups, leagues);
   const standings = buildStandings(regSeasonAll, owners, season);
   const weekly = buildWeeklyAverages(regSeasonAll, seasons, 14);
-
-  // Single-game records: across all seasons, regular season only.
-  const topScores = topScoringRecords(regSeasonAll, owners, 10);
-  const lowScores = lowestScoringRecords(regSeasonAll, owners, 10);
-  const blowouts  = biggestBlowouts(regSeasonAll, owners, 10);
 
   // Playoff matchups for the selected season (week >= playoff_week_start).
   const playoffStart = selectedLeague?.playoff_week_start ?? 15;
@@ -272,57 +264,16 @@ export default async function FantasyPage({
         </section>
       )}
 
-      {/* All-time records */}
-      <section className="mt-12 grid gap-8 md:grid-cols-2">
-        <RecordsTable
-          title="Top Scoring"
-          rows={topScores.map((r) => ({
-            year: r.season,
-            week: r.week,
-            owner: r.display_name,
-            value: fmt(r.points, 2),
-          }))}
-          valueLabel="PointsFor"
-        />
-        <RecordsTable
-          title="Lowest Scoring"
-          rows={lowScores.map((r) => ({
-            year: r.season,
-            week: r.week,
-            owner: r.display_name,
-            value: fmt(r.points, 2),
-          }))}
-          valueLabel="PointsFor"
-        />
-      </section>
-
-      <section className="mt-8">
-        <h2 className="text-xl font-semibold mb-3">Biggest Blowouts</h2>
-        <div className="overflow-x-auto rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
-          <table className="min-w-full text-sm">
-            <thead className="text-xs uppercase tracking-wide text-stone-500 bg-stone-50 dark:bg-stone-900/50">
-              <tr>
-                <th className="text-left  px-4 py-2 font-medium">Year</th>
-                <th className="text-left  px-3 py-2 font-medium">Week</th>
-                <th className="text-left  px-3 py-2 font-medium">Owner</th>
-                <th className="text-right px-3 py-2 font-medium">Differential</th>
-                <th className="text-left  px-4 py-2 font-medium">Opponent</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
-              {blowouts.map((b, i) => (
-                <tr key={i}>
-                  <td className="px-4 py-2 text-stone-500">{b.season}</td>
-                  <td className="px-3 py-2 text-stone-500">{b.week}</td>
-                  <td className="px-3 py-2 font-medium">{b.display_name}</td>
-                  <td className="text-right px-3 py-2 tabular-nums text-emerald-600 dark:text-emerald-400">
-                    +{fmt(b.differential, 2)}
-                  </td>
-                  <td className="px-4 py-2 text-stone-500">{b.opponent_name}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      {/* Section links */}
+      <section className="mt-12">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-lg">
+          <Link
+            href="/fantasy/records"
+            className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+          >
+            <span className="font-semibold">Records</span>
+            <span className="text-sm text-stone-500">Top scoring, lowest scoring, biggest blowouts</span>
+          </Link>
         </div>
       </section>
 
@@ -432,44 +383,6 @@ function TradeCard({
         ))}
       </div>
     </li>
-  );
-}
-
-function RecordsTable({
-  title,
-  rows,
-  valueLabel,
-}: {
-  title: string;
-  rows: Array<{ year: number; week: number; owner: string; value: string }>;
-  valueLabel: string;
-}) {
-  return (
-    <div>
-      <h2 className="text-xl font-semibold mb-3">{title}</h2>
-      <div className="overflow-x-auto rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
-        <table className="min-w-full text-sm">
-          <thead className="text-xs uppercase tracking-wide text-stone-500 bg-stone-50 dark:bg-stone-900/50">
-            <tr>
-              <th className="text-left  px-4 py-2 font-medium">Year</th>
-              <th className="text-left  px-3 py-2 font-medium">Week</th>
-              <th className="text-left  px-3 py-2 font-medium">Owner</th>
-              <th className="text-right px-4 py-2 font-medium">{valueLabel}</th>
-            </tr>
-          </thead>
-          <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
-            {rows.map((r, i) => (
-              <tr key={i}>
-                <td className="px-4 py-2 text-stone-500">{r.year}</td>
-                <td className="px-3 py-2 text-stone-500">{r.week}</td>
-                <td className="px-3 py-2 font-medium">{r.owner}</td>
-                <td className="text-right px-4 py-2 tabular-nums">{r.value}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
   );
 }
 
