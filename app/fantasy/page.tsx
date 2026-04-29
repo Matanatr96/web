@@ -1,6 +1,51 @@
 import Link from "next/link";
+import { getSupabase } from "@/lib/supabase";
+import type { BracketEntry, FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
+import { regularSeasonOnly } from "@/lib/fantasy";
 
-export default function FantasyPage() {
+export const dynamic = "force-dynamic";
+
+export default async function FantasyPage() {
+  const db = getSupabase();
+
+  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
+    await Promise.all([
+      db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
+      db.from("fantasy_owners").select("*"),
+      db.from("fantasy_matchups").select("*"),
+    ]);
+
+  const leagues = (leagueData ?? []) as FantasyLeague[];
+  const owners = (ownerData ?? []) as FantasyOwner[];
+  const matchups = (matchupData ?? []) as FantasyMatchup[];
+
+  const regSeason = regularSeasonOnly(matchups, leagues);
+
+  // Champions: one per season, derived from winners_bracket p=1 entry
+  const champions = leagues
+    .map((league) => {
+      const bracket = league.winners_bracket as BracketEntry[] | null;
+      const champEntry = bracket?.find((b) => b.p === 1);
+      const owner = champEntry?.w
+        ? owners.find((o) => o.user_id === champEntry.w)
+        : null;
+      return { season: league.season, display_name: owner?.display_name ?? null };
+    })
+    .filter((c): c is { season: number; display_name: string } => c.display_name != null)
+    .sort((a, b) => b.season - a.season);
+
+  // All-time regular season win counts across all seasons
+  const winMap = new Map<string, { display_name: string; wins: number }>();
+  for (const m of regSeason) {
+    if (m.result !== "W") continue;
+    const owner = owners.find((o) => o.user_id === m.owner_id);
+    if (!owner) continue;
+    const entry = winMap.get(m.owner_id) ?? { display_name: owner.display_name, wins: 0 };
+    entry.wins += 1;
+    winMap.set(m.owner_id, entry);
+  }
+  const winRankings = [...winMap.values()].sort((a, b) => b.wins - a.wins);
+
   return (
     <div className="max-w-5xl mx-auto pt-10">
       <div className="mb-8">
@@ -10,7 +55,7 @@ export default function FantasyPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl mb-12">
         <Link
           href="/fantasy/matchups"
           className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
@@ -34,6 +79,49 @@ export default function FantasyPage() {
           <span className="font-semibold">Records</span>
           <span className="text-sm text-stone-500">Top scoring, lowest scoring, biggest blowouts</span>
         </Link>
+      </div>
+
+      <div className="grid gap-8 md:grid-cols-2 max-w-2xl">
+        {/* Champions */}
+        <div>
+          <h2 className="text-lg font-semibold mb-3">Champions</h2>
+          <ol className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 divide-y divide-stone-100 dark:divide-stone-800">
+            {champions.map((c) => (
+              <li
+                key={c.season}
+                className="flex items-baseline justify-between gap-3 px-4 py-2.5 text-sm"
+              >
+                <span className="font-medium">{c.display_name}</span>
+                <span className="text-stone-400 tabular-nums text-xs">{c.season}</span>
+              </li>
+            ))}
+            {champions.length === 0 && (
+              <li className="px-4 py-3 text-sm text-stone-400 italic">No completed seasons yet.</li>
+            )}
+          </ol>
+        </div>
+
+        {/* All-time regular season wins */}
+        <div>
+          <h2 className="text-lg font-semibold mb-3">All-Time Wins</h2>
+          <ol className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 divide-y divide-stone-100 dark:divide-stone-800">
+            {winRankings.map((row, i) => (
+              <li
+                key={row.display_name}
+                className="flex items-baseline justify-between gap-3 px-4 py-2.5 text-sm"
+              >
+                <span className="flex items-baseline gap-2 min-w-0">
+                  <span className="text-xs text-stone-400 tabular-nums w-4">{i + 1}</span>
+                  <span className="font-medium truncate">{row.display_name}</span>
+                </span>
+                <span className="tabular-nums font-semibold">{row.wins}</span>
+              </li>
+            ))}
+            {winRankings.length === 0 && (
+              <li className="px-4 py-3 text-sm text-stone-400 italic">No data yet.</li>
+            )}
+          </ol>
+        </div>
       </div>
     </div>
   );
