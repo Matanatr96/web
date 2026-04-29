@@ -34,9 +34,8 @@ export default async function FantasyPage() {
     .filter((c): c is { season: number; display_name: string } => c.display_name != null)
     .sort((a, b) => b.season - a.season);
 
-  // Assign a stable color index to each unique owner (sorted alphabetically for consistency)
-  const uniqueChampionNames = [...new Set(champions.map((c) => c.display_name))].sort();
-  const CHAMPION_COLORS = [
+  // Assign a stable color to every owner (sorted alphabetically for consistency)
+  const OWNER_COLORS = [
     "text-sky-600 dark:text-sky-400",
     "text-violet-600 dark:text-violet-400",
     "text-amber-600 dark:text-amber-400",
@@ -46,8 +45,9 @@ export default async function FantasyPage() {
     "text-pink-600 dark:text-pink-400",
     "text-teal-600 dark:text-teal-400",
   ];
-  const championColorMap = new Map(
-    uniqueChampionNames.map((name, i) => [name, CHAMPION_COLORS[i % CHAMPION_COLORS.length]]),
+  const allOwnerNames = [...new Set(owners.map((o) => o.display_name))].sort();
+  const ownerColorMap = new Map(
+    allOwnerNames.map((name, i) => [name, OWNER_COLORS[i % OWNER_COLORS.length]]),
   );
 
   // All-time regular season win counts across all seasons
@@ -107,7 +107,7 @@ export default async function FantasyPage() {
                 key={c.season}
                 className="flex items-baseline justify-between gap-3 px-4 py-2.5 text-sm"
               >
-                <span className={`font-medium ${championColorMap.get(c.display_name) ?? ""}`}>
+                <span className={`font-medium ${ownerColorMap.get(c.display_name) ?? ""}`}>
                   {c.display_name}
                 </span>
                 <span className="text-stone-400 tabular-nums text-xs">{c.season}</span>
@@ -131,7 +131,7 @@ export default async function FantasyPage() {
               >
                 <span className="flex items-baseline gap-2 min-w-0">
                   <span className="text-xs text-stone-400 tabular-nums w-4">{i + 1}</span>
-                  <span className="font-medium truncate">{row.display_name}</span>
+                  <span className={`font-medium truncate ${ownerColorMap.get(row.display_name) ?? ""}`}>{row.display_name}</span>
                 </span>
                 <span className="tabular-nums font-semibold">{row.wins}</span>
               </li>
