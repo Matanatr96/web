@@ -1,9 +1,35 @@
 import type {
+  BlowoutRecord,
+  FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
   FantasyStanding,
   FantasyWeeklyAverage,
+  ScoreRecord,
 } from "./types";
+
+/**
+ * Returns true if `week` is part of the regular season for `season`.
+ * Regular season = weeks strictly before the league's playoff_week_start.
+ * If the league row has no playoff_week_start, falls back to week <= 14.
+ */
+export function isRegularSeason(
+  season: number,
+  week: number,
+  leagues: FantasyLeague[],
+): boolean {
+  const league = leagues.find((l) => l.season === season);
+  const start = league?.playoff_week_start ?? 15;
+  return week < start;
+}
+
+/** Filter matchups to regular season only, using each league's playoff_week_start. */
+export function regularSeasonOnly(
+  matchups: FantasyMatchup[],
+  leagues: FantasyLeague[],
+): FantasyMatchup[] {
+  return matchups.filter((m) => isRegularSeason(m.season, m.week, leagues));
+}
 
 /**
  * Build season standings from matchup rows.
@@ -179,4 +205,74 @@ export function percentile(value: number, values: number[]): number {
   if (values.length === 0) return 0;
   const below = values.filter((v) => v <= value).length;
   return (below / values.length) * 100;
+}
+
+function nameFor(owners: FantasyOwner[], userId: string | null): string {
+  if (!userId) return "—";
+  return owners.find((o) => o.user_id === userId)?.display_name ?? userId;
+}
+
+/**
+ * Top N single-game scores across all matchups passed in.
+ * Pass already-filtered (e.g. regular-season) matchups for season-specific records.
+ */
+export function topScoringRecords(
+  matchups: FantasyMatchup[],
+  owners: FantasyOwner[],
+  limit = 10,
+): ScoreRecord[] {
+  return [...matchups]
+    .sort((a, b) => b.points - a.points)
+    .slice(0, limit)
+    .map((m) => ({
+      season: m.season,
+      week: m.week,
+      owner_id: m.owner_id,
+      display_name: nameFor(owners, m.owner_id),
+      points: m.points,
+    }));
+}
+
+/** Bottom N single-game scores. Excludes 0-point rows (likely unplayed weeks). */
+export function lowestScoringRecords(
+  matchups: FantasyMatchup[],
+  owners: FantasyOwner[],
+  limit = 10,
+): ScoreRecord[] {
+  return [...matchups]
+    .filter((m) => m.points > 0)
+    .sort((a, b) => a.points - b.points)
+    .slice(0, limit)
+    .map((m) => ({
+      season: m.season,
+      week: m.week,
+      owner_id: m.owner_id,
+      display_name: nameFor(owners, m.owner_id),
+      points: m.points,
+    }));
+}
+
+/**
+ * Largest single-game point differentials (winner perspective).
+ * Each head-to-head appears once (we only emit the winning side).
+ */
+export function biggestBlowouts(
+  matchups: FantasyMatchup[],
+  owners: FantasyOwner[],
+  limit = 10,
+): BlowoutRecord[] {
+  return matchups
+    .filter((m) => m.result === "W" && m.opponent_id != null)
+    .map((m) => ({
+      season: m.season,
+      week: m.week,
+      owner_id: m.owner_id,
+      display_name: nameFor(owners, m.owner_id),
+      points: m.points,
+      opponent_id: m.opponent_id as string,
+      opponent_name: nameFor(owners, m.opponent_id),
+      differential: m.points - m.opponent_points,
+    }))
+    .sort((a, b) => b.differential - a.differential)
+    .slice(0, limit);
 }

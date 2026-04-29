@@ -1,6 +1,7 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import type {
+  BracketEntry,
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
@@ -11,6 +12,10 @@ import {
   mean,
   stdev,
   percentile,
+  regularSeasonOnly,
+  topScoringRecords,
+  lowestScoringRecords,
+  biggestBlowouts,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 
@@ -56,12 +61,29 @@ export default async function FantasyPage({
   const seasons = leagues.map((l) => l.season);
   const requestedSeason = params.season ? Number(params.season) : seasons[0];
   const season = seasons.includes(requestedSeason) ? requestedSeason : seasons[0];
+  const selectedLeague = leagues.find((l) => l.season === season) ?? null;
 
-  const standings = buildStandings(matchups, owners, season);
-  const weekly = buildWeeklyAverages(matchups, seasons, 14);
+  // Standings + weekly averages use regular-season weeks only.
+  const regSeasonAll = regularSeasonOnly(matchups, leagues);
+  const standings = buildStandings(regSeasonAll, owners, season);
+  const weekly = buildWeeklyAverages(regSeasonAll, seasons, 14);
 
-  // Sidebar stats: distribution of all per-owner-per-week scores in selected season.
-  const seasonScores = matchups.filter((m) => m.season === season).map((m) => m.points);
+  // Single-game records: across all seasons, regular season only.
+  const topScores = topScoringRecords(regSeasonAll, owners, 10);
+  const lowScores = lowestScoringRecords(regSeasonAll, owners, 10);
+  const blowouts  = biggestBlowouts(regSeasonAll, owners, 10);
+
+  // Playoff matchups for the selected season (week >= playoff_week_start).
+  const playoffStart = selectedLeague?.playoff_week_start ?? 15;
+  const playoffMatchups = matchups.filter(
+    (m) => m.season === season && m.week >= playoffStart,
+  );
+  const bracket = (selectedLeague?.winners_bracket ?? null) as BracketEntry[] | null;
+
+  // Sidebar stats: distribution of all per-owner-per-week regular-season scores.
+  const seasonScores = regSeasonAll
+    .filter((m) => m.season === season)
+    .map((m) => m.points);
   const seasonAvg = mean(seasonScores);
   const seasonStdev = stdev(seasonScores);
   const inputValue = params.value ? Number(params.value) : NaN;
@@ -231,6 +253,210 @@ export default async function FantasyPage({
           )}
         </aside>
       </section>
+
+      {/* Playoffs */}
+      {(bracket || playoffMatchups.length > 0) && (
+        <section className="mt-12">
+          <h2 className="text-xl font-semibold mb-3">{season} Playoffs</h2>
+          <PlayoffBracket
+            bracket={bracket}
+            owners={owners}
+            playoffMatchups={playoffMatchups}
+          />
+        </section>
+      )}
+
+      {/* All-time records */}
+      <section className="mt-12 grid gap-8 md:grid-cols-2">
+        <RecordsTable
+          title="Top Scoring"
+          rows={topScores.map((r) => ({
+            year: r.season,
+            week: r.week,
+            owner: r.display_name,
+            value: fmt(r.points, 2),
+          }))}
+          valueLabel="PointsFor"
+        />
+        <RecordsTable
+          title="Lowest Scoring"
+          rows={lowScores.map((r) => ({
+            year: r.season,
+            week: r.week,
+            owner: r.display_name,
+            value: fmt(r.points, 2),
+          }))}
+          valueLabel="PointsFor"
+        />
+      </section>
+
+      <section className="mt-8">
+        <h2 className="text-xl font-semibold mb-3">Biggest Blowouts</h2>
+        <div className="overflow-x-auto rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+          <table className="min-w-full text-sm">
+            <thead className="text-xs uppercase tracking-wide text-stone-500 bg-stone-50 dark:bg-stone-900/50">
+              <tr>
+                <th className="text-left  px-4 py-2 font-medium">Year</th>
+                <th className="text-left  px-3 py-2 font-medium">Week</th>
+                <th className="text-left  px-3 py-2 font-medium">Owner</th>
+                <th className="text-right px-3 py-2 font-medium">Differential</th>
+                <th className="text-left  px-4 py-2 font-medium">Opponent</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
+              {blowouts.map((b, i) => (
+                <tr key={i}>
+                  <td className="px-4 py-2 text-stone-500">{b.season}</td>
+                  <td className="px-3 py-2 text-stone-500">{b.week}</td>
+                  <td className="px-3 py-2 font-medium">{b.display_name}</td>
+                  <td className="text-right px-3 py-2 tabular-nums text-emerald-600 dark:text-emerald-400">
+                    +{fmt(b.differential, 2)}
+                  </td>
+                  <td className="px-4 py-2 text-stone-500">{b.opponent_name}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+  );
+}
+
+function RecordsTable({
+  title,
+  rows,
+  valueLabel,
+}: {
+  title: string;
+  rows: Array<{ year: number; week: number; owner: string; value: string }>;
+  valueLabel: string;
+}) {
+  return (
+    <div>
+      <h2 className="text-xl font-semibold mb-3">{title}</h2>
+      <div className="overflow-x-auto rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+        <table className="min-w-full text-sm">
+          <thead className="text-xs uppercase tracking-wide text-stone-500 bg-stone-50 dark:bg-stone-900/50">
+            <tr>
+              <th className="text-left  px-4 py-2 font-medium">Year</th>
+              <th className="text-left  px-3 py-2 font-medium">Week</th>
+              <th className="text-left  px-3 py-2 font-medium">Owner</th>
+              <th className="text-right px-4 py-2 font-medium">{valueLabel}</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
+            {rows.map((r, i) => (
+              <tr key={i}>
+                <td className="px-4 py-2 text-stone-500">{r.year}</td>
+                <td className="px-3 py-2 text-stone-500">{r.week}</td>
+                <td className="px-3 py-2 font-medium">{r.owner}</td>
+                <td className="text-right px-4 py-2 tabular-nums">{r.value}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function PlayoffBracket({
+  bracket,
+  owners,
+  playoffMatchups,
+}: {
+  bracket: BracketEntry[] | null;
+  owners: FantasyOwner[];
+  playoffMatchups: FantasyMatchup[];
+}) {
+  const nameOf = (id: string | null) =>
+    id ? owners.find((o) => o.user_id === id)?.display_name ?? id : "TBD";
+
+  // Score lookup: owner_id+week -> points (so we can show points next to each bracket name).
+  const score = new Map<string, number>();
+  for (const m of playoffMatchups) {
+    score.set(`${m.owner_id}:${m.week}`, m.points);
+  }
+
+  // Sleeper round indexing: r=1 is first playoff week, etc.
+  // We don't know the exact week each round maps to without more info, so
+  // we render rounds vertically, biggest round first.
+  if (!bracket || bracket.length === 0) {
+    return (
+      <p className="text-sm text-stone-500">
+        No bracket data — run <code>npm run db:sync-fantasy</code> after the playoffs complete.
+      </p>
+    );
+  }
+
+  // Group entries by round.
+  const rounds = new Map<number, BracketEntry[]>();
+  for (const b of bracket) {
+    const list = rounds.get(b.r) ?? [];
+    list.push(b);
+    rounds.set(b.r, list);
+  }
+  const sortedRounds = [...rounds.entries()].sort(([a], [b]) => a - b);
+
+  // Find championship winner (entry with p === 1).
+  const championship = bracket.find((b) => b.p === 1);
+  const champion = championship?.w ? nameOf(championship.w) : null;
+
+  return (
+    <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
+      {champion && (
+        <div className="mb-4 text-sm">
+          <span className="text-stone-500">Champion: </span>
+          <span className="font-semibold">{champion} 🏆</span>
+        </div>
+      )}
+      <div className="flex gap-6 overflow-x-auto">
+        {sortedRounds.map(([roundNum, entries]) => (
+          <div key={roundNum} className="flex flex-col gap-3 min-w-[200px]">
+            <div className="text-xs uppercase tracking-wide text-stone-500">
+              Round {roundNum}
+            </div>
+            {entries
+              .sort((a, b) => a.m - b.m)
+              .map((b) => (
+                <div
+                  key={`${b.r}-${b.m}`}
+                  className="rounded-md border border-stone-200 dark:border-stone-800 text-sm"
+                >
+                  <BracketSide
+                    name={nameOf(b.t1)}
+                    isWinner={b.w === b.t1 && b.t1 != null}
+                  />
+                  <div className="border-t border-stone-200 dark:border-stone-800" />
+                  <BracketSide
+                    name={nameOf(b.t2)}
+                    isWinner={b.w === b.t2 && b.t2 != null}
+                  />
+                  {b.p != null && (
+                    <div className="text-[10px] text-stone-400 px-2 pb-1">
+                      {b.p === 1 ? "Championship" : b.p === 3 ? "3rd Place" : `${b.p} place`}
+                    </div>
+                  )}
+                </div>
+              ))}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function BracketSide({ name, isWinner }: { name: string; isWinner: boolean }) {
+  return (
+    <div
+      className={`px-3 py-2 ${
+        isWinner
+          ? "font-semibold text-stone-900 dark:text-stone-100"
+          : "text-stone-500"
+      }`}
+    >
+      {name}
     </div>
   );
 }

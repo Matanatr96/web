@@ -51,6 +51,23 @@ type SleeperMatchup = {
 
 type SleeperState = { week: number; season: string; season_type: string };
 
+type SleeperLeague = {
+  name: string;
+  settings: { playoff_week_start?: number; [k: string]: unknown };
+};
+
+type SleeperBracketEntry = {
+  r: number;          // round number (1-indexed)
+  m: number;          // matchup id within round
+  t1: number | null;  // roster_id of team 1
+  t2: number | null;  // roster_id of team 2
+  w: number | null;   // winning roster_id
+  l: number | null;   // losing roster_id
+  p?: number;         // placement (1 = championship, 3 = 3rd, etc.)
+  t1_from?: { w?: number; l?: number };
+  t2_from?: { w?: number; l?: number };
+};
+
 async function fetchJson<T>(url: string): Promise<T> {
   const r = await fetch(url);
   if (!r.ok) throw new Error(`GET ${url} -> ${r.status}`);
@@ -60,10 +77,42 @@ async function fetchJson<T>(url: string): Promise<T> {
 async function syncSeason(season: number, leagueId: string, currentWeek: number) {
   console.log(`\n[${season}] league ${leagueId}`);
 
-  const [users, rosters] = await Promise.all([
+  const [users, rosters, league, winnersBracket] = await Promise.all([
     fetchJson<SleeperUser[]>(`${SLEEPER}/league/${leagueId}/users`),
     fetchJson<SleeperRoster[]>(`${SLEEPER}/league/${leagueId}/rosters`),
+    fetchJson<SleeperLeague>(`${SLEEPER}/league/${leagueId}`),
+    fetchJson<SleeperBracketEntry[]>(`${SLEEPER}/league/${leagueId}/winners_bracket`).catch(() => [] as SleeperBracketEntry[]),
   ]);
+
+  // Translate bracket from roster_id to user_id so the page can look up
+  // owners directly without joining rosters.
+  const rosterToUserForBracket = new Map<number, string>();
+  for (const r of rosters) {
+    if (r.owner_id) rosterToUserForBracket.set(r.roster_id, r.owner_id);
+  }
+  const translatedBracket = winnersBracket.map((b) => ({
+    r: b.r,
+    m: b.m,
+    p: b.p ?? null,
+    t1: b.t1 != null ? rosterToUserForBracket.get(b.t1) ?? null : null,
+    t2: b.t2 != null ? rosterToUserForBracket.get(b.t2) ?? null : null,
+    w:  b.w  != null ? rosterToUserForBracket.get(b.w)  ?? null : null,
+    l:  b.l  != null ? rosterToUserForBracket.get(b.l)  ?? null : null,
+    t1_from: b.t1_from ?? null,
+    t2_from: b.t2_from ?? null,
+  }));
+
+  const playoffStart = league.settings?.playoff_week_start ?? null;
+  const { error: lErr } = await db
+    .from("fantasy_leagues")
+    .update({
+      name: league.name,
+      playoff_week_start: playoffStart,
+      winners_bracket: translatedBracket.length > 0 ? translatedBracket : null,
+    })
+    .eq("season", season);
+  if (lErr) throw lErr;
+  console.log(`  league: playoff_week_start=${playoffStart}, bracket entries=${translatedBracket.length}`);
 
   // Upsert owners.
   const ownerRows = users.map((u) => ({

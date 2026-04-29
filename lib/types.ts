@@ -123,6 +123,36 @@ export type FantasyLeague = {
   season: number;
   league_id: string;
   name: string | null;
+  playoff_week_start: number | null;
+  // Sleeper winners_bracket, with roster_ids translated to fantasy_owners.user_id.
+  winners_bracket: BracketEntry[] | null;
+};
+
+export type BracketEntry = {
+  r: number;
+  m: number;
+  p: number | null;
+  t1: string | null;
+  t2: string | null;
+  w: string | null;
+  l: string | null;
+  t1_from?: { w?: number; l?: number } | null;
+  t2_from?: { w?: number; l?: number } | null;
+};
+
+// Notable single-game records derived from FantasyMatchup[].
+export type ScoreRecord = {
+  season: number;
+  week: number;
+  owner_id: string;
+  display_name: string;
+  points: number;
+};
+
+export type BlowoutRecord = ScoreRecord & {
+  opponent_id: string;
+  opponent_name: string;
+  differential: number;
 };
 
 export type FantasyOwner = {

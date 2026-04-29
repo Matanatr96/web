@@ -3,12 +3,19 @@
 
 -- One row per season; maps a season year to its Sleeper league_id.
 create table if not exists fantasy_leagues (
-  season    int  primary key,
-  league_id text not null,
-  name      text,
-  created_at timestamptz not null default now(),
-  updated_at timestamptz not null default now()
+  season             int  primary key,
+  league_id          text not null,
+  name               text,
+  playoff_week_start int,
+  -- Raw Sleeper /winners_bracket response. Each entry: {r, m, t1, t2, w, l, p, t1_from, t2_from}
+  winners_bracket    jsonb,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
 );
+
+-- Add columns to existing tables if they predate this change.
+alter table fantasy_leagues add column if not exists playoff_week_start int;
+alter table fantasy_leagues add column if not exists winners_bracket    jsonb;
 
 -- One row per Sleeper user that has ever been in the league.
 -- user_id is stable across seasons; display_name may change.
