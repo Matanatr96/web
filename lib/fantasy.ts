@@ -10,6 +10,23 @@ import type {
   TradeLeaderboardRow,
 } from "./types";
 
+const OWNER_COLORS = [
+  "text-sky-600 dark:text-sky-400",
+  "text-violet-600 dark:text-violet-400",
+  "text-amber-600 dark:text-amber-400",
+  "text-rose-600 dark:text-rose-400",
+  "text-emerald-600 dark:text-emerald-400",
+  "text-orange-600 dark:text-orange-400",
+  "text-pink-600 dark:text-pink-400",
+  "text-teal-600 dark:text-teal-400",
+];
+
+/** Returns a map of user_id → Tailwind color class, stable across pages. */
+export function ownerColorMap(owners: FantasyOwner[]): Map<string, string> {
+  const sorted = [...owners].sort((a, b) => a.display_name.localeCompare(b.display_name));
+  return new Map(sorted.map((o, i) => [o.user_id, OWNER_COLORS[i % OWNER_COLORS.length]]));
+}
+
 /**
  * Returns true if `week` is part of the regular season for `season`.
  * Regular season = weeks strictly before the league's playoff_week_start.
