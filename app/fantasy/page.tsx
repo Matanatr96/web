@@ -34,6 +34,22 @@ export default async function FantasyPage() {
     .filter((c): c is { season: number; display_name: string } => c.display_name != null)
     .sort((a, b) => b.season - a.season);
 
+  // Assign a stable color index to each unique owner (sorted alphabetically for consistency)
+  const uniqueChampionNames = [...new Set(champions.map((c) => c.display_name))].sort();
+  const CHAMPION_COLORS = [
+    "text-sky-600 dark:text-sky-400",
+    "text-violet-600 dark:text-violet-400",
+    "text-amber-600 dark:text-amber-400",
+    "text-rose-600 dark:text-rose-400",
+    "text-emerald-600 dark:text-emerald-400",
+    "text-orange-600 dark:text-orange-400",
+    "text-pink-600 dark:text-pink-400",
+    "text-teal-600 dark:text-teal-400",
+  ];
+  const championColorMap = new Map(
+    uniqueChampionNames.map((name, i) => [name, CHAMPION_COLORS[i % CHAMPION_COLORS.length]]),
+  );
+
   // All-time regular season win counts across all seasons
   const winMap = new Map<string, { display_name: string; wins: number }>();
   for (const m of regSeason) {
@@ -91,7 +107,9 @@ export default async function FantasyPage() {
                 key={c.season}
                 className="flex items-baseline justify-between gap-3 px-4 py-2.5 text-sm"
               >
-                <span className="font-medium">{c.display_name}</span>
+                <span className={`font-medium ${championColorMap.get(c.display_name) ?? ""}`}>
+                  {c.display_name}
+                </span>
                 <span className="text-stone-400 tabular-nums text-xs">{c.season}</span>
               </li>
             ))}
