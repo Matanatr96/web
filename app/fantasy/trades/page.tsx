@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import type { FantasyOwner, FantasyTrade } from "@/lib/types";
-import { buildTradeLeaderboard } from "@/lib/fantasy";
+import { buildTradeLeaderboard, ownerColorMap } from "@/lib/fantasy";
 
 export const dynamic = "force-dynamic";
 
@@ -16,6 +16,7 @@ export default async function FantasyTradesPage() {
   const owners = (ownerData ?? []) as FantasyOwner[];
   const trades = (tradeData ?? []) as FantasyTrade[];
   const tradeLeaderboard = buildTradeLeaderboard(trades, owners);
+  const colorMap = ownerColorMap(owners);
 
   return (
     <div className="max-w-5xl mx-auto pt-10">
@@ -42,7 +43,7 @@ export default async function FantasyTradesPage() {
           ) : (
             <ul className="space-y-3">
               {trades.map((t) => (
-                <TradeCard key={t.id} trade={t} owners={owners} />
+                <TradeCard key={t.id} trade={t} owners={owners} colorMap={colorMap} />
               ))}
             </ul>
           )}
@@ -60,7 +61,7 @@ export default async function FantasyTradesPage() {
                   <span className="text-xs text-stone-400 tabular-nums w-5">
                     {i + 1}
                   </span>
-                  <span className="font-medium truncate">{row.display_name}</span>
+                  <span className={`font-medium truncate ${colorMap.get(row.owner_id) ?? ""}`}>{row.display_name}</span>
                 </span>
                 <span className="tabular-nums font-semibold">
                   {row.trade_count}
@@ -77,9 +78,11 @@ export default async function FantasyTradesPage() {
 function TradeCard({
   trade,
   owners,
+  colorMap,
 }: {
   trade: FantasyTrade;
   owners: FantasyOwner[];
+  colorMap: Map<string, string>;
 }) {
   const date = new Date(trade.created_ms).toLocaleDateString("en-US", {
     month: "short", day: "numeric", year: "numeric",
@@ -104,7 +107,7 @@ function TradeCard({
       <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${sides.length}, minmax(0, 1fr))` }}>
         {sides.map(({ uid, name, side }) => (
           <div key={uid}>
-            <div className="font-medium text-sm mb-2">{name} received</div>
+            <div className={`font-medium text-sm mb-2 ${colorMap.get(uid) ?? ""}`}>{name} received</div>
             <ul className="space-y-1 text-sm">
               {side.players.map((p) => (
                 <li key={p.player_id} className="text-stone-700 dark:text-stone-300">

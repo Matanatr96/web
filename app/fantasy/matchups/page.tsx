@@ -13,6 +13,7 @@ import {
   stdev,
   percentile,
   regularSeasonOnly,
+  ownerColorMap,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 
@@ -43,6 +44,8 @@ export default async function FantasyMatchupsPage({
   const requestedSeason = params.season ? Number(params.season) : seasons[0];
   const season = seasons.includes(requestedSeason) ? requestedSeason : seasons[0];
   const selectedLeague = leagues.find((l) => l.season === season) ?? null;
+
+  const colorMap = ownerColorMap(owners);
 
   const regSeasonAll = regularSeasonOnly(matchups, leagues);
   const standings = buildStandings(regSeasonAll, owners, season);
@@ -117,7 +120,7 @@ export default async function FantasyMatchupsPage({
             <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
               {standings.map((s) => (
                 <tr key={s.owner_id}>
-                  <td className="px-4 py-2 font-medium">{s.display_name}</td>
+                  <td className={`px-4 py-2 font-medium ${colorMap.get(s.owner_id) ?? ""}`}>{s.display_name}</td>
                   <td className="text-right px-3 py-2 tabular-nums">
                     {s.wins} - {s.losses}
                     {s.ties > 0 ? ` - ${s.ties}` : ""}
@@ -240,6 +243,7 @@ export default async function FantasyMatchupsPage({
             owners={owners}
             playoffMatchups={playoffMatchups}
             playoffStart={playoffStart}
+            colorMap={colorMap}
           />
         </section>
       )}
@@ -252,11 +256,13 @@ function PlayoffBracket({
   owners,
   playoffMatchups,
   playoffStart,
+  colorMap,
 }: {
   bracket: BracketEntry[] | null;
   owners: FantasyOwner[];
   playoffMatchups: FantasyMatchup[];
   playoffStart: number;
+  colorMap: Map<string, string>;
 }) {
   if (!bracket || bracket.length === 0) {
     return (
@@ -346,6 +352,7 @@ function PlayoffBracket({
                         isWinner={hasResult && entry.w === entry.t1}
                         isLoser={hasResult && entry.l === entry.t1}
                         isTbd={entry.t1 == null}
+                        color={entry.t1 ? colorMap.get(entry.t1) : undefined}
                       />
                       <div className="border-t border-stone-100 dark:border-stone-800/60" />
                       <MatchupRow
@@ -354,6 +361,7 @@ function PlayoffBracket({
                         isWinner={hasResult && entry.w === entry.t2}
                         isLoser={hasResult && entry.l === entry.t2}
                         isTbd={entry.t2 == null}
+                        color={entry.t2 ? colorMap.get(entry.t2) : undefined}
                       />
                     </div>
                   );
@@ -379,40 +387,26 @@ function MatchupRow({
   isWinner,
   isLoser,
   isTbd,
+  color,
 }: {
   name: string;
   score: number | undefined;
   isWinner: boolean;
   isLoser: boolean;
   isTbd: boolean;
+  color?: string;
 }) {
   return (
     <div
       className={`flex items-center justify-between gap-2 px-3 py-2 text-sm transition-colors ${
-        isTbd
-          ? "text-stone-400 italic"
-          : isWinner
-          ? "bg-emerald-50 dark:bg-emerald-950/30"
-          : isLoser
-          ? "opacity-40"
-          : ""
+        isTbd ? "text-stone-400 italic" : isWinner ? "bg-emerald-50 dark:bg-emerald-950/30" : isLoser ? "opacity-40" : ""
       }`}
     >
-      <span
-        className={`truncate ${
-          isWinner ? "font-semibold text-emerald-700 dark:text-emerald-400" : ""
-        }`}
-      >
+      <span className={`truncate font-medium ${isWinner ? "font-semibold" : ""} ${isTbd ? "" : (color ?? "")}`}>
         {name}
       </span>
       {score != null && (
-        <span
-          className={`tabular-nums text-xs shrink-0 ${
-            isWinner
-              ? "font-semibold text-emerald-700 dark:text-emerald-400"
-              : "text-stone-400"
-          }`}
-        >
+        <span className={`tabular-nums text-xs shrink-0 ${isWinner ? "font-semibold" : "text-stone-400"}`}>
           {fmt(score, 2)}
         </span>
       )}

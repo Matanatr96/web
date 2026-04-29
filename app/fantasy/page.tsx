@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import type { BracketEntry, FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
-import { regularSeasonOnly } from "@/lib/fantasy";
+import { regularSeasonOnly, ownerColorMap } from "@/lib/fantasy";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +21,8 @@ export default async function FantasyPage() {
 
   const regSeason = regularSeasonOnly(matchups, leagues);
 
+  const colorMap = ownerColorMap(owners);
+
   // Champions: one per season, derived from winners_bracket p=1 entry
   const champions = leagues
     .map((league) => {
@@ -29,34 +31,22 @@ export default async function FantasyPage() {
       const owner = champEntry?.w
         ? owners.find((o) => o.user_id === champEntry.w)
         : null;
-      return { season: league.season, display_name: owner?.display_name ?? null };
+      return {
+        season: league.season,
+        owner_id: owner?.user_id ?? null,
+        display_name: owner?.display_name ?? null,
+      };
     })
-    .filter((c): c is { season: number; display_name: string } => c.display_name != null)
+    .filter((c): c is { season: number; owner_id: string; display_name: string } => c.display_name != null)
     .sort((a, b) => b.season - a.season);
 
-  // Assign a stable color to every owner (sorted alphabetically for consistency)
-  const OWNER_COLORS = [
-    "text-sky-600 dark:text-sky-400",
-    "text-violet-600 dark:text-violet-400",
-    "text-amber-600 dark:text-amber-400",
-    "text-rose-600 dark:text-rose-400",
-    "text-emerald-600 dark:text-emerald-400",
-    "text-orange-600 dark:text-orange-400",
-    "text-pink-600 dark:text-pink-400",
-    "text-teal-600 dark:text-teal-400",
-  ];
-  const allOwnerNames = [...new Set(owners.map((o) => o.display_name))].sort();
-  const ownerColorMap = new Map(
-    allOwnerNames.map((name, i) => [name, OWNER_COLORS[i % OWNER_COLORS.length]]),
-  );
-
   // All-time regular season win counts across all seasons
-  const winMap = new Map<string, { display_name: string; wins: number }>();
+  const winMap = new Map<string, { owner_id: string; display_name: string; wins: number }>();
   for (const m of regSeason) {
     if (m.result !== "W") continue;
     const owner = owners.find((o) => o.user_id === m.owner_id);
     if (!owner) continue;
-    const entry = winMap.get(m.owner_id) ?? { display_name: owner.display_name, wins: 0 };
+    const entry = winMap.get(m.owner_id) ?? { owner_id: m.owner_id, display_name: owner.display_name, wins: 0 };
     entry.wins += 1;
     winMap.set(m.owner_id, entry);
   }
@@ -107,7 +97,7 @@ export default async function FantasyPage() {
                 key={c.season}
                 className="flex items-baseline justify-between gap-3 px-4 py-2.5 text-sm"
               >
-                <span className={`font-medium ${ownerColorMap.get(c.display_name) ?? ""}`}>
+                <span className={`font-medium ${colorMap.get(c.owner_id) ?? ""}`}>
                   {c.display_name}
                 </span>
                 <span className="text-stone-400 tabular-nums text-xs">{c.season}</span>
@@ -131,7 +121,7 @@ export default async function FantasyPage() {
               >
                 <span className="flex items-baseline gap-2 min-w-0">
                   <span className="text-xs text-stone-400 tabular-nums w-4">{i + 1}</span>
-                  <span className={`font-medium truncate ${ownerColorMap.get(row.display_name) ?? ""}`}>{row.display_name}</span>
+                  <span className={`font-medium truncate ${colorMap.get(row.owner_id) ?? ""}`}>{row.display_name}</span>
                 </span>
                 <span className="tabular-nums font-semibold">{row.wins}</span>
               </li>

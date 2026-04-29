@@ -6,6 +6,7 @@ import {
   topScoringRecords,
   lowestScoringRecords,
   biggestBlowouts,
+  ownerColorMap,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 
@@ -24,6 +25,8 @@ export default async function FantasyRecordsPage() {
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
   const matchups = (matchupData ?? []) as FantasyMatchup[];
+
+  const colorMap = ownerColorMap(owners);
 
   const regSeasonAll = regularSeasonOnly(matchups, leagues);
   const topScores = topScoringRecords(regSeasonAll, owners, 10);
@@ -55,6 +58,7 @@ export default async function FantasyRecordsPage() {
             year: r.season,
             week: r.week,
             owner: r.display_name,
+            ownerColor: colorMap.get(r.owner_id),
             value: fmt(r.points, 2),
           }))}
           valueLabel="Points"
@@ -65,6 +69,7 @@ export default async function FantasyRecordsPage() {
             year: r.season,
             week: r.week,
             owner: r.display_name,
+            ownerColor: colorMap.get(r.owner_id),
             value: fmt(r.points, 2),
           }))}
           valueLabel="Points"
@@ -89,11 +94,11 @@ export default async function FantasyRecordsPage() {
                 <tr key={i}>
                   <td className="px-4 py-2 text-stone-500">{b.season}</td>
                   <td className="px-3 py-2 text-stone-500">{b.week}</td>
-                  <td className="px-3 py-2 font-medium">{b.display_name}</td>
+                  <td className={`px-3 py-2 font-medium ${colorMap.get(b.owner_id) ?? ""}`}>{b.display_name}</td>
                   <td className="text-right px-3 py-2 tabular-nums text-emerald-600 dark:text-emerald-400">
                     +{fmt(b.differential, 2)}
                   </td>
-                  <td className="px-4 py-2 text-stone-500">{b.opponent_name}</td>
+                  <td className={`px-4 py-2 ${colorMap.get(b.opponent_id) ?? "text-stone-500"}`}>{b.opponent_name}</td>
                 </tr>
               ))}
             </tbody>
@@ -110,7 +115,7 @@ function RecordsTable({
   valueLabel,
 }: {
   title: string;
-  rows: Array<{ year: number; week: number; owner: string; value: string }>;
+  rows: Array<{ year: number; week: number; owner: string; ownerColor?: string; value: string }>;
   valueLabel: string;
 }) {
   return (
@@ -131,7 +136,7 @@ function RecordsTable({
               <tr key={i}>
                 <td className="px-4 py-2 text-stone-500">{r.year}</td>
                 <td className="px-3 py-2 text-stone-500">{r.week}</td>
-                <td className="px-3 py-2 font-medium">{r.owner}</td>
+                <td className={`px-3 py-2 font-medium ${r.ownerColor ?? ""}`}>{r.owner}</td>
                 <td className="text-right px-4 py-2 tabular-nums">{r.value}</td>
               </tr>
             ))}
