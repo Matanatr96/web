@@ -170,24 +170,20 @@ export default async function FantasyMatchupsPage({
               <thead className="text-xs uppercase tracking-wide text-stone-500 bg-stone-50 dark:bg-stone-900/50">
                 <tr>
                   <th className="text-left px-4 py-2 font-medium">Week</th>
-                  {seasons.map((s) => (
-                    <th key={s} className="text-right px-3 py-2 font-medium">
-                      {s}
-                    </th>
-                  ))}
+                  <th className="text-right px-4 py-2 font-medium">Avg</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-stone-200 dark:divide-stone-800">
-                {weekly.map((row) => (
-                  <tr key={row.week}>
-                    <td className="px-4 py-2 text-stone-500">Week {row.week}</td>
-                    {seasons.map((s) => (
-                      <td key={s} className="text-right px-3 py-2 tabular-nums">
-                        {row.averages[s] != null ? fmt(row.averages[s], 2) : "—"}
+                {weekly
+                  .filter((row) => row.averages[season] != null)
+                  .map((row) => (
+                    <tr key={row.week}>
+                      <td className="px-4 py-2 text-stone-500">Week {row.week}</td>
+                      <td className="text-right px-4 py-2 tabular-nums">
+                        {fmt(row.averages[season], 2)}
                       </td>
-                    ))}
-                  </tr>
-                ))}
+                    </tr>
+                  ))}
               </tbody>
             </table>
           </div>
