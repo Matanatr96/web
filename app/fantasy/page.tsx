@@ -103,7 +103,8 @@ export default async function FantasyPage() {
 
         {/* All-time regular season wins */}
         <div>
-          <h2 className="text-lg font-semibold mb-3">All-Time Wins</h2>
+          <h2 className="text-lg font-semibold mb-1">All-Time Wins</h2>
+          <p className="text-xs text-stone-400 mb-3">Regular season only, excludes playoffs</p>
           <ol className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 divide-y divide-stone-100 dark:divide-stone-800">
             {winRankings.map((row, i) => (
               <li
