@@ -10,6 +10,7 @@
     "lint": "next lint",
     "db:import": "tsx scripts/import.ts",
     "db:backfill-geo": "tsx scripts/backfill-geo.ts",
+    "db:sync-fantasy": "tsx scripts/sync-fantasy.ts",
     "test:pnl": "tsx scripts/pnl-test.ts"
   },
   "dependencies": {

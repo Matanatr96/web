@@ -117,3 +117,48 @@ export type OptionsPosition = {
   unrealized_pl?: number;            // (mark - entry) * qty * 100, sign-correct per long/short
   assigned_equity_trades?: EquityTrade[]; // heuristically matched equity trades from assignment
 };
+
+// Fantasy football (Sleeper).
+export type FantasyLeague = {
+  season: number;
+  league_id: string;
+  name: string | null;
+};
+
+export type FantasyOwner = {
+  user_id: string;
+  display_name: string;
+  avatar: string | null;
+};
+
+export type FantasyMatchup = {
+  id: number;
+  season: number;
+  week: number;
+  owner_id: string;
+  opponent_id: string | null;
+  points: number;
+  opponent_points: number;
+  result: "W" | "L" | "T";
+};
+
+// Per-owner standings row, derived from FantasyMatchup[].
+export type FantasyStanding = {
+  owner_id: string;
+  display_name: string;
+  wins: number;
+  losses: number;
+  ties: number;
+  unrealized_wins: number;       // all-play wins across the season
+  unrealized_losses: number;
+  avg_ppg: number;
+  avg_ppga: number;
+  avg_diff: number;              // avg_ppg - avg_ppga
+  ppg_vs_avg: number;            // avg_ppg - league_avg_ppg
+};
+
+export type FantasyWeeklyAverage = {
+  week: number;
+  // season -> league average points for that week (null if week not played)
+  averages: Record<number, number | null>;
+};

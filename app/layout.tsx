@@ -43,6 +43,12 @@ export default async function RootLayout({
               >
                 Stonks
               </Link>
+              <Link
+                href="/fantasy"
+                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
+              >
+                Fantasy
+              </Link>
               {admin && (
                 <Link
                   href="/admin"
