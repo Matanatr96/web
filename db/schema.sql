@@ -28,6 +28,9 @@ alter table restaurants add column if not exists lat      double precision;
 alter table restaurants add column if not exists lng      double precision;
 alter table restaurants add column if not exists place_id text;
 
+-- last_visited: optional date the restaurant was most recently visited.
+alter table restaurants add column if not exists last_visited date;
+
 -- Photos: array of public Supabase Storage URLs.
 -- Before using photo uploads, create a public Storage bucket named "restaurant-photos"
 -- in the Supabase dashboard (Storage → New bucket → name: restaurant-photos, public: true).
