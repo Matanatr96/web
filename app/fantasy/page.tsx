@@ -5,6 +5,7 @@ import type {
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
+  FantasyTrade,
 } from "@/lib/types";
 import {
   buildStandings,
@@ -16,6 +17,7 @@ import {
   topScoringRecords,
   lowestScoringRecords,
   biggestBlowouts,
+  buildTradeLeaderboard,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 
@@ -35,15 +37,19 @@ export default async function FantasyPage({
     { data: leagueData },
     { data: ownerData },
     { data: matchupData },
+    { data: tradeData },
   ] = await Promise.all([
     db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
     db.from("fantasy_owners").select("*"),
     db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+    db.from("fantasy_trades").select("*").order("created_ms", { ascending: false }),
   ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
   const matchups = (matchupData ?? []) as FantasyMatchup[];
+  const trades = (tradeData ?? []) as FantasyTrade[];
+  const tradeLeaderboard = buildTradeLeaderboard(trades, owners);
 
   if (leagues.length === 0) {
     return (
@@ -319,7 +325,113 @@ export default async function FantasyPage({
           </table>
         </div>
       </section>
+
+      {/* Trades */}
+      <section className="mt-12 grid gap-8 md:grid-cols-[1fr_280px]">
+        <div>
+          <h2 className="text-xl font-semibold mb-3">Trades</h2>
+          {trades.length === 0 ? (
+            <p className="text-sm text-stone-500">No completed trades synced.</p>
+          ) : (
+            <ul className="space-y-3">
+              {trades.map((t) => (
+                <TradeCard key={t.id} trade={t} owners={owners} />
+              ))}
+            </ul>
+          )}
+        </div>
+
+        <aside>
+          <h2 className="text-xl font-semibold mb-3">Trade Count</h2>
+          <ol className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 divide-y divide-stone-200 dark:divide-stone-800">
+            {tradeLeaderboard.map((row, i) => (
+              <li
+                key={row.owner_id}
+                className="flex items-baseline justify-between gap-3 px-4 py-2 text-sm"
+              >
+                <span className="flex items-baseline gap-2 min-w-0">
+                  <span className="text-xs text-stone-400 tabular-nums w-5">
+                    {i + 1}
+                  </span>
+                  <span className="font-medium truncate">{row.display_name}</span>
+                </span>
+                <span className="tabular-nums font-semibold">
+                  {row.trade_count}
+                </span>
+              </li>
+            ))}
+          </ol>
+        </aside>
+      </section>
     </div>
+  );
+}
+
+function TradeCard({
+  trade,
+  owners,
+}: {
+  trade: FantasyTrade;
+  owners: FantasyOwner[];
+}) {
+  const date = new Date(trade.created_ms).toLocaleDateString("en-US", {
+    month: "short", day: "numeric", year: "numeric",
+  });
+  const sides = trade.user_ids.map((uid) => {
+    const owner = owners.find((o) => o.user_id === uid);
+    return {
+      uid,
+      name: owner?.display_name ?? uid,
+      side: trade.payload[uid] ?? { players: [], picks: [], faab: 0 },
+    };
+  });
+
+  return (
+    <li className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
+      <div className="flex items-baseline justify-between mb-3 text-xs text-stone-500">
+        <span>
+          {trade.season} · Week {trade.week}
+        </span>
+        <span>{date}</span>
+      </div>
+      <div className="grid gap-4" style={{ gridTemplateColumns: `repeat(${sides.length}, minmax(0, 1fr))` }}>
+        {sides.map(({ uid, name, side }) => (
+          <div key={uid}>
+            <div className="font-medium text-sm mb-2">{name} received</div>
+            <ul className="space-y-1 text-sm">
+              {side.players.map((p) => (
+                <li key={p.player_id} className="text-stone-700 dark:text-stone-300">
+                  {p.name}
+                  {p.position && (
+                    <span className="text-xs text-stone-400 ml-1">
+                      {p.position}
+                      {p.team ? ` · ${p.team}` : ""}
+                    </span>
+                  )}
+                </li>
+              ))}
+              {side.picks.map((pick, i) => (
+                <li key={`pick-${i}`} className="text-stone-500 italic text-sm">
+                  {pick.season} R{pick.round}
+                  {pick.original_owner_name && pick.original_owner_id !== uid
+                    ? ` (via ${pick.original_owner_name})`
+                    : ""}
+                </li>
+              ))}
+              {side.faab !== 0 && (
+                <li className={`text-sm ${side.faab > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-red-600 dark:text-red-400"}`}>
+                  {side.faab > 0 ? "+" : ""}
+                  {side.faab} FAAB
+                </li>
+              )}
+              {side.players.length === 0 && side.picks.length === 0 && side.faab === 0 && (
+                <li className="text-stone-400 text-sm italic">—</li>
+              )}
+            </ul>
+          </div>
+        ))}
+      </div>
+    </li>
   );
 }
 

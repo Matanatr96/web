@@ -45,6 +45,33 @@ create table if not exists fantasy_matchups (
 create index if not exists fantasy_matchups_season_idx on fantasy_matchups (season);
 create index if not exists fantasy_matchups_owner_idx  on fantasy_matchups (owner_id);
 
+-- One row per completed trade. Payload keys are user_ids (translated from
+-- Sleeper roster_ids at sync time); each value lists what that side received:
+--   { players: [{player_id, name, position, team}], picks: [{season, round, ...}], faab: number }
+create table if not exists fantasy_trades (
+  id            text primary key,
+  season        int  not null,
+  week          int  not null,
+  status        text not null,
+  created_ms    bigint not null,
+  user_ids      text[] not null,
+  payload       jsonb not null,
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now()
+);
+
+create index if not exists fantasy_trades_season_idx on fantasy_trades (season desc, created_ms desc);
+
+drop trigger if exists fantasy_trades_set_updated_at on fantasy_trades;
+create trigger fantasy_trades_set_updated_at
+  before update on fantasy_trades
+  for each row execute function set_updated_at();
+
+alter table fantasy_trades enable row level security;
+drop policy if exists "Public can read fantasy_trades" on fantasy_trades;
+create policy "Public can read fantasy_trades"
+  on fantasy_trades for select using (true);
+
 -- Reuse the project's set_updated_at() trigger function (defined in schema.sql).
 drop trigger if exists fantasy_leagues_set_updated_at on fantasy_leagues;
 create trigger fantasy_leagues_set_updated_at

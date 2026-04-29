@@ -4,8 +4,10 @@ import type {
   FantasyMatchup,
   FantasyOwner,
   FantasyStanding,
+  FantasyTrade,
   FantasyWeeklyAverage,
   ScoreRecord,
+  TradeLeaderboardRow,
 } from "./types";
 
 /**
@@ -275,4 +277,32 @@ export function biggestBlowouts(
     }))
     .sort((a, b) => b.differential - a.differential)
     .slice(0, limit);
+}
+
+/**
+ * Trade count per owner across all trades passed in. Owners that have never
+ * traded are still included (count = 0) so the leaderboard shows everyone.
+ */
+export function buildTradeLeaderboard(
+  trades: FantasyTrade[],
+  owners: FantasyOwner[],
+): TradeLeaderboardRow[] {
+  const counts = new Map<string, number>();
+  for (const o of owners) counts.set(o.user_id, 0);
+  for (const t of trades) {
+    for (const uid of t.user_ids) {
+      counts.set(uid, (counts.get(uid) ?? 0) + 1);
+    }
+  }
+  const rows: TradeLeaderboardRow[] = [];
+  for (const [user_id, trade_count] of counts) {
+    const owner = owners.find((o) => o.user_id === user_id);
+    rows.push({
+      owner_id: user_id,
+      display_name: owner?.display_name ?? user_id,
+      trade_count,
+    });
+  }
+  rows.sort((a, b) => b.trade_count - a.trade_count || a.display_name.localeCompare(b.display_name));
+  return rows;
 }

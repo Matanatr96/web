@@ -56,6 +56,42 @@ type SleeperLeague = {
   settings: { playoff_week_start?: number; [k: string]: unknown };
 };
 
+type SleeperPlayer = {
+  player_id?: string;
+  full_name?: string;
+  first_name?: string;
+  last_name?: string;
+  position?: string | null;
+  team?: string | null;
+};
+
+type SleeperDraftPick = {
+  season: string;
+  round: number;
+  roster_id: number;            // original owner roster_id
+  previous_owner_id: number;
+  owner_id: number;             // new owner roster_id
+};
+
+type SleeperWaiverBudget = {
+  sender: number;
+  receiver: number;
+  amount: number;
+};
+
+type SleeperTransaction = {
+  transaction_id: string;
+  type: string;                 // "trade" | "waiver" | "free_agent" | ...
+  status: string;               // "complete" | "failed"
+  created: number;              // ms epoch
+  leg: number;                  // week
+  roster_ids: number[];
+  adds: Record<string, number> | null;   // player_id -> roster_id receiving
+  drops: Record<string, number> | null;  // player_id -> roster_id giving up
+  draft_picks: SleeperDraftPick[];
+  waiver_budget: SleeperWaiverBudget[];
+};
+
 type SleeperBracketEntry = {
   r: number;          // round number (1-indexed)
   m: number;          // matchup id within round
@@ -74,7 +110,30 @@ async function fetchJson<T>(url: string): Promise<T> {
   return (await r.json()) as T;
 }
 
-async function syncSeason(season: number, leagueId: string, currentWeek: number) {
+type PlayerMap = Map<string, { name: string; position: string | null; team: string | null }>;
+
+function buildPlayerMap(raw: Record<string, SleeperPlayer>): PlayerMap {
+  const map: PlayerMap = new Map();
+  for (const [pid, p] of Object.entries(raw)) {
+    const name =
+      p.full_name ??
+      [p.first_name, p.last_name].filter(Boolean).join(" ").trim() ??
+      pid;
+    map.set(pid, {
+      name: name || pid,
+      position: p.position ?? null,
+      team: p.team ?? null,
+    });
+  }
+  return map;
+}
+
+async function syncSeason(
+  season: number,
+  leagueId: string,
+  currentWeek: number,
+  players: PlayerMap,
+) {
   console.log(`\n[${season}] league ${leagueId}`);
 
   const [users, rosters, league, winnersBracket] = await Promise.all([
@@ -200,6 +259,114 @@ async function syncSeason(season: number, leagueId: string, currentWeek: number)
     console.log(`  week ${week}: ${rows.length} matchup rows`);
   }
   console.log(`[${season}] done — ${matchupCount} matchup rows total`);
+
+  // Trades: walk weeks 1..MAX_WEEK and grab any completed trades.
+  const ownerNameById = new Map<string, string>();
+  for (const u of users) ownerNameById.set(u.user_id, u.display_name);
+
+  const tradeRows: Array<{
+    id: string;
+    season: number;
+    week: number;
+    status: string;
+    created_ms: number;
+    user_ids: string[];
+    payload: Record<string, {
+      players: Array<{ player_id: string; name: string; position: string | null; team: string | null }>;
+      picks: Array<{ season: string; round: number; original_owner_id: string | null; original_owner_name: string | null }>;
+      faab: number;
+    }>;
+  }> = [];
+
+  for (let week = 1; week <= MAX_WEEK; week++) {
+    let txns: SleeperTransaction[];
+    try {
+      txns = await fetchJson<SleeperTransaction[]>(
+        `${SLEEPER}/league/${leagueId}/transactions/${week}`,
+      );
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(txns)) continue;
+
+    for (const t of txns) {
+      if (t.type !== "trade" || t.status !== "complete") continue;
+
+      // Build per-side payload keyed by user_id.
+      const side: Record<string, {
+        players: Array<{ player_id: string; name: string; position: string | null; team: string | null }>;
+        picks: Array<{ season: string; round: number; original_owner_id: string | null; original_owner_name: string | null }>;
+        faab: number;
+      }> = {};
+      const ensure = (uid: string) => {
+        if (!side[uid]) side[uid] = { players: [], picks: [], faab: 0 };
+        return side[uid];
+      };
+      const uidFor = (rosterId: number): string | null =>
+        rosterToUser.get(rosterId) ?? null;
+
+      const userIds: string[] = [];
+      for (const rid of t.roster_ids) {
+        const uid = uidFor(rid);
+        if (uid && !userIds.includes(uid)) userIds.push(uid);
+      }
+
+      // Players: each `add` lists who *received* a player. The corresponding
+      // `drop` would be the previous owner — equivalent for trades.
+      if (t.adds) {
+        for (const [pid, rid] of Object.entries(t.adds)) {
+          const uid = uidFor(rid);
+          if (!uid) continue;
+          const meta = players.get(pid);
+          ensure(uid).players.push({
+            player_id: pid,
+            name: meta?.name ?? pid,
+            position: meta?.position ?? null,
+            team: meta?.team ?? null,
+          });
+        }
+      }
+
+      // Draft picks: `owner_id` is the new owner roster_id.
+      for (const p of t.draft_picks ?? []) {
+        const uid = uidFor(p.owner_id);
+        if (!uid) continue;
+        const origUid = uidFor(p.roster_id);
+        ensure(uid).picks.push({
+          season: p.season,
+          round: p.round,
+          original_owner_id: origUid,
+          original_owner_name: origUid ? ownerNameById.get(origUid) ?? null : null,
+        });
+      }
+
+      // FAAB swaps: receiver +amount, sender -amount.
+      for (const w of t.waiver_budget ?? []) {
+        const recv = uidFor(w.receiver);
+        const sender = uidFor(w.sender);
+        if (recv) ensure(recv).faab += w.amount;
+        if (sender) ensure(sender).faab -= w.amount;
+      }
+
+      tradeRows.push({
+        id: t.transaction_id,
+        season,
+        week,
+        status: t.status,
+        created_ms: t.created,
+        user_ids: userIds,
+        payload: side,
+      });
+    }
+  }
+
+  if (tradeRows.length > 0) {
+    const { error: tErr } = await db
+      .from("fantasy_trades")
+      .upsert(tradeRows, { onConflict: "id" });
+    if (tErr) throw tErr;
+  }
+  console.log(`  trades: ${tradeRows.length} rows`);
 }
 
 async function main() {
@@ -216,8 +383,17 @@ async function main() {
   const state = await fetchJson<SleeperState>(`${SLEEPER}/state/nfl`);
   const currentWeek = state.week ?? 1;
 
+  // Sleeper recommends caching /players/nfl (~5MB) and refreshing at most
+  // once per day. We fetch it once per script run.
+  console.log("Fetching /players/nfl …");
+  const rawPlayers = await fetchJson<Record<string, SleeperPlayer>>(
+    `${SLEEPER}/players/nfl`,
+  );
+  const players = buildPlayerMap(rawPlayers);
+  console.log(`  loaded ${players.size} players`);
+
   for (const { season, league_id } of leagues) {
-    await syncSeason(season, league_id, currentWeek);
+    await syncSeason(season, league_id, currentWeek, players);
   }
   console.log("\nAll done.");
 }

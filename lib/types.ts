@@ -155,6 +155,45 @@ export type BlowoutRecord = ScoreRecord & {
   differential: number;
 };
 
+export type TradedPlayer = {
+  player_id: string;
+  name: string;
+  position: string | null;
+  team: string | null;
+};
+
+export type TradedPick = {
+  season: string;          // pick year
+  round: number;
+  // user_id of the original owner if known; null otherwise.
+  original_owner_id: string | null;
+  original_owner_name: string | null;
+};
+
+// What a single side received in a trade.
+export type TradeSide = {
+  players: TradedPlayer[];
+  picks: TradedPick[];
+  faab: number;            // net FAAB received (negative = sent)
+};
+
+// One row in fantasy_trades. Payload is keyed by user_id.
+export type FantasyTrade = {
+  id: string;
+  season: number;
+  week: number;
+  status: string;
+  created_ms: number;
+  user_ids: string[];
+  payload: Record<string, TradeSide>;
+};
+
+export type TradeLeaderboardRow = {
+  owner_id: string;
+  display_name: string;
+  trade_count: number;
+};
+
 export type FantasyOwner = {
   user_id: string;
   display_name: string;

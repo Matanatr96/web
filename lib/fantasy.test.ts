@@ -10,8 +10,14 @@ import {
   topScoringRecords,
   lowestScoringRecords,
   biggestBlowouts,
+  buildTradeLeaderboard,
 } from "./fantasy";
-import type { FantasyLeague, FantasyMatchup, FantasyOwner } from "./types";
+import type {
+  FantasyLeague,
+  FantasyMatchup,
+  FantasyOwner,
+  FantasyTrade,
+} from "./types";
 
 const owners: FantasyOwner[] = [
   { user_id: "a", display_name: "Alice", avatar: null },
@@ -145,5 +151,32 @@ describe("record helpers", () => {
       owner_id: "a", opponent_id: "b", differential: 90,
     });
     expect(blow[1].differential).toBe(10);
+  });
+});
+
+describe("buildTradeLeaderboard", () => {
+  const owners: FantasyOwner[] = [
+    { user_id: "a", display_name: "Alice", avatar: null },
+    { user_id: "b", display_name: "Bob",   avatar: null },
+    { user_id: "c", display_name: "Cara",  avatar: null },
+  ];
+  const trades: FantasyTrade[] = [
+    { id: "t1", season: 2024, week: 3, status: "complete", created_ms: 1, user_ids: ["a", "b"], payload: {} },
+    { id: "t2", season: 2024, week: 5, status: "complete", created_ms: 2, user_ids: ["a", "c"], payload: {} },
+    { id: "t3", season: 2024, week: 7, status: "complete", created_ms: 3, user_ids: ["a", "b"], payload: {} },
+  ];
+
+  it("counts trades per owner and includes zero-trade owners", () => {
+    const rows = buildTradeLeaderboard(trades, owners);
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ owner_id: "a", trade_count: 3 });
+    expect(rows[1]).toMatchObject({ owner_id: "b", trade_count: 2 });
+    expect(rows[2]).toMatchObject({ owner_id: "c", trade_count: 1 });
+  });
+
+  it("returns zero-count rows when there are no trades", () => {
+    const rows = buildTradeLeaderboard([], owners);
+    expect(rows).toHaveLength(3);
+    expect(rows.every((r) => r.trade_count === 0)).toBe(true);
   });
 });
