@@ -45,6 +45,8 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [duplicatePlaceMatch, setDuplicatePlaceMatch] = useState<string | null>(null);
   const [category, setCategory] = useState(initial?.category ?? "Food");
+  const [selectedCuisine, setSelectedCuisine] = useState(initial?.cuisine ?? cuisineList[0]);
+  const [googleTypeSuggestion, setGoogleTypeSuggestion] = useState<string | null>(null);
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
   const [service, setService] = useState<number | null>(initial?.service ?? null);
@@ -65,7 +67,21 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         ? existingPlaceIds[pick.placeId]
         : null
     );
-  }, [existingPlaceIds]);
+    // Try to auto-select cuisine from the Google Maps primary type.
+    // e.g. "Sushi Restaurant" → strip " Restaurant" → "Sushi" → match against list.
+    if (pick.googleType) {
+      setGoogleTypeSuggestion(pick.googleType);
+      const stripped = pick.googleType
+        .replace(/\s+(Restaurant|Bar|Cafe|Café|Bakery|Diner|Bistro|Shop|Place|Joint|Stand|Spot)$/i, "")
+        .trim();
+      const match = cuisineList.find(
+        (c) =>
+          c.toLowerCase() === pick.googleType!.toLowerCase() ||
+          c.toLowerCase() === stripped.toLowerCase(),
+      );
+      if (match) setSelectedCuisine(match);
+    }
+  }, [existingPlaceIds, cuisineList]);
 
   const computed = computeOverall(category, {
     food, value, service, ambiance, vegan_options: veganOptions,
@@ -171,13 +187,27 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         options={["Food", "Drink", "Dessert"]}
         onChange={(e) => setCategory(e.target.value)}
       />
-      <SelectField
-        label="Cuisine"
-        name="cuisine"
-        required
-        defaultValue={initial?.cuisine ?? cuisineList[0]}
-        options={cuisineList}
-      />
+      <div>
+        <label className="block text-sm font-medium mb-1">
+          Cuisine<span className="text-red-500"> *</span>
+        </label>
+        <select
+          name="cuisine"
+          required
+          value={selectedCuisine}
+          onChange={(e) => setSelectedCuisine(e.target.value)}
+          className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
+        >
+          {cuisineList.map((o) => (
+            <option key={o} value={o}>{o}</option>
+          ))}
+        </select>
+        {googleTypeSuggestion && (
+          <p className="text-xs text-stone-400 mt-1">
+            Google Maps: <span className="font-medium text-stone-500">{googleTypeSuggestion}</span>
+          </p>
+        )}
+      </div>
 
       {/* Sub-ratings with weight labels */}
       <NumField
