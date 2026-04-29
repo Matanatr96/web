@@ -107,7 +107,7 @@ export default async function FantasyMatchupsPage({
               <tr>
                 <th className="text-left px-4 py-2 font-medium">Owner</th>
                 <th className="text-right px-3 py-2 font-medium">Record</th>
-                <th className="text-right px-3 py-2 font-medium">All-Play</th>
+                <th className="text-right px-3 py-2 font-medium">Unrealized W/L</th>
                 <th className="text-right px-3 py-2 font-medium">Avg PPG</th>
                 <th className="text-right px-3 py-2 font-medium">Avg PPGA</th>
                 <th className="text-right px-3 py-2 font-medium">Diff</th>
