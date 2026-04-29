@@ -117,3 +117,117 @@ export type OptionsPosition = {
   unrealized_pl?: number;            // (mark - entry) * qty * 100, sign-correct per long/short
   assigned_equity_trades?: EquityTrade[]; // heuristically matched equity trades from assignment
 };
+
+// Fantasy football (Sleeper).
+export type FantasyLeague = {
+  season: number;
+  league_id: string;
+  name: string | null;
+  playoff_week_start: number | null;
+  // Sleeper winners_bracket, with roster_ids translated to fantasy_owners.user_id.
+  winners_bracket: BracketEntry[] | null;
+};
+
+export type BracketEntry = {
+  r: number;
+  m: number;
+  p: number | null;
+  t1: string | null;
+  t2: string | null;
+  w: string | null;
+  l: string | null;
+  t1_from?: { w?: number; l?: number } | null;
+  t2_from?: { w?: number; l?: number } | null;
+};
+
+// Notable single-game records derived from FantasyMatchup[].
+export type ScoreRecord = {
+  season: number;
+  week: number;
+  owner_id: string;
+  display_name: string;
+  points: number;
+};
+
+export type BlowoutRecord = ScoreRecord & {
+  opponent_id: string;
+  opponent_name: string;
+  differential: number;
+};
+
+export type TradedPlayer = {
+  player_id: string;
+  name: string;
+  position: string | null;
+  team: string | null;
+};
+
+export type TradedPick = {
+  season: string;          // pick year
+  round: number;
+  // user_id of the original owner if known; null otherwise.
+  original_owner_id: string | null;
+  original_owner_name: string | null;
+};
+
+// What a single side received in a trade.
+export type TradeSide = {
+  players: TradedPlayer[];
+  picks: TradedPick[];
+  faab: number;            // net FAAB received (negative = sent)
+};
+
+// One row in fantasy_trades. Payload is keyed by user_id.
+export type FantasyTrade = {
+  id: string;
+  season: number;
+  week: number;
+  status: string;
+  created_ms: number;
+  user_ids: string[];
+  payload: Record<string, TradeSide>;
+};
+
+export type TradeLeaderboardRow = {
+  owner_id: string;
+  display_name: string;
+  trade_count: number;
+};
+
+export type FantasyOwner = {
+  user_id: string;
+  display_name: string;
+  avatar: string | null;
+};
+
+export type FantasyMatchup = {
+  id: number;
+  season: number;
+  week: number;
+  owner_id: string;
+  opponent_id: string | null;
+  points: number;
+  opponent_points: number;
+  result: "W" | "L" | "T";
+};
+
+// Per-owner standings row, derived from FantasyMatchup[].
+export type FantasyStanding = {
+  owner_id: string;
+  display_name: string;
+  wins: number;
+  losses: number;
+  ties: number;
+  unrealized_wins: number;       // all-play wins across the season
+  unrealized_losses: number;
+  avg_ppg: number;
+  avg_ppga: number;
+  avg_diff: number;              // avg_ppg - avg_ppga
+  ppg_vs_avg: number;            // avg_ppg - league_avg_ppg
+};
+
+export type FantasyWeeklyAverage = {
+  week: number;
+  // season -> league average points for that week (null if week not played)
+  averages: Record<number, number | null>;
+};

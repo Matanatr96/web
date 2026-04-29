@@ -4,6 +4,8 @@ import type { Restaurant, OptionsTrade, EquityTrade } from "@/lib/types";
 import { fmt, ratingColorClass } from "@/lib/utils";
 import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
+import { buildStandings } from "@/lib/fantasy";
+import type { FantasyMatchup, FantasyOwner } from "@/lib/types";
 
 export const dynamic = "force-dynamic";
 
@@ -14,18 +16,34 @@ function fmtUSD(n: number) {
 export default async function HomePage() {
   const db = getSupabase();
 
-  const [{ data: restaurantData }, { data: optionsData }, { data: equityData }] =
-    await Promise.all([
-      db.from("restaurants").select("*").order("overall", { ascending: false }),
-      db.from("options_trades").select("*").eq("source", "prod").order("order_date", { ascending: false }),
-      db.from("equity_trades").select("*").eq("source", "prod").order("order_date", { ascending: true }),
-    ]);
+  const [
+    { data: restaurantData },
+    { data: optionsData },
+    { data: equityData },
+    { data: fantasyMatchupData },
+    { data: fantasyOwnerData },
+  ] = await Promise.all([
+    db.from("restaurants").select("*").order("overall", { ascending: false }),
+    db.from("options_trades").select("*").eq("source", "prod").order("order_date", { ascending: false }),
+    db.from("equity_trades").select("*").eq("source", "prod").order("order_date", { ascending: true }),
+    db.from("fantasy_matchups").select("*"),
+    db.from("fantasy_owners").select("*"),
+  ]);
 
   const restaurants = (restaurantData ?? []) as Restaurant[];
   const trades = (optionsData ?? []) as OptionsTrade[];
   const equity = (equityData ?? []) as EquityTrade[];
+  const fantasyMatchups = (fantasyMatchupData ?? []) as FantasyMatchup[];
+  const fantasyOwners = (fantasyOwnerData ?? []) as FantasyOwner[];
   const positions = buildPositions(trades);
   const pnl = buildTickerPnL(equity, positions);
+
+  const latestSeason = fantasyMatchups.length
+    ? Math.max(...fantasyMatchups.map((m) => m.season))
+    : null;
+  const fantasyStandings = latestSeason != null
+    ? buildStandings(fantasyMatchups, fantasyOwners, latestSeason).slice(0, 3)
+    : [];
 
   const total = restaurants.length;
   const cities = new Set(restaurants.map((r) => r.city)).size;
@@ -190,6 +208,57 @@ export default async function HomePage() {
           </>
         ) : (
           <p className="text-sm text-stone-500">No trades yet.</p>
+        )}
+      </section>
+
+      <div className="border-t border-stone-200 dark:border-stone-800" />
+
+      {/* Fantasy football */}
+      <section>
+        <div className="flex items-baseline justify-between mb-6">
+          <div>
+            <h2 className="text-xl font-semibold">Fantasy Football</h2>
+            <p className="mt-1 text-sm text-stone-500">
+              KFL standings{latestSeason ? ` · ${latestSeason}` : ""}.
+            </p>
+          </div>
+          <Link
+            href="/fantasy"
+            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition"
+          >
+            View all →
+          </Link>
+        </div>
+
+        {fantasyStandings.length > 0 ? (
+          <ul className="divide-y divide-stone-200 dark:divide-stone-800 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900">
+            {fantasyStandings.map((s) => (
+              <li
+                key={s.owner_id}
+                className="flex items-baseline justify-between gap-3 px-4 py-3"
+              >
+                <div className="min-w-0">
+                  <div className="font-medium truncate">{s.display_name}</div>
+                  <div className="text-xs text-stone-500">
+                    {s.wins} - {s.losses}
+                    {s.ties > 0 ? ` - ${s.ties}` : ""} · {s.avg_ppg.toFixed(1)} PPG
+                  </div>
+                </div>
+                <div
+                  className={`text-lg font-semibold tabular-nums shrink-0 ${
+                    s.ppg_vs_avg >= 0
+                      ? "text-emerald-600 dark:text-emerald-400"
+                      : "text-red-600 dark:text-red-400"
+                  }`}
+                >
+                  {s.ppg_vs_avg >= 0 ? "+" : ""}
+                  {s.ppg_vs_avg.toFixed(2)}
+                </div>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-stone-500">No fantasy data yet.</p>
         )}
       </section>
     </div>
