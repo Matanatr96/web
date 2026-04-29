@@ -10,6 +10,8 @@ export type PlacePick = {
   lat: number;
   lng: number;
   placeId: string;
+  /** Human-readable primary type from the Places API, e.g. "Sushi Restaurant". */
+  googleType?: string;
 };
 
 type Props = {
@@ -88,6 +90,7 @@ function AutocompleteInner({
           "formattedAddress",
           "location",
           "addressComponents",
+          "primaryTypeDisplayName",
         ],
       });
       const components = place.addressComponents ?? [];
@@ -97,6 +100,8 @@ function AutocompleteInner({
         components.find((c) => c.types.includes("sublocality")) ??
         components.find((c) => c.types.includes("administrative_area_level_2"));
       const pickedName = place.displayName ?? "";
+      const googleType = (place as unknown as { primaryTypeDisplayName?: { text: string } })
+        .primaryTypeDisplayName?.text;
       setName(pickedName);
       onTextChangeRef.current?.(pickedName);
       onPickRef.current({
@@ -106,6 +111,7 @@ function AutocompleteInner({
         lat: place.location?.lat() ?? 0,
         lng: place.location?.lng() ?? 0,
         placeId: place.id ?? "",
+        googleType,
       });
     };
 

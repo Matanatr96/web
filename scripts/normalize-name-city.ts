@@ -38,6 +38,8 @@ const SHOW_ALL = process.argv.includes("--all");
 type PlaceDetails = {
   displayName: string;
   city: string | null;
+  /** Human-readable primary type, e.g. "Sushi Restaurant". Informational only. */
+  googleType: string | null;
 };
 
 async function fetchPlaceDetails(placeId: string): Promise<PlaceDetails> {
@@ -46,7 +48,7 @@ async function fetchPlaceDetails(placeId: string): Promise<PlaceDetails> {
     {
       headers: {
         "X-Goog-Api-Key": MAPS_KEY!,
-        "X-Goog-FieldMask": "displayName,addressComponents",
+        "X-Goog-FieldMask": "displayName,addressComponents,primaryTypeDisplayName",
       },
     },
   );
@@ -56,20 +58,23 @@ async function fetchPlaceDetails(placeId: string): Promise<PlaceDetails> {
   }
   const json = (await res.json()) as {
     displayName?: { text: string };
+    primaryTypeDisplayName?: { text: string };
     addressComponents?: Array<{ longText: string; types: string[] }>;
   };
 
   const displayName = json.displayName?.text ?? "(no name)";
+  const googleType = json.primaryTypeDisplayName?.text ?? null;
 
-  const localityComponent = json.addressComponents?.find((c) =>
-    c.types.includes("locality"),
-  );
-  const sublocalityComponent = json.addressComponents?.find((c) =>
-    c.types.includes("sublocality"),
-  );
-  const city = localityComponent?.longText ?? sublocalityComponent?.longText ?? null;
+  // Mirror the fallback chain used in place-autocomplete.tsx.
+  const components = json.addressComponents ?? [];
+  const city =
+    components.find((c) => c.types.includes("locality"))?.longText ??
+    components.find((c) => c.types.includes("postal_town"))?.longText ??
+    components.find((c) => c.types.includes("sublocality"))?.longText ??
+    components.find((c) => c.types.includes("administrative_area_level_2"))?.longText ??
+    null;
 
-  return { displayName, city };
+  return { displayName, city, googleType };
 }
 
 async function main() {
@@ -131,6 +136,9 @@ async function main() {
       console.log(`  city:  "${row.city}"  →  "${details.city}"`);
     } else {
       console.log(`  city:  "${row.city}" (unchanged)`);
+    }
+    if (details.googleType) {
+      console.log(`  type:  ${details.googleType} (Google Maps — for cuisine reference)`);
     }
 
     const answer = (await rl.question("  Apply? [Y/n/s(kip all)]: "))
