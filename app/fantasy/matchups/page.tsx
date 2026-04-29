@@ -239,6 +239,7 @@ export default async function FantasyMatchupsPage({
             bracket={bracket}
             owners={owners}
             playoffMatchups={playoffMatchups}
+            playoffStart={playoffStart}
           />
         </section>
       )}
@@ -250,25 +251,27 @@ function PlayoffBracket({
   bracket,
   owners,
   playoffMatchups,
+  playoffStart,
 }: {
   bracket: BracketEntry[] | null;
   owners: FantasyOwner[];
   playoffMatchups: FantasyMatchup[];
+  playoffStart: number;
 }) {
-  const nameOf = (id: string | null) =>
-    id ? owners.find((o) => o.user_id === id)?.display_name ?? id : "TBD";
-
-  const score = new Map<string, number>();
-  for (const m of playoffMatchups) {
-    score.set(`${m.owner_id}:${m.week}`, m.points);
-  }
-
   if (!bracket || bracket.length === 0) {
     return (
       <p className="text-sm text-stone-500">
         No bracket data — run <code>npm run db:sync-fantasy</code> after the playoffs complete.
       </p>
     );
+  }
+
+  const nameOf = (id: string | null) =>
+    id ? (owners.find((o) => o.user_id === id)?.display_name ?? id) : "TBD";
+
+  const scoreMap = new Map<string, number>();
+  for (const m of playoffMatchups) {
+    scoreMap.set(`${m.owner_id}:${m.week}`, m.points);
   }
 
   const rounds = new Map<number, BracketEntry[]>();
@@ -278,64 +281,141 @@ function PlayoffBracket({
     rounds.set(b.r, list);
   }
   const sortedRounds = [...rounds.entries()].sort(([a], [b]) => a - b);
+  const maxRound = Math.max(...rounds.keys());
 
-  const championship = bracket.find((b) => b.p === 1);
-  const champion = championship?.w ? nameOf(championship.w) : null;
+  const roundLabel = (r: number) => {
+    if (r === maxRound) return "Finals";
+    if (r === maxRound - 1) return "Semifinals";
+    return "First Round";
+  };
+
+  const matchupLabel = (entry: BracketEntry) => {
+    if (entry.p === 1) return "Championship";
+    if (entry.p === 3) return "3rd Place";
+    if (entry.p === 5) return "5th Place";
+    return null;
+  };
+
+  const placementOrder = (e: BracketEntry) =>
+    e.p === 1 ? 0 : e.p === 3 ? 1 : e.p === 5 ? 2 : -1;
 
   return (
-    <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-4">
-      {champion && (
-        <div className="mb-4 text-sm">
-          <span className="text-stone-500">Champion: </span>
-          <span className="font-semibold">{champion} 🏆</span>
-        </div>
-      )}
-      <div className="flex gap-6 overflow-x-auto">
-        {sortedRounds.map(([roundNum, entries]) => (
-          <div key={roundNum} className="flex flex-col gap-3 min-w-[200px]">
-            <div className="text-xs uppercase tracking-wide text-stone-500">
-              Round {roundNum}
-            </div>
-            {entries
-              .sort((a, b) => a.m - b.m)
-              .map((b) => (
-                <div
-                  key={`${b.r}-${b.m}`}
-                  className="rounded-md border border-stone-200 dark:border-stone-800 text-sm"
-                >
-                  <BracketSide
-                    name={nameOf(b.t1)}
-                    isWinner={b.w === b.t1 && b.t1 != null}
-                  />
-                  <div className="border-t border-stone-200 dark:border-stone-800" />
-                  <BracketSide
-                    name={nameOf(b.t2)}
-                    isWinner={b.w === b.t2 && b.t2 != null}
-                  />
-                  {b.p != null && (
-                    <div className="text-[10px] text-stone-400 px-2 pb-1">
-                      {b.p === 1 ? "Championship" : b.p === 3 ? "3rd Place" : `${b.p} place`}
-                    </div>
-                  )}
+    <div className="overflow-x-auto">
+      <div className="flex gap-4 min-w-fit">
+        {sortedRounds.map(([roundNum, entries], colIdx) => {
+          const week = playoffStart + (roundNum - 1);
+          const sorted = [...entries].sort((a, b) => {
+            const pa = placementOrder(a);
+            const pb = placementOrder(b);
+            if (pa === -1 && pb === -1) return a.m - b.m;
+            if (pa === -1) return -1;
+            if (pb === -1) return 1;
+            return pa - pb;
+          });
+
+          return (
+            <div key={roundNum} className="flex items-start gap-4">
+              <div className="flex flex-col gap-3 w-[220px]">
+                <div className="flex items-baseline gap-2 h-6">
+                  <span className="text-xs font-semibold uppercase tracking-wide text-stone-500">
+                    {roundLabel(roundNum)}
+                  </span>
+                  <span className="text-xs text-stone-400">Wk {week}</span>
                 </div>
-              ))}
-          </div>
-        ))}
+                {sorted.map((entry) => {
+                  const label = matchupLabel(entry);
+                  const hasResult = entry.w != null;
+                  const t1Score = entry.t1 ? scoreMap.get(`${entry.t1}:${week}`) : undefined;
+                  const t2Score = entry.t2 ? scoreMap.get(`${entry.t2}:${week}`) : undefined;
+
+                  return (
+                    <div
+                      key={`${entry.r}-${entry.m}`}
+                      className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 overflow-hidden"
+                    >
+                      {label && (
+                        <div className="px-3 py-1 bg-stone-50 dark:bg-stone-800/50 border-b border-stone-200 dark:border-stone-800">
+                          <span className="text-[10px] font-semibold uppercase tracking-wide text-stone-400">
+                            {label}
+                          </span>
+                        </div>
+                      )}
+                      <MatchupRow
+                        name={nameOf(entry.t1)}
+                        score={t1Score}
+                        isWinner={hasResult && entry.w === entry.t1}
+                        isLoser={hasResult && entry.l === entry.t1}
+                        isTbd={entry.t1 == null}
+                      />
+                      <div className="border-t border-stone-100 dark:border-stone-800/60" />
+                      <MatchupRow
+                        name={nameOf(entry.t2)}
+                        score={t2Score}
+                        isWinner={hasResult && entry.w === entry.t2}
+                        isLoser={hasResult && entry.l === entry.t2}
+                        isTbd={entry.t2 == null}
+                      />
+                    </div>
+                  );
+                })}
+              </div>
+
+              {colIdx < sortedRounds.length - 1 && (
+                <div className="flex items-center self-stretch pt-6">
+                  <span className="text-stone-300 dark:text-stone-700 text-lg select-none">›</span>
+                </div>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
-function BracketSide({ name, isWinner }: { name: string; isWinner: boolean }) {
+function MatchupRow({
+  name,
+  score,
+  isWinner,
+  isLoser,
+  isTbd,
+}: {
+  name: string;
+  score: number | undefined;
+  isWinner: boolean;
+  isLoser: boolean;
+  isTbd: boolean;
+}) {
   return (
     <div
-      className={`px-3 py-2 ${
-        isWinner
-          ? "font-semibold text-stone-900 dark:text-stone-100"
-          : "text-stone-500"
+      className={`flex items-center justify-between gap-2 px-3 py-2 text-sm transition-colors ${
+        isTbd
+          ? "text-stone-400 italic"
+          : isWinner
+          ? "bg-emerald-50 dark:bg-emerald-950/30"
+          : isLoser
+          ? "opacity-40"
+          : ""
       }`}
     >
-      {name}
+      <span
+        className={`truncate ${
+          isWinner ? "font-semibold text-emerald-700 dark:text-emerald-400" : ""
+        }`}
+      >
+        {name}
+      </span>
+      {score != null && (
+        <span
+          className={`tabular-nums text-xs shrink-0 ${
+            isWinner
+              ? "font-semibold text-emerald-700 dark:text-emerald-400"
+              : "text-stone-400"
+          }`}
+        >
+          {fmt(score, 2)}
+        </span>
+      )}
     </div>
   );
 }
