@@ -4,7 +4,7 @@ export default function RestaurantsPage() {
   return (
     <div className="max-w-5xl mx-auto pt-10">
       <div className="mb-8">
-        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Food</h1>
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Restaurants</h1>
         <p className="mt-1 text-sm text-stone-500">
           Restaurants, maps, and recommendations.
         </p>
