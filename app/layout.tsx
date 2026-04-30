@@ -32,12 +32,6 @@ export default async function RootLayout({
                 Food
               </Link>
               <Link
-                href="/map"
-                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
-              >
-                Map
-              </Link>
-              <Link
                 href="/stonks"
                 className="hover:text-stone-900 dark:hover:text-stone-100 transition"
               >
