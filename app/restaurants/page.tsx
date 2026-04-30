@@ -1,46 +1,37 @@
 import Link from "next/link";
-import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
-import RestaurantsTable from "@/components/restaurants-table";
 
-// Always render from fresh data — simpler mental model while the dataset is small.
-// If we ever scale up, swap this to revalidate on a timer or on admin writes.
-export const dynamic = "force-dynamic";
-
-export default async function RestaurantsPage() {
-  const { data, error } = await getSupabase()
-    .from("restaurants")
-    .select("*")
-    .order("overall", { ascending: false });
-
-  if (error) {
-    return (
-      <div className="text-red-600">
-        Failed to load restaurants: {error.message}
-      </div>
-    );
-  }
-
-  const restaurants = (data ?? []) as Restaurant[];
-
+export default function RestaurantsPage() {
   return (
-    <div>
-      <nav className="text-sm text-stone-500 mb-4">
-        <Link href="/" className="hover:underline">
-          ← Home
-        </Link>
-        <span className="mx-2">·</span>
-        <Link href="/map" className="hover:underline">
-          Map view
-        </Link>
-      </nav>
-      <div className="mb-6">
-        <h1 className="text-2xl font-bold tracking-tight">All restaurants</h1>
-        <p className="text-sm text-stone-500 mt-1">
-          {restaurants.length} places rated, sorted by overall score.
+    <div className="max-w-5xl mx-auto pt-10">
+      <div className="mb-8">
+        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Food</h1>
+        <p className="mt-1 text-sm text-stone-500">
+          Restaurants, maps, and recommendations.
         </p>
       </div>
-      <RestaurantsTable restaurants={restaurants} />
+
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl">
+        <Link
+          href="/restaurants/table"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Table</span>
+          <span className="text-sm text-stone-500">All rated restaurants sorted by score</span>
+        </Link>
+
+        <Link
+          href="/map"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Map</span>
+          <span className="text-sm text-stone-500">Browse restaurants on an interactive map</span>
+        </Link>
+
+        <div className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 opacity-50 cursor-default">
+          <span className="font-semibold">Suggestions</span>
+          <span className="text-sm text-stone-500">Coming soon — get restaurant recommendations</span>
+        </div>
+      </div>
     </div>
   );
 }
