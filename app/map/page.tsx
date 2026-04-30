@@ -34,8 +34,10 @@ export default async function MapPage() {
 
   return (
     <div>
-      <nav className="text-sm text-stone-500 mb-4">
-        <Link href="/restaurants" className="hover:underline">← Food</Link>
+      <nav className="text-sm text-stone-500 mb-4 flex gap-3">
+        <Link href="/restaurants" className="hover:underline">← Restaurants</Link>
+        <span>·</span>
+        <Link href="/restaurants/table" className="hover:underline">Table</Link>
       </nav>
       <div className="mb-4">
         <h1 className="text-2xl font-bold tracking-tight">Map</h1>

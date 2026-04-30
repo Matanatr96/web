@@ -29,7 +29,7 @@ export default async function RootLayout({
                 href="/restaurants"
                 className="hover:text-stone-900 dark:hover:text-stone-100 transition"
               >
-                Food
+                Restaurants
               </Link>
               <Link
                 href="/stonks"
