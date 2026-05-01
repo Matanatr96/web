@@ -1,11 +1,11 @@
 import { redirect } from "next/navigation";
-import { hasStonksAccess } from "@/lib/auth";
+import { hasStonksAccess, isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
 import type { OptionsTrade, EquityTrade, TradeSource } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
 import { annotateAssignments } from "@/lib/assignment";
-import { getLiveQuotes } from "@/lib/quotes";
+import { getLiveQuotes, getOpenOptionGreeks } from "@/lib/quotes";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
 
@@ -24,8 +24,9 @@ export default async function OptionsPage({
     redirect("/stonks/login");
   }
 
+  const adminUser = await isAdmin();
   const { source: sourceParam } = await searchParams;
-  const source: TradeSource = sourceParam === "prod" ? "prod" : "sandbox";
+  const source: TradeSource = adminUser && sourceParam === "sandbox" ? "sandbox" : "prod";
 
   const db = getSupabase();
 
@@ -44,9 +45,14 @@ export default async function OptionsPage({
     .filter((p) => p.status === "open")
     .map((p) => p.option_symbol);
 
-  const quotes = source === "prod"
-    ? await getLiveQuotes(equitySymbols, openOptionSymbols)
-    : { prices: new Map<string, number>(), available: false };
+  const [quotes, optionGreeks] = await Promise.all([
+    source === "prod"
+      ? getLiveQuotes(equitySymbols, openOptionSymbols)
+      : Promise.resolve({ prices: new Map<string, number>(), available: false }),
+    source === "prod"
+      ? getOpenOptionGreeks(openOptionSymbols)
+      : Promise.resolve(new Map<string, number>()),
+  ]);
 
   const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
 
@@ -71,6 +77,18 @@ export default async function OptionsPage({
     ? pnl.reduce((sum, p) => sum + (p.total_pl ?? p.total_realized_pl), 0)
     : null;
 
+  const totalCapitalTiedUp = pnl.reduce((sum, p) => sum + p.total_capital_tied_up, 0);
+
+  const openPositions = positions.filter((p) => p.status === "open");
+  const totalDailyTheta = optionGreeks.size > 0
+    ? openPositions.reduce((sum, pos) => {
+        const theta = optionGreeks.get(pos.option_symbol);
+        if (theta == null) return sum;
+        const isShort = pos.strategy === "cash_secured_put" || pos.strategy === "covered_call";
+        return sum + (isShort ? -1 : 1) * theta * 100 * pos.quantity;
+      }, 0)
+    : null;
+
   const isEmpty = positions.length === 0 && pnl.length === 0;
 
   return (
@@ -82,7 +100,7 @@ export default async function OptionsPage({
             Options &amp; holdings tracked from Tradier.
           </p>
         </div>
-        <SourcePicker current={source} />
+        <SourcePicker current={source} isAdmin={adminUser} />
       </div>
 
       {isEmpty ? (
@@ -92,7 +110,7 @@ export default async function OptionsPage({
       ) : (
         <>
           {/* Summary stats */}
-          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-7 gap-3">
+          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-3">
             <Stat
               label="Total P/L"
               value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
@@ -120,6 +138,16 @@ export default async function OptionsPage({
               label="Net Premium"
               value={fmtUSD(totalPremium)}
               highlight={totalPremium >= 0 ? "green" : "red"}
+            />
+            <Stat
+              label="Capital Tied Up"
+              value={totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
+            />
+            <Stat
+              label="Daily Theta"
+              value={totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
+              highlight={totalDailyTheta !== null ? (totalDailyTheta >= 0 ? "green" : "red") : undefined}
+              dim={totalDailyTheta === null}
             />
             <Stat label="Open Positions" value={String(openCount)} />
             <Stat label="Closed / Expired" value={String(closedCount)} />
