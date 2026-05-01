@@ -4,7 +4,7 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useTransition } from "react";
 import type { TradeSource } from "@/lib/types";
 
-export default function SourcePicker({ current }: { current: TradeSource }) {
+export default function SourcePicker({ current, isAdmin }: { current: TradeSource; isAdmin: boolean }) {
   const router = useRouter();
   const params = useSearchParams();
   const [, startTransition] = useTransition();
@@ -15,9 +15,13 @@ export default function SourcePicker({ current }: { current: TradeSource }) {
     startTransition(() => router.replace(`/stonks?${next.toString()}`));
   }
 
+  const sources = isAdmin ? (["prod", "sandbox"] as const) : (["prod"] as const);
+
+  if (sources.length === 1) return null;
+
   return (
     <div className="flex rounded-lg border border-stone-200 dark:border-stone-800 overflow-hidden text-sm">
-      {(["prod", "sandbox"] as const).map((s) => (
+      {sources.map((s) => (
         <button
           key={s}
           onClick={() => select(s)}

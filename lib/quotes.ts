@@ -394,6 +394,59 @@ export async function getWheelOptions(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Option greeks (theta) for open positions
+// ---------------------------------------------------------------------------
+
+type TradierOptionQuoteGreeks = {
+  symbol: string;
+  greeks?: { theta: number | null } | null;
+};
+
+type TradierOptionGreeksResponse = {
+  quotes: { quote: TradierOptionQuoteGreeks | TradierOptionQuoteGreeks[] } | null;
+};
+
+async function fetchOptionGreeksRaw(symbols: string[]): Promise<Map<string, number>> {
+  const key = process.env.TRADIER_API_KEY;
+  if (!key || symbols.length === 0) return new Map();
+
+  const joined = symbols.join(",");
+  const res = await fetch(
+    `${PROD_BASE}/markets/quotes?symbols=${encodeURIComponent(joined)}&greeks=true`,
+    {
+      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+      cache: "no-store",
+    },
+  );
+  if (!res.ok) return new Map();
+
+  const data = (await res.json()) as TradierOptionGreeksResponse;
+  const quotes = toArray(data.quotes?.quote);
+  const result = new Map<string, number>();
+  for (const q of quotes) {
+    if (q.greeks?.theta != null) result.set(q.symbol, q.greeks.theta);
+  }
+  return result;
+}
+
+const fetchOptionGreeksCached = unstable_cache(
+  fetchOptionGreeksRaw,
+  ["tradier-option-greeks"],
+  { revalidate: 60 },
+);
+
+export async function getOpenOptionGreeks(symbols: string[]): Promise<Map<string, number>> {
+  if (symbols.length === 0) return new Map();
+  try {
+    return await fetchOptionGreeksCached([...symbols].sort());
+  } catch {
+    return new Map();
+  }
+}
+
+// ---------------------------------------------------------------------------
+
 export type LiveQuotes = {
   prices: Map<string, number>; // equity symbol or OCC option symbol → mid price
   available: boolean;
