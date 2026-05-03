@@ -139,7 +139,7 @@ export default function OptionsTable({
                     <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
                       {fmtUSD(p.net_premium)}
                       <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
-                      {monthlyReturn?.[p.option_symbol] != null && p.status === "open" && (
+                      {monthlyReturn && Number.isFinite(monthlyReturn[p.option_symbol]) && p.status === "open" && (
                         <span className={`ml-1.5 text-xs font-normal ${premiumColor(monthlyReturn[p.option_symbol])}`}>
                           {monthlyReturn[p.option_symbol].toFixed(2)}%/mo
                         </span>
