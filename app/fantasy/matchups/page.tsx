@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { isAdmin } from "@/lib/auth";
 import type {
   BracketEntry,
   FantasyLeague,
@@ -16,6 +17,7 @@ import {
   ownerColorMap,
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
+import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 
 export const dynamic = "force-dynamic";
 
@@ -28,6 +30,7 @@ export default async function FantasyMatchupsPage({
 }) {
   const params = await searchParams;
   const db = getSupabase();
+  const admin = await isAdmin();
 
   const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
     await Promise.all([
@@ -78,14 +81,14 @@ export default async function FantasyMatchupsPage({
         </Link>
       </div>
 
-      <div className="flex items-baseline justify-between flex-wrap gap-3 mb-8">
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-8">
         <div>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Matchups</h1>
           <p className="mt-1 text-sm text-stone-500">
             KFL standings, all-play records, and weekly scoring trends.
           </p>
         </div>
-        <div className="flex gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           {seasons.map((s) => (
             <Link
               key={s}
@@ -99,6 +102,7 @@ export default async function FantasyMatchupsPage({
               {s}
             </Link>
           ))}
+          {admin && <RefreshMatchupsButton />}
         </div>
       </div>
 
