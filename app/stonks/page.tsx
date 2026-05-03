@@ -177,10 +177,6 @@ export default async function OptionsPage({
               highlight={totalPremium >= 0 ? "green" : "red"}
             />
             <Stat
-              label="Capital Tied Up"
-              value={totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
-            />
-            <Stat
               label="Daily Theta"
               value={totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
               highlight={totalDailyTheta !== null ? (totalDailyTheta >= 0 ? "green" : "red") : undefined}
