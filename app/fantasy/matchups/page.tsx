@@ -18,6 +18,7 @@ import {
 } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 import RefreshMatchupsButton from "@/components/refresh-matchups-button";
+import SeasonPicker from "@/components/season-picker";
 
 export const dynamic = "force-dynamic";
 
@@ -89,19 +90,7 @@ export default async function FantasyMatchupsPage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          {seasons.map((s) => (
-            <Link
-              key={s}
-              href={`/fantasy/matchups?season=${s}`}
-              className={`px-3 py-1.5 rounded-md text-sm border transition ${
-                s === season
-                  ? "border-stone-900 bg-stone-900 text-white dark:border-stone-100 dark:bg-stone-100 dark:text-stone-900"
-                  : "border-stone-200 dark:border-stone-800 text-stone-600 hover:border-stone-400"
-              }`}
-            >
-              {s}
-            </Link>
-          ))}
+          <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/matchups" />
           {admin && <RefreshMatchupsButton />}
         </div>
       </div>
