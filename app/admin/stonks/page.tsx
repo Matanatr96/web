@@ -6,7 +6,6 @@ import type { OptionsTrade, EquityTrade } from "@/lib/types";
 import { buildPositions } from "@/lib/positions";
 import { buildTickerPnL } from "@/lib/pnl";
 import { getLiveQuotes } from "@/lib/quotes";
-import SyncTradesButton from "@/components/sync-trades-button";
 
 export const dynamic = "force-dynamic";
 
@@ -142,14 +141,6 @@ export default async function StonksAdminPage() {
           </div>
         </section>
       )}
-
-      <section className="mb-10">
-        <h2 className="text-lg font-semibold tracking-tight mb-3">Sync Trades</h2>
-        <p className="text-sm text-stone-500 mb-4">
-          Pull the latest options and equity trades from Tradier into the database.
-        </p>
-        <SyncTradesButton />
-      </section>
 
       <section className="mt-10">
         <h2 className="text-lg font-semibold tracking-tight mb-3">Export</h2>
