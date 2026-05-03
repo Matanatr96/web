@@ -8,6 +8,7 @@ import { annotateAssignments } from "@/lib/assignment";
 import { getLiveQuotes, getOpenOptionGreeks } from "@/lib/quotes";
 import OptionsTable from "@/components/options-table";
 import SourcePicker from "@/components/source-picker";
+import SyncTradesButton from "@/components/sync-trades-button";
 
 export const dynamic = "force-dynamic";
 
@@ -100,12 +101,15 @@ export default async function OptionsPage({
             Options &amp; holdings tracked from Tradier.
           </p>
         </div>
-        <SourcePicker current={source} isAdmin={adminUser} />
+        <div className="flex flex-wrap items-center gap-2">
+          <SourcePicker current={source} isAdmin={adminUser} />
+          {adminUser && <SyncTradesButton />}
+        </div>
       </div>
 
       {isEmpty ? (
         <p className="text-sm text-stone-500">
-          No trades yet. Sync your Tradier account from the admin panel.
+          No trades synced yet.
         </p>
       ) : (
         <>
