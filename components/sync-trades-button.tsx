@@ -2,8 +2,7 @@
 
 import { useState } from "react";
 
-export default function SyncTradesButton() {
-  const [source, setSource] = useState<"prod" | "sandbox">("sandbox");
+export default function SyncTradesButton({ source }: { source: "prod" | "sandbox" }) {
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -31,23 +30,6 @@ export default function SyncTradesButton() {
 
   return (
     <div className="flex items-center gap-2">
-      {/* Prod / Sandbox pill toggle */}
-      <div className="flex rounded-md border border-stone-300 dark:border-stone-700 overflow-hidden text-sm">
-        {(["prod", "sandbox"] as const).map((s) => (
-          <button
-            key={s}
-            onClick={() => { setSource(s); setState("idle"); setMessage(""); }}
-            className={`px-3 py-2 capitalize transition ${
-              source === s
-                ? "bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900"
-                : "hover:bg-stone-100 dark:hover:bg-stone-800 text-stone-600 dark:text-stone-400"
-            }`}
-          >
-            {s}
-          </button>
-        ))}
-      </div>
-
       <button
         onClick={handleSync}
         disabled={state === "loading"}

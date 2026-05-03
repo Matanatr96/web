@@ -136,7 +136,7 @@ export default async function OptionsPage({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SourcePicker current={source} isAdmin={adminUser} />
-          {adminUser && <SyncTradesButton />}
+          {adminUser && <SyncTradesButton source={source} />}
         </div>
       </div>
 
@@ -175,10 +175,6 @@ export default async function OptionsPage({
               label="Net Premium"
               value={fmtUSD(totalPremium)}
               highlight={totalPremium >= 0 ? "green" : "red"}
-            />
-            <Stat
-              label="Capital Tied Up"
-              value={totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
             />
             <Stat
               label="Daily Theta"
