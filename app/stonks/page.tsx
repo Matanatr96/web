@@ -136,7 +136,7 @@ export default async function OptionsPage({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SourcePicker current={source} isAdmin={adminUser} />
-          {adminUser && <SyncTradesButton />}
+          {adminUser && <SyncTradesButton source={source} />}
         </div>
       </div>
 
