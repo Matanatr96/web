@@ -27,17 +27,11 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
   const [city, setCity] = useState<string | null>(null);
   const [cuisine, setCuisine] = useState<string | null>(null);
   const [category, setCategory] = useState<Category | null>(null);
-  const [cityShuffle, setCityShuffle] = useState(0);
   const [cuisineShuffle, setCuisineShuffle] = useState(0);
 
   const allCities = useMemo(() => {
     return Array.from(new Set(restaurants.map((r) => r.city))).sort();
   }, [restaurants]);
-
-  const cityOptions = useMemo(
-    () => pickRandom(allCities, MAX_OPTIONS, cityShuffle),
-    [allCities, cityShuffle]
-  );
 
   const cuisinesInCity = useMemo(() => {
     if (!city) return [];
@@ -90,29 +84,39 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
     }
   }
 
+  function jumpTo(target: Step) {
+    if (target === "city") {
+      setCuisine(null);
+      setCategory(null);
+      setStep("city");
+    } else if (target === "cuisine" && city) {
+      setCategory(null);
+      setStep("cuisine");
+    } else if (target === "category" && city && cuisine) {
+      setStep("category");
+    }
+  }
+
   return (
     <div className="rounded-lg border border-stone-200 dark:border-stone-800 p-6">
-      <Stepper current={step} />
+      <Stepper
+        current={step}
+        completed={{
+          city: city !== null,
+          cuisine: cuisine !== null,
+          category: category !== null,
+        }}
+        onJump={jumpTo}
+      />
 
       {step === "city" && (
-        <Question
-          title="Where are you?"
-          subtitle={
-            allCities.length > MAX_OPTIONS
-              ? "Pick a city, or reshuffle for different options."
-              : "Pick a city."
-          }
-          options={cityOptions}
+        <CityPicker
+          cities={allCities}
           onPick={(c) => {
             setCity(c);
             setCuisineShuffle(0);
             setStep("cuisine");
           }}
-          onReshuffle={
-            allCities.length > MAX_OPTIONS
-              ? () => setCityShuffle((s) => s + 1)
-              : undefined
-          }
         />
       )}
 
@@ -170,7 +174,53 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
   );
 }
 
-function Stepper({ current }: { current: Step }) {
+function CityPicker({
+  cities,
+  onPick,
+}: {
+  cities: string[];
+  onPick: (city: string) => void;
+}) {
+  const [selected, setSelected] = useState("");
+  return (
+    <div>
+      <h2 className="text-xl font-semibold">Where are you?</h2>
+      <p className="text-sm text-stone-500 mt-1">Pick a city to start.</p>
+
+      <div className="mt-5 flex flex-col sm:flex-row gap-3">
+        <select
+          value={selected}
+          onChange={(e) => setSelected(e.target.value)}
+          className="flex-1 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-950 px-3 py-2.5"
+        >
+          <option value="">Select a city…</option>
+          {cities.map((c) => (
+            <option key={c} value={c}>
+              {c}
+            </option>
+          ))}
+        </select>
+        <button
+          disabled={!selected}
+          onClick={() => onPick(selected)}
+          className="rounded-lg bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 px-5 py-2.5 font-medium disabled:opacity-40 disabled:cursor-not-allowed hover:opacity-90 transition"
+        >
+          Continue
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function Stepper({
+  current,
+  completed,
+  onJump,
+}: {
+  current: Step;
+  completed: { city: boolean; cuisine: boolean; category: boolean };
+  onJump: (step: Step) => void;
+}) {
   const steps: { key: Step; label: string }[] = [
     { key: "city", label: "City" },
     { key: "cuisine", label: "Cuisine" },
@@ -178,22 +228,40 @@ function Stepper({ current }: { current: Step }) {
     { key: "results", label: "Picks" },
   ];
   const idx = steps.findIndex((s) => s.key === current);
+
+  function canJump(key: Step): boolean {
+    if (key === current) return false;
+    if (key === "results") return false;
+    if (key === "city") return true;
+    if (key === "cuisine") return completed.city;
+    if (key === "category") return completed.city && completed.cuisine;
+    return false;
+  }
+
   return (
     <div className="flex items-center gap-2 text-xs text-stone-500 mb-6">
-      {steps.map((s, i) => (
-        <span key={s.key} className="flex items-center gap-2">
-          <span
-            className={
-              i <= idx
-                ? "font-semibold text-stone-900 dark:text-stone-100"
-                : ""
-            }
-          >
-            {s.label}
+      {steps.map((s, i) => {
+        const active = i <= idx;
+        const jumpable = canJump(s.key);
+        const labelClass = active
+          ? "font-semibold text-stone-900 dark:text-stone-100"
+          : "";
+        return (
+          <span key={s.key} className="flex items-center gap-2">
+            {jumpable ? (
+              <button
+                onClick={() => onJump(s.key)}
+                className={`${labelClass} hover:underline`}
+              >
+                {s.label}
+              </button>
+            ) : (
+              <span className={labelClass}>{s.label}</span>
+            )}
+            {i < steps.length - 1 && <span>›</span>}
           </span>
-          {i < steps.length - 1 && <span>›</span>}
-        </span>
-      ))}
+        );
+      })}
     </div>
   );
 }
