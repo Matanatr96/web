@@ -27,10 +27,13 @@ export default function RestaurantsPage() {
           <span className="text-sm text-stone-500">Browse restaurants on an interactive map</span>
         </Link>
 
-        <div className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 opacity-50 cursor-default">
+        <Link
+          href="/restaurants/suggestions"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
           <span className="font-semibold">Suggestions</span>
-          <span className="text-sm text-stone-500">Coming soon — get restaurant recommendations</span>
-        </div>
+          <span className="text-sm text-stone-500">Answer a few questions, get a pick</span>
+        </Link>
       </div>
     </div>
   );
