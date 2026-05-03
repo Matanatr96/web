@@ -4,7 +4,15 @@ import React, { useMemo, useState } from "react";
 import type { OptionsPosition } from "@/lib/types";
 
 type SortKey = "strategy" | "strike" | "expiration_date" | "net_premium" | "status" | "open_date";
+
 type SortDir = "asc" | "desc";
+
+// Green ≥ 1%/mo · Amber 0.5–1% · Muted < 0.5%
+function premiumColor(pct: number): string {
+  if (pct >= 1) return "text-green-700 dark:text-green-400";
+  if (pct >= 0.5) return "text-amber-600 dark:text-amber-400";
+  return "text-stone-400";
+}
 
 const STRATEGY_LABEL: Record<OptionsPosition["strategy"], string> = {
   covered_call:     "Covered Call",
@@ -43,7 +51,13 @@ function fmtUSD(n: number) {
   });
 }
 
-export default function OptionsTable({ positions }: { positions: OptionsPosition[] }) {
+export default function OptionsTable({
+  positions,
+  monthlyReturn,
+}: {
+  positions: OptionsPosition[];
+  monthlyReturn?: Record<string, number>;
+}) {
   const [statusFilter, setStatusFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -125,6 +139,11 @@ export default function OptionsTable({ positions }: { positions: OptionsPosition
                     <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
                       {fmtUSD(p.net_premium)}
                       <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
+                      {monthlyReturn?.[p.option_symbol] != null && p.status === "open" && (
+                        <span className={`ml-1.5 text-xs font-normal ${premiumColor(monthlyReturn[p.option_symbol])}`}>
+                          {monthlyReturn[p.option_symbol].toFixed(2)}%/mo
+                        </span>
+                      )}
                     </td>
                     <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
                       {fmtUSD(totalPnl)}

@@ -58,6 +58,27 @@ export default async function OptionsPage({
 
   const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
 
+  // Per-position monthly return % — same formula as watchlist:
+  // (premium_collected / capital_per_share) * (30 / originalDte) * 100
+  const positionMonthlyReturn: Record<string, number> = {};
+  for (const pos of positions) {
+    if (pos.status !== "open") continue;
+    const open = new Date(pos.open_date + "T00:00:00");
+    const exp = new Date(pos.expiration_date + "T00:00:00");
+    const originalDte = Math.round((exp.getTime() - open.getTime()) / 86400000);
+    if (originalDte <= 0) continue;
+    let capital: number | null = null;
+    if (pos.strategy === "cash_secured_put") {
+      capital = pos.strike;
+    } else if (pos.strategy === "covered_call") {
+      capital = pnlByTicker.get(pos.underlying)?.avg_cost_basis ?? null;
+    }
+    if (capital != null && capital > 0) {
+      positionMonthlyReturn[pos.option_symbol] =
+        (pos.premium_collected / capital) * (30 / originalDte) * 100;
+    }
+  }
+
   // All tickers that appear in positions or have equity activity, sorted alphabetically.
   const allTickers = Array.from(
     new Set([...positions.map((p) => p.underlying), ...pnl.map((p) => p.ticker)]),
@@ -214,7 +235,7 @@ export default async function OptionsPage({
                 </div>
 
                 {tickerPositions.length > 0 ? (
-                  <OptionsTable positions={tickerPositions} />
+                  <OptionsTable positions={tickerPositions} monthlyReturn={positionMonthlyReturn} />
                 ) : (
                   <p className="text-sm text-stone-400">No options activity.</p>
                 )}
