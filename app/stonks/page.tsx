@@ -60,9 +60,14 @@ export default async function OptionsPage({
 
   // Per-position monthly return % — same formula as watchlist:
   // (premium_collected / capital_per_share) * (30 / originalDte) * 100
+  // Also accumulate totals for the open-positions summary bar.
   const positionMonthlyReturn: Record<string, number> = {};
+  let openPremiumCollected = 0;
+  let totalMonthlyPremiumEquiv = 0;
+  let totalCapitalForPct = 0;
   for (const pos of positions) {
     if (pos.status !== "open") continue;
+    openPremiumCollected += pos.premium_collected * pos.quantity * 100;
     const open = new Date(pos.open_date + "T00:00:00");
     const exp = new Date(pos.expiration_date + "T00:00:00");
     const originalDte = Math.round((exp.getTime() - open.getTime()) / 86400000);
@@ -76,8 +81,13 @@ export default async function OptionsPage({
     if (capital != null && capital > 0) {
       positionMonthlyReturn[pos.option_symbol] =
         (pos.premium_collected / capital) * (30 / originalDte) * 100;
+      totalMonthlyPremiumEquiv += (pos.premium_collected / originalDte * 30) * pos.quantity * 100;
+      totalCapitalForPct += capital * pos.quantity * 100;
     }
   }
+  const aggregateMonthlyPct = totalCapitalForPct > 0
+    ? (totalMonthlyPremiumEquiv / totalCapitalForPct) * 100
+    : null;
 
   // All tickers that appear in positions or have equity activity, sorted alphabetically.
   const allTickers = Array.from(
@@ -179,6 +189,37 @@ export default async function OptionsPage({
             />
           </dl>
 
+          {/* Open positions summary */}
+          {openPositions.length > 0 && (
+            <section className="flex flex-col gap-3">
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
+                Open Positions · {openPositions.length} contract{openPositions.length !== 1 ? "s" : ""}
+              </h2>
+              <dl className="grid grid-cols-3 gap-3">
+                <Stat
+                  label="Premium Collected"
+                  value={fmtUSD(openPremiumCollected)}
+                  highlight={openPremiumCollected >= 0 ? "green" : "red"}
+                />
+                <Stat
+                  label="Capital Tied Up"
+                  value={totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
+                />
+                <Stat
+                  label="Avg Return"
+                  value={aggregateMonthlyPct != null ? `${aggregateMonthlyPct.toFixed(2)}%/mo` : "—"}
+                  highlight={
+                    aggregateMonthlyPct != null
+                      ? aggregateMonthlyPct >= 1 ? "green"
+                      : aggregateMonthlyPct >= 0.5 ? "amber"
+                      : undefined
+                      : undefined
+                  }
+                />
+              </dl>
+            </section>
+          )}
+
           {/* Per-ticker sections */}
           {allTickers.map((ticker) => {
             const p = pnlByTicker.get(ticker);
@@ -256,7 +297,7 @@ function Stat({
 }: {
   label: string;
   value: string;
-  highlight?: "green" | "red";
+  highlight?: "green" | "red" | "amber";
   dim?: boolean;
 }) {
   const valueClass = dim
@@ -265,7 +306,9 @@ function Stat({
       ? "text-green-600 dark:text-green-400"
       : highlight === "red"
         ? "text-red-600 dark:text-red-400"
-        : "";
+        : highlight === "amber"
+          ? "text-amber-600 dark:text-amber-400"
+          : "";
 
   return (
     <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-4 py-3">
