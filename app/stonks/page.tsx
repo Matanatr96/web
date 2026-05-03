@@ -67,21 +67,23 @@ export default async function OptionsPage({
   let totalCapitalForPct = 0;
   for (const pos of positions) {
     if (pos.status !== "open") continue;
-    openPremiumCollected += pos.premium_collected * pos.quantity * 100;
-    const open = new Date(pos.open_date + "T00:00:00");
+    openPremiumCollected += (pos.premium_collected ?? 0) * pos.quantity * 100;
+    // open_date is a full ISO timestamp (order_date); expiration_date is date-only
+    const open = new Date(pos.open_date);
     const exp = new Date(pos.expiration_date + "T00:00:00");
     const originalDte = Math.round((exp.getTime() - open.getTime()) / 86400000);
-    if (originalDte <= 0) continue;
+    if (!Number.isFinite(originalDte) || originalDte <= 0) continue;
     let capital: number | null = null;
     if (pos.strategy === "cash_secured_put") {
       capital = pos.strike;
     } else if (pos.strategy === "covered_call") {
       capital = pnlByTicker.get(pos.underlying)?.avg_cost_basis ?? null;
     }
-    if (capital != null && capital > 0) {
+    const premium = pos.premium_collected ?? 0;
+    if (capital != null && capital > 0 && premium > 0) {
       positionMonthlyReturn[pos.option_symbol] =
-        (pos.premium_collected / capital) * (30 / originalDte) * 100;
-      totalMonthlyPremiumEquiv += (pos.premium_collected / originalDte * 30) * pos.quantity * 100;
+        (premium / capital) * (30 / originalDte) * 100;
+      totalMonthlyPremiumEquiv += (premium / originalDte * 30) * pos.quantity * 100;
       totalCapitalForPct += capital * pos.quantity * 100;
     }
   }
@@ -141,7 +143,7 @@ export default async function OptionsPage({
       ) : (
         <>
           {/* Summary stats */}
-          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-9 gap-3">
+          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
             <Stat
               label="Total P/L"
               value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
