@@ -47,6 +47,12 @@ export default async function WatchlistPage() {
           </p>
         </div>
         <div className="flex items-center gap-2">
+          <Link
+            href="/admin/watchlist/discover"
+            className="text-sm px-3 py-1.5 rounded border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800"
+          >
+            Discover
+          </Link>
           <RefreshButton marketOpen={isMarketOpen()} hasItems={items.length > 0} />
           <AddTickerForm />
         </div>
