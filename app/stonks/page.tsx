@@ -6,7 +6,7 @@ import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
 import { annotateAssignments } from "@/lib/assignment";
 import { getLiveQuotes, getOpenOptionGreeks } from "@/lib/quotes";
-import OptionsTable from "@/components/options-table";
+import TickerSection from "@/components/ticker-section";
 import SourcePicker from "@/components/source-picker";
 import SyncTradesButton from "@/components/sync-trades-button";
 
@@ -56,6 +56,14 @@ export default async function OptionsPage({
   ]);
 
   const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
+
+  const optionPrices: Record<string, number> = quotes.available
+    ? Object.fromEntries(
+        openOptionSymbols
+          .filter((s) => quotes.prices.has(s))
+          .map((s) => [s, quotes.prices.get(s)!]),
+      )
+    : {};
 
   const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
 
@@ -146,14 +154,13 @@ export default async function OptionsPage({
         </p>
       ) : (
         <>
-          {/* Summary stats */}
+          {/* Summary stats — Performance · Activity · Options mechanics */}
           <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {/* Performance */}
             <Stat
               label="Total P/L"
               value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
-              highlight={
-                (totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"
-              }
+              highlight={(totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"}
               dim={totalPL === null}
             />
             <Stat
@@ -164,13 +171,18 @@ export default async function OptionsPage({
             <Stat
               label="Unrealized P/L"
               value={totalUnrealizedPnL !== null ? fmtUSD(totalUnrealizedPnL) : "—"}
-              highlight={
-                totalUnrealizedPnL !== null
-                  ? totalUnrealizedPnL >= 0 ? "green" : "red"
-                  : undefined
-              }
+              highlight={totalUnrealizedPnL !== null ? (totalUnrealizedPnL >= 0 ? "green" : "red") : undefined}
               dim={totalUnrealizedPnL === null}
             />
+            {/* Activity */}
+            <Stat label="Open Positions" value={String(openCount)} />
+            <Stat label="Closed / Expired" value={String(closedCount)} />
+            <Stat
+              label="Win Rate"
+              value={winRate !== null ? `${winRate}%` : "—"}
+              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
+            />
+            {/* Options mechanics */}
             <Stat
               label="Net Premium"
               value={fmtUSD(totalPremium)}
@@ -181,13 +193,6 @@ export default async function OptionsPage({
               value={totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
               highlight={totalDailyTheta !== null ? (totalDailyTheta >= 0 ? "green" : "red") : undefined}
               dim={totalDailyTheta === null}
-            />
-            <Stat label="Open Positions" value={String(openCount)} />
-            <Stat label="Closed / Expired" value={String(closedCount)} />
-            <Stat
-              label="Win Rate"
-              value={winRate !== null ? `${winRate}%` : "—"}
-              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
             />
           </dl>
 
@@ -223,68 +228,18 @@ export default async function OptionsPage({
           )}
 
           {/* Per-ticker sections */}
-          {allTickers.map((ticker) => {
-            const p = pnlByTicker.get(ticker);
-            const tickerPositions = positions.filter((pos) => pos.underlying === ticker);
-
-            return (
-              <section key={ticker} className="flex flex-col gap-4">
-                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
-                  <h2 className="text-xl font-bold tracking-tight">{ticker}</h2>
-                  {p && p.shares_open > 0 && (
-                    <span className="text-sm text-stone-500">
-                      {p.shares_open} shares · {fmtUSD(p.avg_cost_basis)} avg cost · {fmtUSD(p.equity_total_cost)} total
-                    </span>
-                  )}
-                  {p && (p.total_pl !== undefined || p.total_realized_pl !== 0) && (
-                    <>
-                      {/* Total P&L — prominent when live quotes available */}
-                      {p.total_pl !== undefined && (
-                        <span className="text-sm font-medium">
-                          <span className="text-stone-500">Total P&L: </span>
-                          <span className={p.total_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                            {fmtUSD(p.total_pl)}
-                          </span>
-                        </span>
-                      )}
-                      {/* Realized breakdown */}
-                      {p.total_realized_pl !== 0 && (
-                        <span className="text-sm text-stone-500">
-                          Realized:{" "}
-                          <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                            {fmtUSD(p.total_realized_pl)}
-                          </span>
-                          <span className="text-stone-400">
-                            {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
-                          </span>
-                        </span>
-                      )}
-                      {/* Unrealized breakdown */}
-                      {hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
-                        <span className="text-sm text-stone-500">
-                          Unrealized:{" "}
-                          <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                            {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
-                          </span>
-                          {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
-                            <span className="text-stone-400">
-                              {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
-                            </span>
-                          )}
-                        </span>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                {tickerPositions.length > 0 ? (
-                  <OptionsTable positions={tickerPositions} monthlyReturn={positionMonthlyReturn} />
-                ) : (
-                  <p className="text-sm text-stone-400">No options activity.</p>
-                )}
-              </section>
-            );
-          })}
+          {allTickers.map((ticker) => (
+            <TickerSection
+              key={ticker}
+              ticker={ticker}
+              livePrice={quotes.available ? quotes.prices.get(ticker) : undefined}
+              pnl={pnlByTicker.get(ticker)}
+              hasUnrealized={hasUnrealized}
+              positions={positions.filter((pos) => pos.underlying === ticker)}
+              monthlyReturn={positionMonthlyReturn}
+              optionPrices={optionPrices}
+            />
+          ))}
         </>
       )}
     </div>
