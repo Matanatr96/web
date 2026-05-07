@@ -3,7 +3,7 @@
 import React, { useMemo, useState } from "react";
 import type { OptionsPosition } from "@/lib/types";
 
-type SortKey = "strategy" | "strike" | "expiration_date" | "net_premium" | "status" | "open_date";
+type SortKey = "expiration_date" | "net_premium" | "status" | "open_date";
 
 type SortDir = "asc" | "desc";
 
@@ -14,12 +14,24 @@ function premiumColor(pct: number): string {
   return "text-stone-400";
 }
 
-const STRATEGY_LABEL: Record<OptionsPosition["strategy"], string> = {
-  covered_call:     "Covered Call",
-  cash_secured_put: "Cash-Secured Put",
-  long_call:        "Long Call",
-  long_put:         "Long Put",
+const OPTION_TYPE: Record<OptionsPosition["strategy"], string> = {
+  covered_call:     "Call",
+  cash_secured_put: "Put",
+  long_call:        "Call",
+  long_put:         "Put",
 };
+
+function fmtExpiration(iso: string) {
+  return new Date(iso + "T00:00:00").toLocaleDateString("en-US", {
+    month: "short",
+    day: "2-digit",
+    year: "numeric",
+  });
+}
+
+function fmtStrike(strike: number) {
+  return Number.isInteger(strike) ? `$${strike}` : `$${strike.toFixed(2)}`;
+}
 
 const STATUS_LABEL: Record<OptionsPosition["status"], string> = {
   open:     "Open",
@@ -55,11 +67,13 @@ export default function OptionsTable({
   positions,
   monthlyReturn,
   optionPrices,
+  optionGreeks,
   statusFilter = "",
 }: {
   positions: OptionsPosition[];
   monthlyReturn?: Record<string, number>;
   optionPrices?: Record<string, number>;
+  optionGreeks?: Map<string, number>;
   statusFilter?: string;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
@@ -97,12 +111,11 @@ export default function OptionsTable({
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
-              <Th onClick={() => onSort("strategy")}        label={`Strategy ${arrow("strategy")}`} />
-              <Th onClick={() => onSort("strike")}          label={`Strike ${arrow("strike")}`}          align="right" />
-              <Th onClick={() => onSort("expiration_date")} label={`Expiration ${arrow("expiration_date")}`} />
+              <Th onClick={() => onSort("expiration_date")} label={`Contract ${arrow("expiration_date")}`} />
               <th className="px-3 py-2">Qty</th>
               <Th onClick={() => onSort("net_premium")}     label={`Net Premium ${arrow("net_premium")}`} align="right" />
               <th className="px-3 py-2 text-right">Mark</th>
+              <th className="px-3 py-2 text-right">Theta/day</th>
               <th className="px-3 py-2 text-right">Total P&amp;L</th>
               <Th onClick={() => onSort("status")}          label={`Status ${arrow("status")}`} />
               <Th onClick={() => onSort("open_date")}       label={`Opened ${arrow("open_date")}`} />
@@ -122,11 +135,9 @@ export default function OptionsTable({
                   <tr
                     className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
                   >
-                    <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                      {STRATEGY_LABEL[p.strategy]}
+                    <td className="px-3 py-2 whitespace-nowrap">
+                      {fmtExpiration(p.expiration_date)} {fmtStrike(p.strike)} {OPTION_TYPE[p.strategy]}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums">${p.strike.toFixed(2)}</td>
-                    <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.expiration_date)}</td>
                     <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
                     <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
                       {fmtUSD(p.net_premium)}
@@ -139,6 +150,20 @@ export default function OptionsTable({
                     </td>
                     <td className="px-3 py-2 text-right tabular-nums text-stone-500">
                       {p.status === "open" && markPrice != null ? fmtUSD(markPrice) : "—"}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      {(() => {
+                        if (p.status !== "open" || !optionGreeks) return <span className="text-stone-400">—</span>;
+                        const rawTheta = optionGreeks.get(p.option_symbol);
+                        if (rawTheta == null) return <span className="text-stone-400">—</span>;
+                        const isShort = p.strategy === "cash_secured_put" || p.strategy === "covered_call";
+                        const dailyTheta = (isShort ? -1 : 1) * rawTheta * 100 * p.quantity;
+                        return (
+                          <span className={dailyTheta >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                            {fmtUSD(dailyTheta)}
+                          </span>
+                        );
+                      })()}
                     </td>
                     <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
                       {fmtUSD(totalPnl)}
@@ -155,7 +180,7 @@ export default function OptionsTable({
                       key={`${p.option_symbol}-assignment-${t.id}`}
                       className="bg-amber-50 dark:bg-amber-900/10"
                     >
-                      <td colSpan={9} className="px-3 py-1.5 text-xs text-stone-500">
+                      <td colSpan={8} className="px-3 py-1.5 text-xs text-stone-500">
                         ↳{" "}
                         {t.quantity} shares{" "}
                         {t.side === "sell" ? "called away" : "put to you"}{" "}
@@ -168,7 +193,7 @@ export default function OptionsTable({
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={9} className="px-3 py-8 text-center text-stone-500">
+                <td colSpan={8} className="px-3 py-8 text-center text-stone-500">
                   No positions match these filters.
                 </td>
               </tr>

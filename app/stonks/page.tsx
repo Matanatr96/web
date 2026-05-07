@@ -5,7 +5,7 @@ import type { OptionsTrade, EquityTrade, TradeSource } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
 import { annotateAssignments } from "@/lib/assignment";
-import { getLiveQuotes, getOpenOptionGreeks } from "@/lib/quotes";
+import { getLiveQuotes, getOpenOptionGreeks, getWatchlistQuotes } from "@/lib/quotes";
 import TickerSection from "@/components/ticker-section";
 import SourcePicker from "@/components/source-picker";
 import SyncTradesButton from "@/components/sync-trades-button";
@@ -46,13 +46,21 @@ export default async function OptionsPage({
     .filter((p) => p.status === "open")
     .map((p) => p.option_symbol);
 
-  const [quotes, optionGreeks] = await Promise.all([
+  // Compute underlying tickers early so we can fetch stock prices in parallel.
+  const underlyingTickers = Array.from(
+    new Set([...positions.map((p) => p.underlying), ...equitySymbols]),
+  ).sort();
+
+  const [quotes, optionGreeks, stockQuotes] = await Promise.all([
     source === "prod"
       ? getLiveQuotes(equitySymbols, openOptionSymbols)
       : Promise.resolve({ prices: new Map<string, number>(), available: false }),
     source === "prod"
       ? getOpenOptionGreeks(openOptionSymbols)
       : Promise.resolve(new Map<string, number>()),
+    source === "prod"
+      ? getWatchlistQuotes(underlyingTickers)
+      : Promise.resolve(new Map<string, { last: number | null }>()),
   ]);
 
   const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
@@ -232,12 +240,13 @@ export default async function OptionsPage({
             <TickerSection
               key={ticker}
               ticker={ticker}
-              livePrice={quotes.available ? quotes.prices.get(ticker) : undefined}
+              livePrice={stockQuotes.get(ticker)?.last ?? undefined}
               pnl={pnlByTicker.get(ticker)}
               hasUnrealized={hasUnrealized}
               positions={positions.filter((pos) => pos.underlying === ticker)}
               monthlyReturn={positionMonthlyReturn}
               optionPrices={optionPrices}
+              optionGreeks={optionGreeks}
             />
           ))}
         </>
