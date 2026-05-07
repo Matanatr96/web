@@ -154,14 +154,13 @@ export default async function OptionsPage({
         </p>
       ) : (
         <>
-          {/* Summary stats */}
+          {/* Summary stats — Performance · Activity · Options mechanics */}
           <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+            {/* Performance */}
             <Stat
               label="Total P/L"
               value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
-              highlight={
-                (totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"
-              }
+              highlight={(totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"}
               dim={totalPL === null}
             />
             <Stat
@@ -172,13 +171,18 @@ export default async function OptionsPage({
             <Stat
               label="Unrealized P/L"
               value={totalUnrealizedPnL !== null ? fmtUSD(totalUnrealizedPnL) : "—"}
-              highlight={
-                totalUnrealizedPnL !== null
-                  ? totalUnrealizedPnL >= 0 ? "green" : "red"
-                  : undefined
-              }
+              highlight={totalUnrealizedPnL !== null ? (totalUnrealizedPnL >= 0 ? "green" : "red") : undefined}
               dim={totalUnrealizedPnL === null}
             />
+            {/* Activity */}
+            <Stat label="Open Positions" value={String(openCount)} />
+            <Stat label="Closed / Expired" value={String(closedCount)} />
+            <Stat
+              label="Win Rate"
+              value={winRate !== null ? `${winRate}%` : "—"}
+              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
+            />
+            {/* Options mechanics */}
             <Stat
               label="Net Premium"
               value={fmtUSD(totalPremium)}
@@ -189,13 +193,6 @@ export default async function OptionsPage({
               value={totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
               highlight={totalDailyTheta !== null ? (totalDailyTheta >= 0 ? "green" : "red") : undefined}
               dim={totalDailyTheta === null}
-            />
-            <Stat label="Open Positions" value={String(openCount)} />
-            <Stat label="Closed / Expired" value={String(closedCount)} />
-            <Stat
-              label="Win Rate"
-              value={winRate !== null ? `${winRate}%` : "—"}
-              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
             />
           </dl>
 
