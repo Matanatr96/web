@@ -123,7 +123,7 @@ export async function logoutAction() {
   redirect("/admin/login");
 }
 
-export async function createRestaurant(fd: FormData) {
+export async function createRestaurant(fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
   const input = buildInput(fd);
   const supabase = getServiceClient();
@@ -140,10 +140,10 @@ export async function createRestaurant(fd: FormData) {
   revalidatePath("/restaurants");
   revalidatePath("/map");
   revalidatePath("/admin");
-  redirect("/admin");
+  return { placeId: input.place_id ?? null, note: input.note ?? null, name: input.name };
 }
 
-export async function updateRestaurant(id: number, fd: FormData) {
+export async function updateRestaurant(id: number, fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
   const input = buildInput(fd);
   const supabase = getServiceClient();
@@ -164,7 +164,7 @@ export async function updateRestaurant(id: number, fd: FormData) {
   revalidatePath("/map");
   revalidatePath("/admin");
   revalidatePath(`/restaurant/${id}`);
-  redirect("/admin");
+  return { placeId: input.place_id ?? null, note: input.note ?? null, name: input.name };
 }
 
 // _fd is required for compatibility with <form action={...}>, which always

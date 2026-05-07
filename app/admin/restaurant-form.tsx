@@ -2,14 +2,17 @@
 
 import { useState, useCallback, useEffect, useRef, useTransition } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
 import PlaceAutocomplete, { type PlacePick } from "@/components/place-autocomplete";
 
+type ReviewPromptData = { placeId: string; note: string | null; name: string };
+
 type Props = {
   initial?: Partial<Restaurant>;
-  action: (fd: FormData) => Promise<void>;
+  action: (fd: FormData) => Promise<{ placeId: string | null; note: string | null; name: string } | void>;
   submitLabel: string;
   /** Pass existing names to enable duplicate detection (used on "new" page). */
   existingNames?: string[];
@@ -26,6 +29,7 @@ type Props = {
  * server action so we don't need to care whether this is a create or update.
  */
 export default function RestaurantForm({ initial, action, submitLabel, existingNames, existingPlaceIds, cuisines: cuisinesProp, googleMapsApiKey }: Props) {
+  const router = useRouter();
   const cuisineList = cuisinesProp ?? CUISINES;
   const [placeName, setPlaceName] = useState(initial?.name ?? "");
   const [city, setCity] = useState(initial?.city ?? "");
@@ -116,6 +120,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
 
   const [isPending, startTransition] = useTransition();
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [reviewPrompt, setReviewPrompt] = useState<ReviewPromptData | null>(null);
 
   const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -123,13 +128,18 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
     setSubmitError(null);
     startTransition(async () => {
       try {
-        await action(fd);
+        const result = await action(fd);
+        if (result?.placeId) {
+          setReviewPrompt({ placeId: result.placeId, note: result.note ?? null, name: result.name });
+        } else {
+          router.push("/admin");
+        }
       } catch (err) {
         if (isRedirectError(err)) throw err;
         setSubmitError(err instanceof Error ? err.message : "An unexpected error occurred.");
       }
     });
-  }, [action]);
+  }, [action, router]);
 
   // Case-insensitive duplicate check
   const duplicateMatch = existingNames?.find(
@@ -366,7 +376,63 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
           Cancel
         </Link>
       </div>
+      {reviewPrompt && (
+        <GoogleReviewPrompt
+          data={reviewPrompt}
+          onDismiss={() => router.push("/admin")}
+        />
+      )}
     </form>
+  );
+}
+
+function GoogleReviewPrompt({ data, onDismiss }: { data: ReviewPromptData; onDismiss: () => void }) {
+  const [copied, setCopied] = useState(false);
+  const reviewUrl = `https://search.google.com/local/writereview?placeid=${data.placeId}`;
+
+  useEffect(() => {
+    if (data.note) {
+      navigator.clipboard.writeText(data.note).then(() => setCopied(true)).catch(() => {});
+    }
+  }, [data.note]);
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={onDismiss}>
+      <div
+        className="bg-white dark:bg-stone-900 rounded-xl shadow-2xl p-6 max-w-sm w-full mx-4 border border-stone-200 dark:border-stone-700"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 className="text-base font-semibold mb-1">Leave a Google Review?</h2>
+        <p className="text-sm text-stone-500 mb-1">
+          {data.note
+            ? "Your review text has been copied to your clipboard — paste it into Google."
+            : `Share your experience at ${data.name} on Google.`}
+        </p>
+        {copied && (
+          <p className="text-xs text-green-600 dark:text-green-400 mb-3">✓ Review copied to clipboard</p>
+        )}
+        {!copied && data.note && (
+          <p className="text-xs text-stone-400 mb-3">Copying to clipboard…</p>
+        )}
+        <div className="flex flex-col gap-2 mt-4">
+          <a
+            href={reviewUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-4 py-2 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90 text-center font-medium"
+          >
+            Leave a Google Review ↗
+          </a>
+          <button
+            type="button"
+            onClick={onDismiss}
+            className="px-4 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+          >
+            Maybe later
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
