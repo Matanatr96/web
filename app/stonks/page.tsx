@@ -57,6 +57,14 @@ export default async function OptionsPage({
 
   const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
 
+  const optionPrices: Record<string, number> = quotes.available
+    ? Object.fromEntries(
+        openOptionSymbols
+          .filter((s) => quotes.prices.has(s))
+          .map((s) => [s, quotes.prices.get(s)!]),
+      )
+    : {};
+
   const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
 
   // Per-position monthly return % — same formula as watchlist:
@@ -283,7 +291,7 @@ export default async function OptionsPage({
                 </div>
 
                 {tickerPositions.length > 0 ? (
-                  <OptionsTable positions={tickerPositions} monthlyReturn={positionMonthlyReturn} />
+                  <OptionsTable positions={tickerPositions} monthlyReturn={positionMonthlyReturn} optionPrices={optionPrices} />
                 ) : (
                   <p className="text-sm text-stone-400">No options activity.</p>
                 )}

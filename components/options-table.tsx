@@ -54,9 +54,11 @@ function fmtUSD(n: number) {
 export default function OptionsTable({
   positions,
   monthlyReturn,
+  optionPrices,
 }: {
   positions: OptionsPosition[];
   monthlyReturn?: Record<string, number>;
+  optionPrices?: Record<string, number>;
 }) {
   const [statusFilter, setStatusFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
@@ -113,6 +115,7 @@ export default function OptionsTable({
               <Th onClick={() => onSort("expiration_date")} label={`Expiration ${arrow("expiration_date")}`} />
               <th className="px-3 py-2">Qty</th>
               <Th onClick={() => onSort("net_premium")}     label={`Net Premium ${arrow("net_premium")}`} align="right" />
+              <th className="px-3 py-2 text-right">Mark</th>
               <th className="px-3 py-2 text-right">Total P&amp;L</th>
               <Th onClick={() => onSort("status")}          label={`Status ${arrow("status")}`} />
               <Th onClick={() => onSort("open_date")}       label={`Opened ${arrow("open_date")}`} />
@@ -124,6 +127,8 @@ export default function OptionsTable({
               const pnlClass = totalPnl >= 0
                 ? "text-green-600 dark:text-green-400"
                 : "text-red-600 dark:text-red-400";
+
+              const markPrice = optionPrices?.[p.option_symbol];
 
               return (
                 <React.Fragment key={p.option_symbol}>
@@ -145,6 +150,9 @@ export default function OptionsTable({
                         </span>
                       )}
                     </td>
+                    <td className="px-3 py-2 text-right tabular-nums text-stone-500">
+                      {p.status === "open" && markPrice != null ? fmtUSD(markPrice) : "—"}
+                    </td>
                     <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
                       {fmtUSD(totalPnl)}
                     </td>
@@ -160,7 +168,7 @@ export default function OptionsTable({
                       key={`${p.option_symbol}-assignment-${t.id}`}
                       className="bg-amber-50 dark:bg-amber-900/10"
                     >
-                      <td colSpan={8} className="px-3 py-1.5 text-xs text-stone-500">
+                      <td colSpan={9} className="px-3 py-1.5 text-xs text-stone-500">
                         ↳{" "}
                         {t.quantity} shares{" "}
                         {t.side === "sell" ? "called away" : "put to you"}{" "}
@@ -173,7 +181,7 @@ export default function OptionsTable({
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-stone-500">
+                <td colSpan={9} className="px-3 py-8 text-center text-stone-500">
                   No positions match these filters.
                 </td>
               </tr>
