@@ -16,35 +16,42 @@ export function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
     const openSide  = isLong ? "buy_to_open"  : "sell_to_open";
     const closeSide = isLong ? "sell_to_close" : "buy_to_close";
 
-    const open = legs.find((l) => l.side === openSide);
-    if (!open) continue;
-    const close = legs.find((l) => l.side === closeSide);
+    const opens = legs.filter((l) => l.side === openSide);
+    if (opens.length === 0) continue;
+    opens.sort((a, b) => a.order_date.localeCompare(b.order_date));
 
-    const premiumCollected = isLong ? (close?.avg_fill_price ?? 0) : open.avg_fill_price;
-    const premiumPaid      = isLong ? open.avg_fill_price : (close?.avg_fill_price ?? null);
+    const totalQty = opens.reduce((sum, l) => sum + l.quantity, 0);
+    const weightedAvgFill =
+      opens.reduce((sum, l) => sum + l.avg_fill_price * l.quantity, 0) / totalQty;
+
+    const close = legs.find((l) => l.side === closeSide);
+    const firstOpen = opens[0];
+
+    const premiumCollected = isLong ? (close?.avg_fill_price ?? 0) : weightedAvgFill;
+    const premiumPaid      = isLong ? weightedAvgFill : (close?.avg_fill_price ?? null);
     const netPremium       = premiumCollected - (premiumPaid ?? 0);
 
     let status: OptionsPosition["status"];
     if (close) {
       status = "closed";
-    } else if (new Date(open.expiration_date) < today) {
-      status = open.status === "assigned" ? "assigned" : "expired";
+    } else if (new Date(firstOpen.expiration_date) < today) {
+      status = opens.some((l) => l.status === "assigned") ? "assigned" : "expired";
     } else {
       status = "open";
     }
 
     positions.push({
-      underlying:        open.underlying,
+      underlying:        firstOpen.underlying,
       option_symbol:     symbol,
-      strategy:          open.strategy,
-      strike:            open.strike,
-      expiration_date:   open.expiration_date,
-      quantity:          open.quantity,
+      strategy:          firstOpen.strategy,
+      strike:            firstOpen.strike,
+      expiration_date:   firstOpen.expiration_date,
+      quantity:          totalQty,
       premium_collected: premiumCollected,
       premium_paid:      premiumPaid,
       net_premium:       netPremium,
       status,
-      open_date:  open.order_date,
+      open_date:  firstOpen.order_date,
       close_date: close?.order_date ?? null,
     });
   }

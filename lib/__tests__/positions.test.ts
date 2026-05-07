@@ -183,6 +183,18 @@ describe("buildPositions — multiple positions", () => {
     expect(positions[1].open_date).toBe("2026-01-01T00:00:00Z");
   });
 
+  it("folds multiple open legs for the same symbol into one position with summed qty and weighted avg premium", () => {
+    const trades = [
+      makeTrade({ side: "sell_to_open", avg_fill_price: 3.00, quantity: 1, order_date: "2026-01-01T00:00:00Z" }),
+      makeTrade({ side: "sell_to_open", avg_fill_price: 2.00, quantity: 2, order_date: "2026-02-01T00:00:00Z" }),
+    ];
+    const positions = buildPositions(trades);
+    expect(positions).toHaveLength(1);
+    expect(positions[0].quantity).toBe(3);
+    expect(positions[0].premium_collected).toBeCloseTo((3.00 * 1 + 2.00 * 2) / 3); // 2.33…
+    expect(positions[0].open_date).toBe("2026-01-01T00:00:00Z"); // earliest
+  });
+
   it("groups open and close legs by option_symbol correctly", () => {
     const trades = [
       makeTrade({ side: "sell_to_open",  avg_fill_price: 3.00, option_symbol: "AAPL260101C00150000", order_date: "2026-01-01T00:00:00Z" }),
