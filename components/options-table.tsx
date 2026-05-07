@@ -55,12 +55,13 @@ export default function OptionsTable({
   positions,
   monthlyReturn,
   optionPrices,
+  statusFilter = "",
 }: {
   positions: OptionsPosition[];
   monthlyReturn?: Record<string, number>;
   optionPrices?: Record<string, number>;
+  statusFilter?: string;
 }) {
-  const [statusFilter, setStatusFilter] = useState("");
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
 
@@ -92,20 +93,6 @@ export default function OptionsTable({
 
   return (
     <div>
-      <div className="flex flex-wrap gap-3 mb-3">
-        <select
-          value={statusFilter}
-          onChange={(e) => setStatusFilter(e.target.value)}
-          className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-        >
-          <option value="">All statuses</option>
-          <option value="open">Open</option>
-          <option value="closed">Closed</option>
-          <option value="expired">Expired</option>
-          <option value="assigned">Assigned</option>
-        </select>
-      </div>
-
       <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
         <table className="w-full text-sm">
           <thead className="sticky top-0 bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
