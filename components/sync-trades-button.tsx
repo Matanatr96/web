@@ -1,8 +1,10 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 
 export default function SyncTradesButton({ source }: { source: "prod" | "sandbox" }) {
+  const router = useRouter();
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
@@ -22,6 +24,7 @@ export default function SyncTradesButton({ source }: { source: "prod" | "sandbox
         `${json.synced_equity} equity trade${json.synced_equity === 1 ? "" : "s"}`,
       );
       setState("done");
+      router.refresh();
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Sync failed");
       setState("error");
