@@ -1,7 +1,8 @@
 "use client";
 
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, useTransition } from "react";
 import Link from "next/link";
+import { isRedirectError } from "next/dist/client/components/redirect-error";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
 import PlaceAutocomplete, { type PlacePick } from "@/components/place-autocomplete";
@@ -113,16 +114,38 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
 
   const weights = RATING_WEIGHTS[category] ?? RATING_WEIGHTS.Food;
 
+  const [isPending, startTransition] = useTransition();
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  const handleSubmit = useCallback((e: React.FormEvent<HTMLFormElement>) => {
+    e.preventDefault();
+    const fd = new FormData(e.currentTarget);
+    setSubmitError(null);
+    startTransition(async () => {
+      try {
+        await action(fd);
+      } catch (err) {
+        if (isRedirectError(err)) throw err;
+        setSubmitError(err instanceof Error ? err.message : "An unexpected error occurred.");
+      }
+    });
+  }, [action]);
+
   // Case-insensitive duplicate check
   const duplicateMatch = existingNames?.find(
     (n) => n.toLowerCase() === placeName.trim().toLowerCase()
   );
 
   return (
-    <form action={action} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+    <form onSubmit={handleSubmit} className="grid grid-cols-1 sm:grid-cols-2 gap-4">
       {duplicateMatch && (
         <div className="sm:col-span-2 rounded-md border border-amber-300 dark:border-amber-600 bg-amber-50 dark:bg-amber-900/30 px-4 py-3 text-sm text-amber-800 dark:text-amber-200">
           A restaurant named <strong>{duplicateMatch}</strong> already exists. Are you sure you want to create another?
+        </div>
+      )}
+      {submitError && (
+        <div className="sm:col-span-2 rounded-md border border-red-300 dark:border-red-600 bg-red-50 dark:bg-red-900/30 px-4 py-3 text-sm text-red-800 dark:text-red-200">
+          <strong>Error:</strong> {submitError}
         </div>
       )}
       {duplicatePlaceMatch && (
@@ -334,9 +357,10 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
       <div className="sm:col-span-2 flex items-center gap-3 pt-2">
         <button
           type="submit"
-          className="px-4 py-2 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90"
+          disabled={isPending}
+          className="px-4 py-2 text-sm rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90 disabled:opacity-50"
         >
-          {submitLabel}
+          {isPending ? "Saving…" : submitLabel}
         </button>
         <Link href="/admin" className="text-sm text-stone-500 hover:underline">
           Cancel
