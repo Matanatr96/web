@@ -231,6 +231,11 @@ export default async function OptionsPage({
               <section key={ticker} className="flex flex-col gap-4">
                 <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
                   <h2 className="text-xl font-bold tracking-tight">{ticker}</h2>
+                  {quotes.available && quotes.prices.has(ticker) && (
+                    <span className="text-sm font-medium text-stone-500">
+                      {fmtUSD(quotes.prices.get(ticker)!)}
+                    </span>
+                  )}
                   {p && p.shares_open > 0 && (
                     <span className="text-sm text-stone-500">
                       {p.shares_open} shares · {fmtUSD(p.avg_cost_basis)} avg cost · {fmtUSD(p.equity_total_cost)} total
