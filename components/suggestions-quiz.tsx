@@ -371,7 +371,24 @@ function Results({
             className="rounded-lg border border-stone-200 dark:border-stone-800 p-4"
           >
             <div className="flex items-start justify-between gap-4">
-              <div className="font-semibold">{r.name}</div>
+              <div className="font-semibold">
+                {r.place_id || (r.lat && r.lng) ? (
+                  <a
+                    href={
+                      r.place_id
+                        ? `https://www.google.com/maps/place/?q=place_id:${r.place_id}`
+                        : `https://www.google.com/maps?q=${r.lat},${r.lng}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="hover:underline"
+                  >
+                    {r.name}
+                  </a>
+                ) : (
+                  r.name
+                )}
+              </div>
               <div className="text-sm font-mono tabular-nums">
                 {Number(r.overall).toFixed(2)}
               </div>
