@@ -30,9 +30,9 @@ function mid(q: TradierQuote): number {
   return (q.bid + q.ask) / 2;
 }
 
-async function fetchQuotesRaw(symbols: string[]): Promise<Map<string, number>> {
+async function fetchQuotesRaw(symbols: string[]): Promise<[string, number][]> {
   const key = process.env.TRADIER_API_KEY;
-  if (!key || symbols.length === 0) return new Map();
+  if (!key || symbols.length === 0) return [];
 
   const joined = symbols.join(",");
   const res = await fetch(
@@ -43,14 +43,15 @@ async function fetchQuotesRaw(symbols: string[]): Promise<Map<string, number>> {
     },
   );
 
-  if (!res.ok) return new Map();
+  if (!res.ok) return [];
 
   const data = (await res.json()) as TradierQuotesResponse;
   const quotes = toArray(data.quotes?.quote);
-  return new Map(quotes.map((q) => [q.symbol, mid(q)]));
+  return quotes.map((q) => [q.symbol, mid(q)]);
 }
 
 // Cached version — revalidates every 60s. Cache key is the sorted, joined symbol list.
+// Returns plain array (not Map) so unstable_cache JSON serialization preserves the value.
 const fetchQuotesCached = unstable_cache(
   fetchQuotesRaw,
   ["tradier-quotes"],
@@ -407,9 +408,9 @@ type TradierOptionGreeksResponse = {
   quotes: { quote: TradierOptionQuoteGreeks | TradierOptionQuoteGreeks[] } | null;
 };
 
-async function fetchOptionGreeksRaw(symbols: string[]): Promise<Map<string, number>> {
+async function fetchOptionGreeksRaw(symbols: string[]): Promise<[string, number][]> {
   const key = process.env.TRADIER_API_KEY;
-  if (!key || symbols.length === 0) return new Map();
+  if (!key || symbols.length === 0) return [];
 
   const joined = symbols.join(",");
   const res = await fetch(
@@ -419,15 +420,15 @@ async function fetchOptionGreeksRaw(symbols: string[]): Promise<Map<string, numb
       cache: "no-store",
     },
   );
-  if (!res.ok) return new Map();
+  if (!res.ok) return [];
 
   const data = (await res.json()) as TradierOptionGreeksResponse;
   const quotes = toArray(data.quotes?.quote);
-  const result = new Map<string, number>();
+  const entries: [string, number][] = [];
   for (const q of quotes) {
-    if (q.greeks?.theta != null) result.set(q.symbol, q.greeks.theta);
+    if (q.greeks?.theta != null) entries.push([q.symbol, q.greeks.theta]);
   }
-  return result;
+  return entries;
 }
 
 const fetchOptionGreeksCached = unstable_cache(
@@ -439,7 +440,7 @@ const fetchOptionGreeksCached = unstable_cache(
 export async function getOpenOptionGreeks(symbols: string[]): Promise<Map<string, number>> {
   if (symbols.length === 0) return new Map();
   try {
-    return await fetchOptionGreeksCached([...symbols].sort());
+    return new Map(await fetchOptionGreeksCached([...symbols].sort()));
   } catch {
     return new Map();
   }
@@ -465,7 +466,7 @@ export async function getLiveQuotes(
     const allSymbols = [...equitySymbols, ...optionSymbols].sort();
     if (allSymbols.length === 0) return { prices: new Map(), available: false };
 
-    const prices = await fetchQuotesCached(allSymbols);
+    const prices = new Map(await fetchQuotesCached(allSymbols));
     return { prices, available: prices.size > 0 };
   } catch {
     return { prices: new Map(), available: false };
