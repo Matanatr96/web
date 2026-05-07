@@ -40,41 +40,37 @@ export default function TickerSection({
               {p.shares_open} shares · {fmtUSD(p.avg_cost_basis)} avg cost · {fmtUSD(p.equity_total_cost)} total
             </span>
           )}
-          {p && (p.total_pl !== undefined || p.total_realized_pl !== 0) && (
-            <>
-              {p.total_pl !== undefined && (
-                <span className="text-sm font-medium">
-                  <span className="text-stone-500">Total P&L: </span>
-                  <span className={p.total_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                    {fmtUSD(p.total_pl)}
-                  </span>
+          {p?.total_pl !== undefined && (
+            <span className="text-sm font-medium">
+              <span className="text-stone-500">Total P&L: </span>
+              <span className={p.total_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {fmtUSD(p.total_pl)}
+              </span>
+            </span>
+          )}
+          {p && p.total_realized_pl !== 0 && (
+            <span className="text-sm text-stone-500">
+              Realized:{" "}
+              <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {fmtUSD(p.total_realized_pl)}
+              </span>
+              <span className="text-stone-400">
+                {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
+              </span>
+            </span>
+          )}
+          {p && hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
+            <span className="text-sm text-stone-500">
+              Unrealized:{" "}
+              <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
+              </span>
+              {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
+                <span className="text-stone-400">
+                  {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
                 </span>
               )}
-              {p.total_realized_pl !== 0 && (
-                <span className="text-sm text-stone-500">
-                  Realized:{" "}
-                  <span className={p.total_realized_pl >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                    {fmtUSD(p.total_realized_pl)}
-                  </span>
-                  <span className="text-stone-400">
-                    {" "}(equity {fmtUSD(p.equity_realized_pl)} · options {fmtUSD(p.options_realized_pl)})
-                  </span>
-                </span>
-              )}
-              {hasUnrealized && (p.unrealized_equity_pl !== undefined || p.unrealized_options_pl !== undefined) && (
-                <span className="text-sm text-stone-500">
-                  Unrealized:{" "}
-                  <span className={((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0)) >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
-                    {fmtUSD((p.unrealized_equity_pl ?? 0) + (p.unrealized_options_pl ?? 0))}
-                  </span>
-                  {p.unrealized_equity_pl !== undefined && p.unrealized_options_pl !== undefined && (
-                    <span className="text-stone-400">
-                      {" "}(equity {fmtUSD(p.unrealized_equity_pl)} · options {fmtUSD(p.unrealized_options_pl)})
-                    </span>
-                  )}
-                </span>
-              )}
-            </>
+            </span>
           )}
         </div>
 
