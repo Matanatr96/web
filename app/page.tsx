@@ -8,11 +8,6 @@ export default function HomePage() {
         <p className="mt-3 text-base sm:text-lg text-stone-500 dark:text-stone-400">
           Software engineer · food enthusiast · photographer
         </p>
-        <p className="mt-5 text-stone-600 dark:text-stone-400 leading-relaxed max-w-lg">
-          Based in SF. I build software, eat at too many restaurants, and
-          photograph the world in between.
-        </p>
-
         <div className="mt-7 flex flex-wrap gap-3">
           <SocialLink
             href="https://www.linkedin.com/in/anush96/"
