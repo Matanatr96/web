@@ -123,12 +123,14 @@ export default function OptionsTable({
           </thead>
           <tbody>
             {visible.map((p) => {
-              const totalPnl = p.net_premium * p.quantity * 100;
+              const markPrice = optionPrices?.[p.option_symbol];
+              const totalPnl =
+                p.status === "open" && p.unrealized_pl !== undefined
+                  ? p.unrealized_pl
+                  : p.net_premium * p.quantity * 100;
               const pnlClass = totalPnl >= 0
                 ? "text-green-600 dark:text-green-400"
                 : "text-red-600 dark:text-red-400";
-
-              const markPrice = optionPrices?.[p.option_symbol];
 
               return (
                 <React.Fragment key={p.option_symbol}>
