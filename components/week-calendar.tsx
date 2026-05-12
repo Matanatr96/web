@@ -26,8 +26,8 @@ type Props = {
   legendLabel?: string;
   // If true, render the secondary bar row under the grid.
   showSecondary?: boolean;
-  // Optional formatter for the secondary value in its tooltip.
-  formatSecondary?: (v: number) => string;
+  // Label appended after the percentage in the secondary tooltip, e.g. "win rate".
+  secondaryLabel?: string;
 };
 
 // GitHub-style heatmap: rows = days of week, columns = weeks. We only show one
@@ -38,7 +38,7 @@ export default function WeekCalendar({
   accent = "#059669",
   legendLabel,
   showSecondary = false,
-  formatSecondary,
+  secondaryLabel,
 }: Props) {
   const [hover, setHover] = useState<{ cell: WeekCell; x: number; y: number } | null>(null);
 
@@ -142,7 +142,7 @@ export default function WeekCalendar({
               const title =
                 v == null
                   ? `Week of ${c.weekStart}: no closed contracts`
-                  : `Week of ${c.weekStart}: ${formatSecondary ? formatSecondary(v) : `${Math.round(v * 100)}%`}`;
+                  : `Week of ${c.weekStart}: ${Math.round(v * 100)}%${secondaryLabel ? ` ${secondaryLabel}` : ""}`;
               return (
                 <div
                   key={`bar-${c.isoKey}`}

@@ -74,9 +74,9 @@ export default async function YieldCalendarPage({
           <h1 className="text-3xl font-bold tracking-tight">Premium Yield Calendar</h1>
           <p className="mt-2 text-sm text-stone-500 max-w-2xl">
             One cell per ISO week of the trailing year. Color intensity tracks the
-            total premium collected on sell-to-open contracts opened that week;
-            the bar row beneath shows the win rate for those contracts (kept
-            premium vs. assigned).
+            net premium (collected minus any buy-to-close costs) on contracts
+            opened that week; the bar row beneath shows the win rate for those
+            contracts (kept premium vs. assigned).
           </p>
         </div>
         <Link
@@ -111,7 +111,7 @@ export default async function YieldCalendarPage({
               accent="#059669"
               legendLabel="less"
               showSecondary
-              formatSecondary={(v) => `${Math.round(v * 100)}% win rate`}
+              secondaryLabel="win rate"
             />
             <p className="mt-3 text-xs text-stone-500">
               Color scale tops out at the 95th-percentile week ({fmtUSD(scaleMax)}).

@@ -152,30 +152,6 @@ export default async function OptionsPage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Link
-            href={`/stonks/heatmap${source === "sandbox" ? "?source=sandbox" : ""}`}
-            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 underline-offset-4 hover:underline"
-          >
-            Strike heatmap
-          </Link>
-          <Link
-            href={`/stonks/wheels${source === "sandbox" ? "?source=sandbox" : ""}`}
-            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 underline-offset-4 hover:underline"
-          >
-            Wheel hall of fame
-          </Link>
-          <Link
-            href={`/stonks/dte-oracle${source === "sandbox" ? "?source=sandbox" : ""}`}
-            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 underline-offset-4 hover:underline"
-          >
-            DTE oracle
-          </Link>
-          <Link
-            href={`/stonks/yield-calendar${source === "sandbox" ? "?source=sandbox" : ""}`}
-            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 underline-offset-4 hover:underline"
-          >
-            Yield calendar
-          </Link>
           <SourcePicker current={source} isAdmin={adminUser} />
           {adminUser && <SyncTradesButton source={source} />}
         </div>
@@ -228,6 +204,53 @@ export default async function OptionsPage({
               dim={totalDailyTheta === null}
             />
           </dl>
+
+          {/* Analytics tools */}
+          <section>
+            <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500 mb-3">
+              Analytics
+            </h2>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              {[
+                {
+                  href: `/stonks/heatmap${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  icon: "⬡",
+                  name: "Strike Heatmap",
+                  desc: "Strike distribution across open positions",
+                },
+                {
+                  href: `/stonks/wheels${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  icon: "🏆",
+                  name: "Hall of Fame",
+                  desc: "Closed wheel cycles by annualized return",
+                },
+                {
+                  href: `/stonks/dte-oracle${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  icon: "◎",
+                  name: "DTE Oracle",
+                  desc: "Median return by days-to-expiry bucket",
+                },
+                {
+                  href: `/stonks/yield-calendar${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  icon: "◫",
+                  name: "Yield Calendar",
+                  desc: "Weekly premium collected, heatmap view",
+                },
+              ].map(({ href, icon, name, desc }) => (
+                <Link
+                  key={href}
+                  href={href}
+                  className="group flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 px-4 py-3 hover:border-stone-400 dark:hover:border-stone-600 transition-colors"
+                >
+                  <span className="text-lg leading-none">{icon}</span>
+                  <span className="text-sm font-medium text-stone-800 dark:text-stone-200 group-hover:text-stone-900 dark:group-hover:text-white">
+                    {name}
+                  </span>
+                  <span className="text-xs text-stone-500 leading-snug">{desc}</span>
+                </Link>
+              ))}
+            </div>
+          </section>
 
           {/* Open positions summary */}
           {openPositions.length > 0 && (
