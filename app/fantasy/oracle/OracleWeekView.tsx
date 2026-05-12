@@ -2,18 +2,27 @@
 
 import { useState } from "react";
 import GenerateSummaryButton from "./GenerateSummaryButton";
-import type { WeeklySummary, WeeklyStats } from "@/lib/types";
+import PostToSignalButton from "./PostToSignalButton";
+import SyncBanterButton from "./SyncBanterButton";
+import type { WeeklySummary, WeeklyStats, FantasyBanter } from "@/lib/types";
 
 type Props = {
   season: number;
   week: number;
   stats: WeeklyStats | null;
   initialSummary: WeeklySummary | null;
+  initialBanter: FantasyBanter[];
   isAdmin: boolean;
 };
 
-export default function OracleWeekView({ season, week, stats, initialSummary, isAdmin }: Props) {
+export default function OracleWeekView({ season, week, stats, initialSummary, initialBanter, isAdmin }: Props) {
   const [summary, setSummary] = useState<WeeklySummary | null>(initialSummary);
+  const [banter, setBanter] = useState<FantasyBanter[]>(initialBanter);
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
+
+  function handleSynced(imported: number) {
+    setSyncMessage(imported > 0 ? `${imported} new message${imported !== 1 ? "s" : ""} pulled` : "No new messages");
+  }
 
   return (
     <div className="space-y-6">
@@ -62,6 +71,27 @@ export default function OracleWeekView({ season, week, stats, initialSummary, is
             <p className="text-xs uppercase tracking-wide text-stone-400 mb-1">Weekly Summary</p>
             <p className="text-sm leading-relaxed text-stone-700 dark:text-stone-300">{summary.summary}</p>
           </div>
+
+          {/* Power Rankings */}
+          {summary.rankings && summary.rankings.length > 0 && (
+            <div>
+              <p className="text-xs uppercase tracking-wide text-stone-400 mb-2">Power Rankings</p>
+              <ol className="space-y-1">
+                {summary.rankings.map((r) => (
+                  <li key={r.rank} className="flex gap-2 text-sm">
+                    <span className={`w-5 shrink-0 font-semibold ${r.rank <= 3 ? "text-emerald-600 dark:text-emerald-400" : r.rank >= summary.rankings!.length - 2 ? "text-red-500 dark:text-red-400" : "text-stone-400"}`}>
+                      {r.rank}.
+                    </span>
+                    <span>
+                      <span className="font-medium text-stone-800 dark:text-stone-100">{r.display_name}</span>
+                      <span className="text-stone-500 dark:text-stone-400"> — {r.reason}</span>
+                    </span>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+
           {summary.haiku && (
             <div className="border-l-2 border-violet-400 pl-4">
               <p className="text-xs uppercase tracking-wide text-stone-400 mb-1">Haiku of Regret</p>
@@ -72,12 +102,20 @@ export default function OracleWeekView({ season, week, stats, initialSummary, is
             Generated {new Date(summary.generated_at).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
           </p>
           {isAdmin && (
-            <GenerateSummaryButton
-              season={season}
-              week={week}
-              hasSummary={true}
-              onGenerated={setSummary}
-            />
+            <div className="flex flex-wrap gap-2">
+              <GenerateSummaryButton
+                season={season}
+                week={week}
+                hasSummary={true}
+                onGenerated={setSummary}
+              />
+              <PostToSignalButton
+                season={season}
+                week={week}
+                postedAt={summary.posted_to_signal_at}
+                onPosted={setSummary}
+              />
+            </div>
           )}
         </div>
       ) : (
@@ -92,6 +130,36 @@ export default function OracleWeekView({ season, week, stats, initialSummary, is
             />
           </div>
         )
+      )}
+
+      {/* Signal banter */}
+      {(banter.length > 0 || isAdmin) && (
+        <div className="rounded-xl border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 space-y-3">
+          <div className="flex items-center justify-between">
+            <p className="text-xs uppercase tracking-wide text-stone-400">Group Chat</p>
+            {isAdmin && (
+              <div className="flex items-center gap-3">
+                {syncMessage && <span className="text-xs text-stone-400">{syncMessage}</span>}
+                <SyncBanterButton onSynced={(n) => { handleSynced(n); }} />
+              </div>
+            )}
+          </div>
+          {banter.length > 0 ? (
+            <ul className="space-y-2">
+              {banter.map((b) => (
+                <li key={b.id} className="text-sm">
+                  <span className="font-medium text-stone-700 dark:text-stone-300">{b.sender_name}</span>
+                  <span className="text-stone-400 text-xs ml-2">
+                    {new Date(b.sent_at).toLocaleDateString("en-US", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}
+                  </span>
+                  <p className="text-stone-600 dark:text-stone-400 mt-0.5">{b.message}</p>
+                </li>
+              ))}
+            </ul>
+          ) : (
+            <p className="text-xs text-stone-400">No messages synced for this week yet. Hit "Sync Signal messages" to pull them in.</p>
+          )}
+        </div>
       )}
     </div>
   );

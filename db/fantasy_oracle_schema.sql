@@ -42,9 +42,10 @@ create table if not exists fantasy_weekly_summaries (
   haiku        text,
   -- Snapshot of computed stats used to generate the summary.
   stats        jsonb not null,
-  generated_at timestamptz not null default now(),
-  created_at   timestamptz not null default now(),
-  updated_at   timestamptz not null default now(),
+  generated_at        timestamptz not null default now(),
+  posted_to_signal_at timestamptz,
+  created_at          timestamptz not null default now(),
+  updated_at          timestamptz not null default now(),
   unique (season, week)
 );
 
