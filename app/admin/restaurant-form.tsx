@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
+import { matchCuisineFromGoogleType } from "@/lib/restaurants-query";
 import PlaceAutocomplete, { type PlacePick } from "@/components/place-autocomplete";
 
 type ReviewPromptData = { placeId: string; note: string | null; name: string };
@@ -50,8 +51,19 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [duplicatePlaceMatch, setDuplicatePlaceMatch] = useState<string | null>(null);
   const [category, setCategory] = useState(initial?.category ?? "Food");
-  const [selectedCuisine, setSelectedCuisine] = useState(initial?.cuisine ?? cuisineList[0]);
+  const [selectedCuisines, setSelectedCuisines] = useState<Set<string>>(
+    () => new Set(initial?.cuisines ?? []),
+  );
   const [googleTypeSuggestion, setGoogleTypeSuggestion] = useState<string | null>(null);
+
+  const toggleCuisine = useCallback((name: string) => {
+    setSelectedCuisines((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
   const [service, setService] = useState<number | null>(initial?.service ?? null);
@@ -73,35 +85,20 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         : null
     );
     // Try to auto-select cuisine from the Google Maps primary type.
-    // Uses a tiered fuzzy match across both the display name (e.g. "Sushi Restaurant")
-    // and the raw enum (e.g. "sushi_restaurant" → "sushi restaurant"):
-    //   1. Exact match on either signal
-    //   2. Cuisine name appears somewhere in the type string
-    //   3. Type string appears somewhere in the cuisine name
-    if (pick.googleType || pick.googleTypeRaw) {
-      if (pick.googleType) setGoogleTypeSuggestion(pick.googleType);
-      const signals = [
-        pick.googleType?.toLowerCase(),
-        pick.googleTypeRaw?.toLowerCase().replace(/_/g, " "),
-      ].filter(Boolean) as string[];
-
-      const score = (cuisine: string, signal: string) => {
-        const c = cuisine.toLowerCase();
-        if (c === signal) return 3;
-        if (signal.includes(c)) return 2;
-        if (c.includes(signal)) return 1;
-        return 0;
-      };
-
-      let best: string | null = null;
-      let bestScore = 0;
-      for (const cuisine of cuisineList) {
-        for (const signal of signals) {
-          const s = score(cuisine, signal);
-          if (s > bestScore) { bestScore = s; best = cuisine; }
-        }
-      }
-      if (best) setSelectedCuisine(best);
+    if (pick.googleType) setGoogleTypeSuggestion(pick.googleType);
+    const best = matchCuisineFromGoogleType(
+      pick.googleType,
+      pick.googleTypeRaw,
+      cuisineList,
+    );
+    if (best) {
+      // Add the auto-detected cuisine without clobbering any user selections.
+      setSelectedCuisines((prev) => {
+        if (prev.has(best)) return prev;
+        const next = new Set(prev);
+        next.add(best);
+        return next;
+      });
     }
   }, [existingPlaceIds, cuisineList]);
 
@@ -143,6 +140,10 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     setSubmitError(null);
+    if (selectedCuisines.size === 0) {
+      setSubmitError("Pick at least one cuisine.");
+      return;
+    }
     startTransition(async () => {
       try {
         const result = await action(fd);
@@ -156,7 +157,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         setSubmitError(err instanceof Error ? err.message : "An unexpected error occurred.");
       }
     });
-  }, [action, router]);
+  }, [action, router, selectedCuisines]);
 
   // Case-insensitive duplicate check
   const duplicateMatch = existingNames?.find(
@@ -237,21 +238,33 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         options={["Food", "Drink", "Dessert"]}
         onChange={(e) => setCategory(e.target.value)}
       />
-      <div>
-        <label className="block text-sm font-medium mb-1">
-          Cuisine<span className="text-red-500"> *</span>
-        </label>
-        <select
-          name="cuisine"
-          required
-          value={selectedCuisine}
-          onChange={(e) => setSelectedCuisine(e.target.value)}
-          className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-        >
-          {cuisineList.map((o) => (
-            <option key={o} value={o}>{o}</option>
-          ))}
-        </select>
+      <div className="sm:col-span-2">
+        <div className="flex items-baseline justify-between mb-1">
+          <label className="block text-sm font-medium">
+            Cuisines<span className="text-red-500"> *</span>
+          </label>
+          <span className="text-xs text-stone-400">
+            {selectedCuisines.size} selected
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-3 gap-y-1.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 p-3 max-h-56 overflow-y-auto">
+          {cuisineList.map((c) => {
+            const checked = selectedCuisines.has(c);
+            return (
+              <label key={c} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  name="cuisine"
+                  value={c}
+                  checked={checked}
+                  onChange={() => toggleCuisine(c)}
+                  className="h-4 w-4 rounded border-stone-300 dark:border-stone-700"
+                />
+                <span className={checked ? "font-medium" : "text-stone-600 dark:text-stone-400"}>{c}</span>
+              </label>
+            );
+          })}
+        </div>
         {googleTypeSuggestion && (
           <p className="text-xs text-stone-400 mt-1">
             Google Maps: <span className="font-medium text-stone-500">{googleTypeSuggestion}</span>

@@ -41,7 +41,12 @@ async function assertAdmin() {
   }
 }
 
-function buildInput(fd: FormData): Omit<RestaurantInput, "photos"> {
+type BuiltInput = {
+  row: Omit<RestaurantInput, "photos" | "cuisines">;
+  cuisines: string[];
+};
+
+function buildInput(fd: FormData): BuiltInput {
   const category = requiredStr(fd, "category");
   const food = num(fd, "food");
   const value = num(fd, "value");
@@ -56,24 +61,49 @@ function buildInput(fd: FormData): Omit<RestaurantInput, "photos"> {
   }
   if (overall === null) throw new Error("Overall could not be computed — fill in all sub-ratings.");
 
+  // Cuisines come from multiple checkbox inputs all named "cuisine".
+  const cuisines = Array.from(
+    new Set(
+      fd.getAll("cuisine")
+        .map((v) => String(v).trim())
+        .filter((s) => s.length > 0),
+    ),
+  );
+  if (cuisines.length === 0) throw new Error("Pick at least one cuisine.");
+
   return {
-    name: requiredStr(fd, "name"),
-    city: requiredStr(fd, "city"),
-    category,
-    cuisine: requiredStr(fd, "cuisine"),
-    overall,
-    food,
-    value,
-    service,
-    ambiance,
-    vegan_options,
-    note: optionalStr(fd, "note"),
-    last_visited: optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10),
-    address: optionalStr(fd, "address"),
-    lat: num(fd, "lat"),
-    lng: num(fd, "lng"),
-    place_id: optionalStr(fd, "place_id"),
+    row: {
+      name: requiredStr(fd, "name"),
+      city: requiredStr(fd, "city"),
+      category,
+      overall,
+      food,
+      value,
+      service,
+      ambiance,
+      vegan_options,
+      note: optionalStr(fd, "note"),
+      last_visited: optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10),
+      address: optionalStr(fd, "address"),
+      lat: num(fd, "lat"),
+      lng: num(fd, "lng"),
+      place_id: optionalStr(fd, "place_id"),
+    },
+    cuisines,
   };
+}
+
+async function replaceCuisines(restaurantId: number, cuisines: string[]) {
+  const supabase = getServiceClient();
+  const { error: delErr } = await supabase
+    .from("restaurant_cuisines")
+    .delete()
+    .eq("restaurant_id", restaurantId);
+  if (delErr) throw new Error(`Cuisine reset failed: ${delErr.message}`);
+  if (cuisines.length === 0) return;
+  const rows = cuisines.map((c) => ({ restaurant_id: restaurantId, cuisine_name: c }));
+  const { error: insErr } = await supabase.from("restaurant_cuisines").insert(rows);
+  if (insErr) throw new Error(`Cuisine insert failed: ${insErr.message}`);
 }
 
 async function uploadPhotos(restaurantId: number, files: File[]): Promise<string[]> {
@@ -125,10 +155,12 @@ export async function logoutAction() {
 
 export async function createRestaurant(fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
-  const input = buildInput(fd);
+  const { row, cuisines } = buildInput(fd);
   const supabase = getServiceClient();
-  const { data, error } = await supabase.from("restaurants").insert(input).select("id").single();
+  const { data, error } = await supabase.from("restaurants").insert(row).select("id").single();
   if (error) throw new Error(`Insert failed: ${error.message}`);
+
+  await replaceCuisines(data.id, cuisines);
 
   const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
   if (files.length > 0) {
@@ -140,12 +172,12 @@ export async function createRestaurant(fd: FormData): Promise<{ placeId: string 
   revalidatePath("/restaurants");
   revalidatePath("/map");
   revalidatePath("/admin");
-  return { placeId: input.place_id ?? null, note: input.note ?? null, name: input.name };
+  return { placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
 }
 
 export async function updateRestaurant(id: number, fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
-  const input = buildInput(fd);
+  const { row, cuisines } = buildInput(fd);
   const supabase = getServiceClient();
 
   const deletedPhotos: string[] = JSON.parse(optionalStr(fd, "deleted_photos") ?? "[]");
@@ -157,14 +189,15 @@ export async function updateRestaurant(id: number, fd: FormData): Promise<{ plac
   const existingPhotos: string[] = JSON.parse(optionalStr(fd, "existing_photos") ?? "[]");
   const photos = [...existingPhotos, ...newUrls];
 
-  const { error } = await supabase.from("restaurants").update({ ...input, photos: photos.length ? photos : null }).eq("id", id);
+  const { error } = await supabase.from("restaurants").update({ ...row, photos: photos.length ? photos : null }).eq("id", id);
   if (error) throw new Error(`Update failed: ${error.message}`);
+  await replaceCuisines(id, cuisines);
   revalidatePath("/");
   revalidatePath("/restaurants");
   revalidatePath("/map");
   revalidatePath("/admin");
   revalidatePath(`/restaurant/${id}`);
-  return { placeId: input.place_id ?? null, note: input.note ?? null, name: input.name };
+  return { placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
 }
 
 // _fd is required for compatibility with <form action={...}>, which always

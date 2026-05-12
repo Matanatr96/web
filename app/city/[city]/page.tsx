@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { slugify } from "@/lib/utils";
 import RestaurantsTable from "@/components/restaurants-table";
 
@@ -16,14 +16,14 @@ export default async function CityPage({ params }: Props) {
   // and handles any city in the DB regardless of special characters.
   const { data, error } = await getSupabase()
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_SELECT)
     .order("overall", { ascending: false });
 
   if (error) {
     return <div className="text-red-600">Failed to load: {error.message}</div>;
   }
 
-  const all = (data ?? []) as Restaurant[];
+  const all = (data ?? []).map(mapRestaurantRow);
   const matching = all.filter((r) => slugify(r.city) === citySlug);
   if (matching.length === 0) notFound();
 

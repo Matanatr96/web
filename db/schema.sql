@@ -6,7 +6,9 @@ create table if not exists restaurants (
   name          text         not null,
   city          text         not null,
   category      text         not null,        -- Food | Drink | Dessert
-  cuisine       text         not null,
+  -- cuisine moved to restaurant_cuisines (many-to-many). Kept here as a
+  -- nullable column on older databases until the migration block below
+  -- backfills the join table and drops it.
   overall       numeric(4,2) not null,
   food          numeric(4,2),
   value         numeric(4,2),
@@ -37,9 +39,40 @@ alter table restaurants add column if not exists last_visited date;
 alter table restaurants add column if not exists photos text[];
 
 create index if not exists restaurants_city_idx     on restaurants (city);
-create index if not exists restaurants_cuisine_idx  on restaurants (cuisine);
 create index if not exists restaurants_category_idx on restaurants (category);
 create index if not exists restaurants_overall_idx  on restaurants (overall desc);
+
+-- Many-to-many: a restaurant can serve multiple cuisines. cuisine_name is
+-- stored as text (not a FK) so admin renames in the cuisines table don't
+-- block reads here; consistency is enforced by the admin UI.
+create table if not exists restaurant_cuisines (
+  restaurant_id bigint not null references restaurants(id) on delete cascade,
+  cuisine_name  text   not null,
+  primary key (restaurant_id, cuisine_name)
+);
+create index if not exists restaurant_cuisines_cuisine_idx on restaurant_cuisines (cuisine_name);
+
+alter table restaurant_cuisines enable row level security;
+drop policy if exists "Public can read restaurant_cuisines" on restaurant_cuisines;
+create policy "Public can read restaurant_cuisines"
+  on restaurant_cuisines for select using (true);
+
+-- One-time migration from the old `cuisine` column. Backfills the join table
+-- with each restaurant's existing cuisine, then drops the column. Idempotent:
+-- the block is a no-op if the column no longer exists.
+do $$
+begin
+  if exists (
+    select 1 from information_schema.columns
+    where table_schema = 'public' and table_name = 'restaurants' and column_name = 'cuisine'
+  ) then
+    insert into restaurant_cuisines (restaurant_id, cuisine_name)
+      select id, cuisine from restaurants where cuisine is not null and cuisine <> ''
+    on conflict (restaurant_id, cuisine_name) do nothing;
+    drop index if exists restaurants_cuisine_idx;
+    alter table restaurants drop column cuisine;
+  end if;
+end $$;
 
 -- Prevent duplicate Google Places entries; nulls are excluded so un-geocoded rows are unaffected.
 create unique index if not exists restaurants_place_id_unique on restaurants (place_id) where place_id is not null;
@@ -84,10 +117,10 @@ create policy "Public can read cuisines"
 insert into cuisines (name) values
   ('American'), ('Arabic'), ('Asian'), ('Bagel'), ('Bakery'),
   ('Bangladeshi'), ('Bowl'), ('Breakfast'), ('Brunch'), ('Burger'),
-  ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Ice Cream'),
+  ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Fast Food'), ('Ice Cream'),
   ('Indian'), ('Indian Street'), ('Israeli'), ('Italian'), ('Japanese'),
   ('Korean'), ('Latin'), ('Malaysian'), ('Mediterranean'), ('Mexican'),
-  ('Nepalese'), ('Pho'), ('Pizza'), ('Sandwich'), ('Sushi'),
+  ('Nepalese'), ('Pho'), ('Pizza'), ('Ramen'), ('Sandwich'), ('Sushi'),
   ('Szechuan'), ('Taco'), ('Taiwanese'), ('Thai'), ('Tulum'),
   ('Venezuelan'), ('Vietnamese'), ('Wings')
 on conflict (name) do nothing;

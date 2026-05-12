@@ -2,7 +2,7 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { fmt } from "@/lib/utils";
 import { deleteRestaurant } from "../actions";
 import DeleteButton from "../delete-button";
@@ -18,7 +18,7 @@ export default async function RestaurantsAdminPage() {
   const supabase = getSupabase();
 
   const [{ data, error }, { data: cuisineData }] = await Promise.all([
-    supabase.from("restaurants").select("*").order("overall", { ascending: false }),
+    supabase.from("restaurants").select(RESTAURANT_SELECT).order("overall", { ascending: false }),
     supabase.from("cuisines").select("id, name").order("name"),
   ]);
 
@@ -27,7 +27,7 @@ export default async function RestaurantsAdminPage() {
       <div className="text-red-600">Failed to load: {error.message}</div>
     );
   }
-  const restaurants = (data ?? []) as Restaurant[];
+  const restaurants = (data ?? []).map(mapRestaurantRow);
   const cuisines = (cuisineData ?? []) as { id: number; name: string }[];
 
   return (
@@ -83,7 +83,7 @@ export default async function RestaurantsAdminPage() {
                     {r.city}
                   </td>
                   <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                    {r.cuisine}
+                    {r.cuisines.join(", ")}
                   </td>
                   <td className="px-3 py-2 text-right tabular-nums">
                     {fmt(r.overall, 2)}

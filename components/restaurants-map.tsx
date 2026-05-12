@@ -54,7 +54,7 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [allPoints]);
   const cuisines = useMemo(() => {
-    const set = new Set(allPoints.map((p) => p.cuisine));
+    const set = new Set(allPoints.flatMap((p) => p.cuisines));
     return Array.from(set).sort((a, b) => a.localeCompare(b));
   }, [allPoints]);
   const [cityFilter, setCityFilter] = useState<string>("");
@@ -63,7 +63,7 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
   const points = useMemo(() => {
     let filtered = allPoints;
     if (cityFilter) filtered = filtered.filter((p) => p.city === cityFilter);
-    if (cuisineFilter) filtered = filtered.filter((p) => p.cuisine === cuisineFilter);
+    if (cuisineFilter) filtered = filtered.filter((p) => p.cuisines.includes(cuisineFilter));
     if (minRating) filtered = filtered.filter((p) => p.overall >= parseFloat(minRating));
     return filtered;
   }, [allPoints, cityFilter, cuisineFilter, minRating]);
@@ -168,7 +168,7 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
               <div className="text-stone-900 min-w-[180px]">
                 <div className="font-semibold text-sm">{selected.name}</div>
                 <div className="text-xs text-stone-600">
-                  {selected.cuisine} · {selected.city}
+                  {selected.cuisines.join(", ")} · {selected.city}
                 </div>
                 <div className={`text-sm mt-1 ${ratingColorClass(selected.overall)}`}>
                   Overall {fmt(selected.overall, 2)}

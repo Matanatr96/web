@@ -2,7 +2,7 @@ import Link from "next/link";
 import { notFound, redirect } from "next/navigation";
 import { isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { updateRestaurant } from "../../actions";
 import RestaurantForm from "../../restaurant-form";
 
@@ -20,11 +20,11 @@ export default async function EditRestaurantPage({ params }: Props) {
 
   const supabase = getSupabase();
   const [{ data, error }, { data: cuisineData }] = await Promise.all([
-    supabase.from("restaurants").select("*").eq("id", numericId).single(),
+    supabase.from("restaurants").select(RESTAURANT_SELECT).eq("id", numericId).single(),
     supabase.from("cuisines").select("name").order("name"),
   ]);
   if (error || !data) notFound();
-  const r = data as Restaurant;
+  const r = mapRestaurantRow(data);
   const cuisines = (cuisineData ?? []).map((c: { name: string }) => c.name);
 
   // Bind the row id into the server action so the form only carries the fields.
