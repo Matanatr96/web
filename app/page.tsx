@@ -1,6 +1,6 @@
 export default function HomePage() {
   return (
-    <div className="flex flex-col gap-16 pt-10 sm:pt-16 max-w-2xl mx-auto">
+    <div className="flex flex-col gap-16 max-w-2xl mx-auto">
       <section>
         <h1 className="text-4xl sm:text-5xl font-bold tracking-tight">
           Anush Mattapalli
