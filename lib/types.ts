@@ -231,3 +231,19 @@ export type FantasyWeeklyAverage = {
   // season -> league average points for that week (null if week not played)
   averages: Record<number, number | null>;
 };
+
+// Schedule Lottery: what would each owner's record have been under every other schedule?
+export type ScheduleLotteryCell = {
+  wins: number;
+  losses: number;
+  ties: number;
+};
+
+// NxN matrix: matrix[ownerIdx][scheduleIdx] = record under that schedule
+export type ScheduleLotteryResult = {
+  owners: FantasyOwner[];   // ordered list — index maps into matrix rows/cols
+  // matrix[i][j] = owner i's record if they had played owner j's schedule
+  matrix: ScheduleLotteryCell[][];
+  // luck delta per owner: actual_wins - median_wins_across_all_schedules
+  luckDeltas: { owner_id: string; display_name: string; actual_wins: number; median_wins: number; delta: number }[];
+};
