@@ -7,6 +7,7 @@ import type {
   FantasyTrade,
   FantasyWeeklyAverage,
   ScoreRecord,
+  ScheduleLotteryResult,
   TradeLeaderboardRow,
 } from "./types";
 
@@ -294,6 +295,97 @@ export function biggestBlowouts(
     }))
     .sort((a, b) => b.differential - a.differential)
     .slice(0, limit);
+}
+
+/**
+ * Schedule Lottery: for each owner, simulate their record under every other
+ * owner's schedule of opponents for the given season.
+ *
+ * Algorithm:
+ *   - For each week W, we have a set of (owner, score) pairs and a set of
+ *     (schedule_owner → opponent) assignments.
+ *   - Owner A "playing" schedule B's week W means A's actual score is compared
+ *     against B's actual opponent's actual score that week.
+ *   - Returns an NxN matrix plus a luck-delta leaderboard.
+ */
+export function computeScheduleLottery(
+  matchups: FantasyMatchup[],
+  owners: FantasyOwner[],
+  leagues: FantasyLeague[],
+  season: number,
+): ScheduleLotteryResult {
+  const seasonRows = regularSeasonOnly(
+    matchups.filter((m) => m.season === season),
+    leagues,
+  );
+
+  // Collect the owners who actually played this season.
+  const ownerIds = [...new Set(seasonRows.map((m) => m.owner_id))].sort();
+  const seasonOwners = ownerIds
+    .map((id) => owners.find((o) => o.user_id === id))
+    .filter((o): o is FantasyOwner => o != null);
+  const n = seasonOwners.length;
+  const idx = new Map(seasonOwners.map((o, i) => [o.user_id, i]));
+
+  // Group matchups by week.
+  const weeks = [...new Set(seasonRows.map((m) => m.week))].sort((a, b) => a - b);
+
+  // matrix[ownerIdx][scheduleIdx] = { wins, losses, ties }
+  const matrix: { wins: number; losses: number; ties: number }[][] = Array.from(
+    { length: n },
+    () => Array.from({ length: n }, () => ({ wins: 0, losses: 0, ties: 0 })),
+  );
+
+  for (const week of weeks) {
+    const weekRows = seasonRows.filter((m) => m.week === week);
+
+    // score[owner_id] = their actual points this week
+    const score = new Map(weekRows.map((m) => [m.owner_id, m.points]));
+    // opponentScore[owner_id] = their actual opponent's points this week
+    const opponentScore = new Map(weekRows.map((m) => [m.owner_id, m.opponent_points]));
+
+    for (let oi = 0; oi < n; oi++) {
+      const myScore = score.get(seasonOwners[oi].user_id);
+      if (myScore == null) continue;
+
+      for (let si = 0; si < n; si++) {
+        // Owner oi playing schedule-owner si's schedule: face si's actual opponent.
+        const schedOwner = seasonOwners[si];
+        const theirOpponentScore = opponentScore.get(schedOwner.user_id);
+        if (theirOpponentScore == null) continue;
+
+        if (oi === si) {
+          // Own schedule — still count it for median calculation.
+        }
+        const cell = matrix[oi][si];
+        if (myScore > theirOpponentScore) cell.wins += 1;
+        else if (myScore < theirOpponentScore) cell.losses += 1;
+        else cell.ties += 1;
+      }
+    }
+  }
+
+  // Luck delta: actual wins (diagonal) vs median across all N schedules.
+  const luckDeltas = seasonOwners.map((owner, oi) => {
+    const actual_wins = matrix[oi][oi].wins;
+    const allWins = matrix[oi].map((c) => c.wins).sort((a, b) => a - b);
+    const mid = Math.floor(allWins.length / 2);
+    const median_wins =
+      allWins.length % 2 === 0
+        ? (allWins[mid - 1] + allWins[mid]) / 2
+        : allWins[mid];
+    return {
+      owner_id: owner.user_id,
+      display_name: owner.display_name,
+      actual_wins,
+      median_wins,
+      delta: actual_wins - median_wins,
+    };
+  });
+
+  luckDeltas.sort((a, b) => b.delta - a.delta);
+
+  return { owners: seasonOwners, matrix, luckDeltas };
 }
 
 /**

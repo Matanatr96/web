@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   buildStandings,
   buildWeeklyAverages,
+  computeScheduleLottery,
   mean,
   stdev,
   percentile,
@@ -151,6 +152,76 @@ describe("record helpers", () => {
       owner_id: "a", opponent_id: "b", differential: 90,
     });
     expect(blow[1].differential).toBe(10);
+  });
+});
+
+describe("computeScheduleLottery", () => {
+  const slOwners: FantasyOwner[] = [
+    { user_id: "a", display_name: "Alice", avatar: null },
+    { user_id: "b", display_name: "Bob",   avatar: null },
+    { user_id: "c", display_name: "Cara",  avatar: null },
+    { user_id: "d", display_name: "Dan",   avatar: null },
+  ];
+  const slLeagues: FantasyLeague[] = [
+    { season: 2024, league_id: "x", name: "KFL", playoff_week_start: 15, winners_bracket: null },
+  ];
+
+  // 4-team, 2-week regular season. Pairings:
+  //   Week 1: a(110) vs b(90) → a wins;  c(100) vs d(70) → c wins
+  //   Week 2: a(80)  vs c(95) → a loses; b(85)  vs d(60) → b wins
+  // Actual records: a 1-1, b 1-1, c 1-1, d 0-2
+  const slMatchups: FantasyMatchup[] = [
+    { id: 1, season: 2024, week: 1, owner_id: "a", opponent_id: "b", points: 110, opponent_points: 90,  result: "W" },
+    { id: 2, season: 2024, week: 1, owner_id: "b", opponent_id: "a", points: 90,  opponent_points: 110, result: "L" },
+    { id: 3, season: 2024, week: 1, owner_id: "c", opponent_id: "d", points: 100, opponent_points: 70,  result: "W" },
+    { id: 4, season: 2024, week: 1, owner_id: "d", opponent_id: "c", points: 70,  opponent_points: 100, result: "L" },
+    { id: 5, season: 2024, week: 2, owner_id: "a", opponent_id: "c", points: 80,  opponent_points: 95,  result: "L" },
+    { id: 6, season: 2024, week: 2, owner_id: "c", opponent_id: "a", points: 95,  opponent_points: 80,  result: "W" },
+    { id: 7, season: 2024, week: 2, owner_id: "b", opponent_id: "d", points: 85,  opponent_points: 60,  result: "W" },
+    { id: 8, season: 2024, week: 2, owner_id: "d", opponent_id: "b", points: 60,  opponent_points: 85,  result: "L" },
+  ];
+
+  it("diagonal equals each owner's actual record", () => {
+    const { owners: seasonOwners, matrix } = computeScheduleLottery(slMatchups, slOwners, slLeagues, 2024);
+    const idxOf = (id: string) => seasonOwners.findIndex((o) => o.user_id === id);
+
+    const ai = idxOf("a");
+    expect(matrix[ai][ai]).toMatchObject({ wins: 1, losses: 1, ties: 0 });
+
+    const di = idxOf("d");
+    expect(matrix[di][di]).toMatchObject({ wins: 0, losses: 2, ties: 0 });
+  });
+
+  it("cross-schedule cell reflects owner's scores vs the schedule-owner's opponents", () => {
+    // a with d's schedule: face d's opponents each week.
+    //   Week 1: d faced c (scored 100) → a(110) > 100 → W
+    //   Week 2: d faced b (scored 85)  → a(80)  < 85  → L
+    // Expected: 1-1
+    const { owners: seasonOwners, matrix } = computeScheduleLottery(slMatchups, slOwners, slLeagues, 2024);
+    const ai = seasonOwners.findIndex((o) => o.user_id === "a");
+    const di = seasonOwners.findIndex((o) => o.user_id === "d");
+    expect(matrix[ai][di]).toMatchObject({ wins: 1, losses: 1, ties: 0 });
+  });
+
+  it("luck delta is positive for an owner with an easy schedule", () => {
+    // d scored 70 and 60 (weakest). With any other schedule they would have
+    // faced the same or tougher opponents, so delta should be ≤ 0.
+    // c scored 100 and 95 (second strongest) but faced tough opponents both
+    // weeks; with easier schedules they'd win more → delta should be ≥ 0.
+    const { luckDeltas } = computeScheduleLottery(slMatchups, slOwners, slLeagues, 2024);
+    const d = luckDeltas.find((r) => r.owner_id === "d")!;
+    const c = luckDeltas.find((r) => r.owner_id === "c")!;
+    expect(d.delta).toBeLessThanOrEqual(0);
+    expect(c.delta).toBeGreaterThanOrEqual(0);
+  });
+
+  it("returns empty matrix and luckDeltas for an unknown season", () => {
+    const { owners: seasonOwners, matrix, luckDeltas } = computeScheduleLottery(
+      slMatchups, slOwners, slLeagues, 1999,
+    );
+    expect(seasonOwners).toHaveLength(0);
+    expect(matrix).toHaveLength(0);
+    expect(luckDeltas).toHaveLength(0);
   });
 });
 
