@@ -32,7 +32,7 @@ export default async function HeatmapPage({
   const points = await buildHeatmapPoints(trades);
 
   return (
-    <div className="flex flex-col gap-8 pt-10 sm:pt-16 max-w-5xl mx-auto px-4 pb-16">
+    <div className="flex flex-col gap-8 pt-10 max-w-5xl mx-auto px-4 pb-16">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold tracking-tight">Strike Heatmap</h1>
