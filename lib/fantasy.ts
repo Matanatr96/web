@@ -3,12 +3,14 @@ import type {
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
+  FantasyPlayerScore,
   FantasyStanding,
   FantasyTrade,
   FantasyWeeklyAverage,
   ScoreRecord,
   ScheduleLotteryResult,
   TradeLeaderboardRow,
+  WeeklyStats,
 } from "./types";
 
 const OWNER_COLORS = [
@@ -414,4 +416,114 @@ export function buildTradeLeaderboard(
   }
   rows.sort((a, b) => b.trade_count - a.trade_count || a.display_name.localeCompare(b.display_name));
   return rows;
+}
+
+// FLEX-eligible positions that can be benched and compared cross-slot.
+const FLEX_POSITIONS = new Set(["RB", "WR", "TE"]);
+
+/**
+ * Compute weekly stats for a given season+week from matchup and player score data.
+ * Returns null if there are no matchups for that week.
+ */
+export function computeWeeklyStats(
+  matchups: FantasyMatchup[],
+  playerScores: FantasyPlayerScore[],
+  owners: FantasyOwner[],
+  season: number,
+  week: number,
+): WeeklyStats | null {
+  const weekMatchups = matchups.filter(
+    (m) => m.season === season && m.week === week && m.points > 0,
+  );
+  if (weekMatchups.length === 0) return null;
+
+  const ownerName = (id: string) =>
+    owners.find((o) => o.user_id === id)?.display_name ?? id;
+
+  // Deduplicate to one row per owner (matchups has two rows per game).
+  const byOwner = new Map<string, FantasyMatchup>();
+  for (const m of weekMatchups) {
+    if (!byOwner.has(m.owner_id)) byOwner.set(m.owner_id, m);
+  }
+  const ownerRows = [...byOwner.values()];
+
+  const sorted = [...ownerRows].sort((a, b) => b.points - a.points);
+  const highest_scorer = {
+    owner_id: sorted[0].owner_id,
+    display_name: ownerName(sorted[0].owner_id),
+    points: sorted[0].points,
+  };
+  const lowest_scorer = {
+    owner_id: sorted[sorted.length - 1].owner_id,
+    display_name: ownerName(sorted[sorted.length - 1].owner_id),
+    points: sorted[sorted.length - 1].points,
+  };
+
+  // Biggest blowout and closest matchup (W-rows only to avoid double-counting).
+  const winRows = weekMatchups.filter((m) => m.result === "W" && m.opponent_id != null);
+  const withMargin = winRows.map((m) => ({
+    winner_id: m.owner_id,
+    winner_name: ownerName(m.owner_id),
+    loser_id: m.opponent_id as string,
+    loser_name: ownerName(m.opponent_id as string),
+    margin: m.points - m.opponent_points,
+    winner_points: m.points,
+    loser_points: m.opponent_points,
+  }));
+  withMargin.sort((a, b) => b.margin - a.margin);
+  const biggest_blowout = withMargin[0] ?? null;
+  const closest_matchup = withMargin[withMargin.length - 1] ?? null;
+
+  // Biggest bench mistake: max(bench_pts - starter_pts_at_same_position) across all owners.
+  const weekScores = playerScores.filter((p) => p.season === season && p.week === week);
+  let bench_mistake = null;
+  let maxDelta = -Infinity;
+
+  for (const [ownerId, matchup] of byOwner) {
+    const ownerScores = weekScores.filter((p) => p.owner_id === ownerId);
+    const starters = ownerScores.filter((p) => p.is_starter);
+    const bench = ownerScores.filter((p) => !p.is_starter && p.points > 0);
+
+    for (const benchPlayer of bench) {
+      const pos = benchPlayer.position;
+      // Find starters the bench player could have replaced (same position, or FLEX swap).
+      const eligible = starters.filter((s) => {
+        if (!pos) return false;
+        if (s.position === pos) return true;
+        // A FLEX-eligible bench player can replace a FLEX-eligible starter.
+        if (FLEX_POSITIONS.has(pos) && s.position && FLEX_POSITIONS.has(s.position)) return true;
+        return false;
+      });
+      if (eligible.length === 0) continue;
+
+      // Compare against the worst-performing eligible starter.
+      const worstStarter = eligible.reduce((a, b) => (a.points < b.points ? a : b));
+      const delta = benchPlayer.points - worstStarter.points;
+      if (delta > maxDelta) {
+        maxDelta = delta;
+        const ownerMatchup = byOwner.get(ownerId);
+        bench_mistake = {
+          owner_id: ownerId,
+          display_name: ownerName(ownerId),
+          benched_player: benchPlayer.player_name,
+          benched_player_pts: benchPlayer.points,
+          started_player: worstStarter.player_name,
+          started_player_pts: worstStarter.points,
+          position: pos,
+          pts_delta: delta,
+          won_matchup: ownerMatchup?.result === "W",
+        };
+      }
+    }
+  }
+
+  return {
+    season,
+    week,
+    highest_scorer,
+    lowest_scorer,
+    biggest_blowout,
+    closest_matchup,
+    bench_mistake,
+  };
 }

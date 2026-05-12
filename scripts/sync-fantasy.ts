@@ -47,6 +47,9 @@ type SleeperMatchup = {
   roster_id: number;
   matchup_id: number | null;
   points: number;
+  players: string[] | null;
+  starters: string[] | null;
+  players_points: Record<string, number> | null;
 };
 
 type SleeperState = { week: number; season: string; season_type: string };
@@ -256,7 +259,48 @@ async function syncSeason(
       .upsert(rows, { onConflict: "season,week,owner_id" });
     if (mErr) throw mErr;
     matchupCount += rows.length;
-    console.log(`  week ${week}: ${rows.length} matchup rows`);
+
+    // Store player-level scores for bench mistake computation.
+    const playerScoreRows: Array<{
+      season: number;
+      week: number;
+      owner_id: string;
+      player_id: string;
+      player_name: string;
+      position: string | null;
+      team: string | null;
+      points: number;
+      is_starter: boolean;
+    }> = [];
+    for (const entry of entries) {
+      const ownerId = rosterToUser.get(entry.roster_id);
+      if (!ownerId) continue;
+      const playerIds = entry.players ?? [];
+      const starterSet = new Set(entry.starters ?? []);
+      const pointsMap = entry.players_points ?? {};
+      for (const pid of playerIds) {
+        const meta = players.get(pid);
+        playerScoreRows.push({
+          season,
+          week,
+          owner_id: ownerId,
+          player_id: pid,
+          player_name: meta?.name ?? pid,
+          position: meta?.position ?? null,
+          team: meta?.team ?? null,
+          points: pointsMap[pid] ?? 0,
+          is_starter: starterSet.has(pid),
+        });
+      }
+    }
+    if (playerScoreRows.length > 0) {
+      const { error: psErr } = await db
+        .from("fantasy_player_scores")
+        .upsert(playerScoreRows, { onConflict: "season,week,owner_id,player_id" });
+      if (psErr) throw psErr;
+    }
+
+    console.log(`  week ${week}: ${rows.length} matchup rows, ${playerScoreRows.length} player score rows`);
   }
   console.log(`[${season}] done — ${matchupCount} matchup rows total`);
 

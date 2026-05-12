@@ -5,7 +5,14 @@ import { isAdmin } from "@/lib/auth";
 const SLEEPER = "https://api.sleeper.app/v1";
 
 type SleeperState = { week: number; season: string };
-type SleeperMatchup = { roster_id: number; matchup_id: number | null; points: number };
+type SleeperMatchup = {
+  roster_id: number;
+  matchup_id: number | null;
+  points: number;
+  players: string[] | null;
+  starters: string[] | null;
+  players_points: Record<string, number> | null;
+};
 type SleeperRoster = { roster_id: number; owner_id: string | null };
 
 async function sleeperFetch<T>(url: string): Promise<T> {
@@ -104,6 +111,33 @@ export async function POST() {
         .upsert(rows, { onConflict: "season,week,owner_id" });
       if (error) throw error;
       totalSynced += rows.length;
+
+      // Sync player-level scores for bench mistake computation.
+      const playerScoreRows: Array<{
+        season: number; week: number; owner_id: string; player_id: string;
+        player_name: string; position: string | null; team: string | null;
+        points: number; is_starter: boolean;
+      }> = [];
+      for (const entry of entries) {
+        const ownerId = rosterToUser.get(entry.roster_id);
+        if (!ownerId) continue;
+        for (const pid of entry.players ?? []) {
+          const starterSet = new Set(entry.starters ?? []);
+          const pts = (entry.players_points ?? {})[pid] ?? 0;
+          playerScoreRows.push({
+            season, week: currentWeek, owner_id: ownerId,
+            player_id: pid, player_name: pid,
+            position: null, team: null,
+            points: pts, is_starter: starterSet.has(pid),
+          });
+        }
+      }
+      if (playerScoreRows.length > 0) {
+        const { error: psErr } = await db
+          .from("fantasy_player_scores")
+          .upsert(playerScoreRows, { onConflict: "season,week,owner_id,player_id" });
+        if (psErr) throw psErr;
+      }
     }
 
     return NextResponse.json({ week: currentWeek, synced: totalSynced });

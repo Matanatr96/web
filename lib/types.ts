@@ -232,6 +232,71 @@ export type FantasyWeeklyAverage = {
   averages: Record<number, number | null>;
 };
 
+export type FantasyPlayerScore = {
+  id: number;
+  season: number;
+  week: number;
+  owner_id: string;
+  player_id: string;
+  player_name: string;
+  position: string | null;
+  team: string | null;
+  points: number;
+  is_starter: boolean;
+  created_at: string;
+  updated_at: string;
+};
+
+export type WeeklyStatHighLow = {
+  owner_id: string;
+  display_name: string;
+  points: number;
+};
+
+export type WeeklyStatMatchup = {
+  winner_id: string;
+  winner_name: string;
+  loser_id: string;
+  loser_name: string;
+  margin: number;
+  winner_points: number;
+  loser_points: number;
+};
+
+export type WeeklyStatBenchMistake = {
+  owner_id: string;
+  display_name: string;
+  benched_player: string;
+  benched_player_pts: number;
+  started_player: string;
+  started_player_pts: number;
+  position: string | null;
+  pts_delta: number;
+  won_matchup: boolean;
+};
+
+export type WeeklyStats = {
+  season: number;
+  week: number;
+  highest_scorer: WeeklyStatHighLow;
+  lowest_scorer: WeeklyStatHighLow;
+  biggest_blowout: WeeklyStatMatchup;
+  closest_matchup: WeeklyStatMatchup;
+  bench_mistake: WeeklyStatBenchMistake | null;
+};
+
+export type WeeklySummary = {
+  id: number;
+  season: number;
+  week: number;
+  summary: string;
+  haiku: string | null;
+  stats: WeeklyStats;
+  generated_at: string;
+  created_at: string;
+  updated_at: string;
+};
+
 // Schedule Lottery: what would each owner's record have been under every other schedule?
 export type ScheduleLotteryCell = {
   wins: number;
