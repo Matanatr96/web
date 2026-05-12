@@ -77,22 +77,37 @@ export default async function FantasyMatchupsPage({
     ? percentile(inputValue, seasonScores)
     : null;
 
-  // Oracle of Regret — most recent week with matchup data for this season.
+  // Oracle of Regret — most recent week with matchup data. Prefers the
+  // selected season, but falls back to the most recent season that has data.
   const seasonWeeks = [...new Set(
     matchups.filter((m) => m.season === season && m.points > 0).map((m) => m.week)
   )].sort((a, b) => b - a);
-  const oracleWeek = seasonWeeks[0] ?? null;
+
+  const oracleSeason = seasonWeeks.length > 0
+    ? season
+    : (() => {
+        const latest = matchups
+          .filter((m) => m.points > 0)
+          .sort((a, b) => b.season - a.season || b.week - a.week)[0];
+        return latest?.season ?? season;
+      })();
+
+  const oracleWeeks = oracleSeason === season
+    ? seasonWeeks
+    : [...new Set(matchups.filter((m) => m.season === oracleSeason && m.points > 0).map((m) => m.week))].sort((a, b) => b - a);
+
+  const oracleWeek = oracleWeeks[0] ?? null;
 
   const { data: playerScoreData } = oracleWeek
-    ? await db.from("fantasy_player_scores").select("*").eq("season", season).eq("week", oracleWeek)
+    ? await db.from("fantasy_player_scores").select("*").eq("season", oracleSeason).eq("week", oracleWeek)
     : { data: [] };
   const playerScores = (playerScoreData ?? []) as FantasyPlayerScore[];
 
   const oracleStats = oracleWeek
-    ? computeWeeklyStats(matchups, playerScores, owners, season, oracleWeek)
+    ? computeWeeklyStats(matchups, playerScores, owners, oracleSeason, oracleWeek)
     : null;
   const oracleSummary = oracleWeek
-    ? summaries.find((s) => s.season === season && s.week === oracleWeek) ?? null
+    ? summaries.find((s) => s.season === oracleSeason && s.week === oracleWeek) ?? null
     : null;
 
   return (
@@ -271,14 +286,14 @@ export default async function FantasyMatchupsPage({
           <div className="flex items-baseline justify-between mb-4">
             <div>
               <h2 className="text-xl font-semibold">Oracle of Regret</h2>
-              <p className="text-xs text-stone-500 mt-0.5">Week {oracleWeek} · bench mistakes &amp; haikus of shame</p>
+              <p className="text-xs text-stone-500 mt-0.5">{oracleSeason} · Week {oracleWeek} · bench mistakes &amp; haikus of shame</p>
             </div>
             <Link href="/fantasy/oracle" className="text-xs text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 transition">
               Full archive →
             </Link>
           </div>
           <OracleWeekView
-            season={season}
+            season={oracleSeason}
             week={oracleWeek}
             stats={oracleStats}
             initialSummary={oracleSummary}
