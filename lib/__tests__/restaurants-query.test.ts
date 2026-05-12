@@ -161,4 +161,26 @@ describe("matchCuisineFromGoogleType", () => {
   it("returns null for an empty cuisine list", () => {
     expect(matchCuisineFromGoogleType("Sushi Restaurant", null, [])).toBeNull();
   });
+
+  it("applies the manual Coffee Shop → Cafe alias", () => {
+    const list = [...cuisines, "Cafe"];
+    expect(matchCuisineFromGoogleType("Coffee Shop", null, list)).toBe("Cafe");
+    expect(matchCuisineFromGoogleType(null, "coffee_shop", list)).toBe("Cafe");
+  });
+
+  it("only applies an alias when the target cuisine is in the list", () => {
+    // "Cafe" is absent from this list, so the alias can't fire and we fall
+    // through to the regular fuzzy match — which finds nothing here.
+    expect(matchCuisineFromGoogleType("Coffee Shop", null, cuisines)).toBeNull();
+  });
+
+  it("alias takes precedence over an exact cuisine match from the other signal", () => {
+    // Display signal triggers the alias (→ Cafe); raw signal exactly equals
+    // "Italian". Alias should still win because it short-circuits before
+    // scoring.
+    const list = [...cuisines, "Cafe"];
+    expect(matchCuisineFromGoogleType("Coffee Shop", "italian", list)).toBe(
+      "Cafe",
+    );
+  });
 });

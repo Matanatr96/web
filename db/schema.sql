@@ -120,7 +120,7 @@ insert into cuisines (name) values
   ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Ice Cream'),
   ('Indian'), ('Indian Street'), ('Israeli'), ('Italian'), ('Japanese'),
   ('Korean'), ('Latin'), ('Malaysian'), ('Mediterranean'), ('Mexican'),
-  ('Nepalese'), ('Pho'), ('Pizza'), ('Sandwich'), ('Sushi'),
+  ('Nepalese'), ('Pho'), ('Pizza'), ('Ramen'), ('Sandwich'), ('Sushi'),
   ('Szechuan'), ('Taco'), ('Taiwanese'), ('Thai'), ('Tulum'),
   ('Venezuelan'), ('Vietnamese'), ('Wings')
 on conflict (name) do nothing;

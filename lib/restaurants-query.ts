@@ -21,9 +21,23 @@ export function mapRestaurantRow(row: unknown): Restaurant {
 }
 
 /**
+ * Manual overrides for Google Maps place types that don't lexically match a
+ * canonical cuisine but should still map to one. Keys are lowercased,
+ * underscore-stripped signals (matching how `matchCuisineFromGoogleType`
+ * normalizes its inputs); values are canonical cuisine names.
+ *
+ * Add an entry here when you spot a Google type that the fuzzy matcher
+ * misses but obviously belongs under an existing cuisine.
+ */
+export const GOOGLE_TYPE_CUISINE_ALIASES: Record<string, string> = {
+  "coffee shop": "Cafe",
+};
+
+/**
  * Fuzzy-match a Google Maps place type against a cuisine list. Tries both the
  * human-readable display name (e.g. "Sushi Restaurant") and the raw enum
- * (e.g. "sushi_restaurant"), and tiers matches by quality:
+ * (e.g. "sushi_restaurant") in this order:
+ *   0 — manual alias hit from GOOGLE_TYPE_CUISINE_ALIASES (highest priority)
  *   3 — cuisine exactly equals the signal
  *   2 — cuisine appears inside the signal
  *   1 — signal appears inside the cuisine
@@ -40,6 +54,13 @@ export function matchCuisineFromGoogleType(
     googleTypeRaw?.toLowerCase().replace(/_/g, " "),
   ].filter((s): s is string => Boolean(s));
   if (signals.length === 0) return null;
+
+  // Manual aliases run first and short-circuit. They only apply when the
+  // aliased cuisine is actually in the caller's list.
+  for (const signal of signals) {
+    const aliased = GOOGLE_TYPE_CUISINE_ALIASES[signal];
+    if (aliased && cuisineList.includes(aliased)) return aliased;
+  }
 
   const score = (cuisine: string, signal: string): number => {
     const c = cuisine.toLowerCase();
