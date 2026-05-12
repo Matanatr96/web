@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { hasStonksAccess, isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
@@ -151,6 +152,12 @@ export default async function OptionsPage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Link
+            href={`/stonks/heatmap${source === "sandbox" ? "?source=sandbox" : ""}`}
+            className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 underline-offset-4 hover:underline"
+          >
+            Strike heatmap
+          </Link>
           <SourcePicker current={source} isAdmin={adminUser} />
           {adminUser && <SyncTradesButton source={source} />}
         </div>
