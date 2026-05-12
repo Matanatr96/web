@@ -165,7 +165,7 @@ export async function POST(req: Request) {
     const ownerById = new Map(owners.map((o) => [o.user_id, o]));
     const seen = new Set<string>();
     const ownerRows: OwnerWeekRow[] = [];
-    for (const m of matchups.filter((m) => m.season === season && m.week === week && m.points > 0)) {
+    for (const m of matchups.filter((m) => m.season === season && m.week === week)) {
       if (seen.has(m.owner_id)) continue;
       seen.add(m.owner_id);
       ownerRows.push({
