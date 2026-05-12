@@ -74,9 +74,9 @@ export default async function YieldCalendarPage({
           <h1 className="text-3xl font-bold tracking-tight">Premium Yield Calendar</h1>
           <p className="mt-2 text-sm text-stone-500 max-w-2xl">
             One cell per ISO week of the trailing year. Color intensity tracks the
-            total premium collected on sell-to-open contracts opened that week;
-            the bar row beneath shows the win rate for those contracts (kept
-            premium vs. assigned).
+            net premium (collected minus any buy-to-close costs) on contracts
+            opened that week; the bar row beneath shows the win rate for those
+            contracts (kept premium vs. assigned).
           </p>
         </div>
         <Link
