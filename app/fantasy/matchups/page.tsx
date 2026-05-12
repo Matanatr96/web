@@ -6,10 +6,13 @@ import type {
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
+  FantasyPlayerScore,
+  WeeklySummary,
 } from "@/lib/types";
 import {
   buildStandings,
   buildWeeklyAverages,
+  computeWeeklyStats,
   mean,
   stdev,
   percentile,
@@ -19,6 +22,7 @@ import {
 import { fmt } from "@/lib/utils";
 import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 import SeasonPicker from "@/components/season-picker";
+import OracleWeekView from "@/app/fantasy/oracle/OracleWeekView";
 
 export const dynamic = "force-dynamic";
 
@@ -33,16 +37,18 @@ export default async function FantasyMatchupsPage({
   const db = getSupabase();
   const admin = await isAdmin();
 
-  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
+  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }, { data: summaryData }] =
     await Promise.all([
       db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
       db.from("fantasy_owners").select("*"),
       db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+      db.from("fantasy_weekly_summaries").select("*").order("season", { ascending: false }).order("week", { ascending: false }),
     ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
   const matchups = (matchupData ?? []) as FantasyMatchup[];
+  const summaries = (summaryData ?? []) as WeeklySummary[];
 
   const seasons = leagues.map((l) => l.season);
   const requestedSeason = params.season ? Number(params.season) : seasons[0];
@@ -69,6 +75,39 @@ export default async function FantasyMatchupsPage({
   const inputValue = params.value ? Number(params.value) : NaN;
   const valuePercentile = Number.isFinite(inputValue)
     ? percentile(inputValue, seasonScores)
+    : null;
+
+  // Oracle of Regret — most recent week with matchup data. Prefers the
+  // selected season, but falls back to the most recent season that has data.
+  const seasonWeeks = [...new Set(
+    matchups.filter((m) => m.season === season && m.points > 0).map((m) => m.week)
+  )].sort((a, b) => b - a);
+
+  const oracleSeason = seasonWeeks.length > 0
+    ? season
+    : (() => {
+        const latest = matchups
+          .filter((m) => m.points > 0)
+          .sort((a, b) => b.season - a.season || b.week - a.week)[0];
+        return latest?.season ?? season;
+      })();
+
+  const oracleWeeks = oracleSeason === season
+    ? seasonWeeks
+    : [...new Set(matchups.filter((m) => m.season === oracleSeason && m.points > 0).map((m) => m.week))].sort((a, b) => b - a);
+
+  const oracleWeek = oracleWeeks[0] ?? null;
+
+  const { data: playerScoreData } = oracleWeek
+    ? await db.from("fantasy_player_scores").select("*").eq("season", oracleSeason).eq("week", oracleWeek)
+    : { data: [] };
+  const playerScores = (playerScoreData ?? []) as FantasyPlayerScore[];
+
+  const oracleStats = oracleWeek
+    ? computeWeeklyStats(matchups, playerScores, owners, oracleSeason, oracleWeek)
+    : null;
+  const oracleSummary = oracleWeek
+    ? summaries.find((s) => s.season === oracleSeason && s.week === oracleWeek) ?? null
     : null;
 
   return (
@@ -237,6 +276,28 @@ export default async function FantasyMatchupsPage({
             playoffMatchups={playoffMatchups}
             playoffStart={playoffStart}
             colorMap={colorMap}
+          />
+        </section>
+      )}
+
+      {/* Oracle of Regret */}
+      {oracleWeek && (
+        <section className="mt-12">
+          <div className="flex items-baseline justify-between mb-4">
+            <div>
+              <h2 className="text-xl font-semibold">Oracle of Regret</h2>
+              <p className="text-xs text-stone-500 mt-0.5">{oracleSeason} · Week {oracleWeek} · bench mistakes &amp; haikus of shame</p>
+            </div>
+            <Link href="/fantasy/oracle" className="text-xs text-stone-500 hover:text-stone-700 dark:hover:text-stone-300 transition">
+              Full archive →
+            </Link>
+          </div>
+          <OracleWeekView
+            season={oracleSeason}
+            week={oracleWeek}
+            stats={oracleStats}
+            initialSummary={oracleSummary}
+            isAdmin={admin}
           />
         </section>
       )}
