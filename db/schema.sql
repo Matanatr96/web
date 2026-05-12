@@ -117,7 +117,7 @@ create policy "Public can read cuisines"
 insert into cuisines (name) values
   ('American'), ('Arabic'), ('Asian'), ('Bagel'), ('Bakery'),
   ('Bangladeshi'), ('Bowl'), ('Breakfast'), ('Brunch'), ('Burger'),
-  ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Ice Cream'),
+  ('Burmese'), ('Cafe'), ('Chinese'), ('Donut'), ('Fast Food'), ('Ice Cream'),
   ('Indian'), ('Indian Street'), ('Israeli'), ('Italian'), ('Japanese'),
   ('Korean'), ('Latin'), ('Malaysian'), ('Mediterranean'), ('Mexican'),
   ('Nepalese'), ('Pho'), ('Pizza'), ('Ramen'), ('Sandwich'), ('Sushi'),

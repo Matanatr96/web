@@ -31,6 +31,9 @@ export function mapRestaurantRow(row: unknown): Restaurant {
  */
 export const GOOGLE_TYPE_CUISINE_ALIASES: Record<string, string> = {
   "coffee shop": "Cafe",
+  "tea house": "Cafe",
+  "greek restaurant": "Mediterranean",
+  "pakistani restaurant": "Indian",
 };
 
 /**
