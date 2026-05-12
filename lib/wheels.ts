@@ -8,6 +8,8 @@ export type WheelCycle = {
   start_date: string;          // CSP expiration / assignment date
   end_date: string;            // CC expiration (called_away) or equity sell date
   days_held: number;           // calendar days from start to end (min 1)
+  csp_open_date: string;       // date the originating CSP was sold-to-open
+  dte_at_open: number;         // calendar days from CSP open to CSP expiration (min 0)
   quantity: number;            // contracts on the originating CSP (shares = qty * 100)
   csp_strike: number;
   csp_premium: number;         // dollars credited from the originating CSP
@@ -140,11 +142,23 @@ export function buildWheelCycles(
       const returnPct = capital > 0 ? totalProfit / capital : 0;
       const annualized = returnPct * (365 / daysHeld);
 
+      const cspOpenDate = dateOnly(csp.open_date);
+      const dteAtOpen = Math.max(
+        0,
+        Math.round(
+          (new Date(dateOnly(csp.expiration_date) + "T00:00:00Z").getTime() -
+            new Date(cspOpenDate + "T00:00:00Z").getTime()) /
+            86400000,
+        ),
+      );
+
       cycles.push({
         underlying: ticker,
         start_date: startDate,
         end_date: endDate,
         days_held: daysHeld,
+        csp_open_date: cspOpenDate,
+        dte_at_open: dteAtOpen,
         quantity: csp.quantity,
         csp_strike: csp.strike,
         csp_premium: cspPremium,
@@ -164,4 +178,85 @@ export function buildWheelCycles(
 
   cycles.sort((a, b) => b.annualized_return - a.annualized_return);
   return cycles;
+}
+
+// --- DTE Oracle -------------------------------------------------------------
+// Bucket closed wheel cycles by DTE-at-open (days between CSP sell-to-open and
+// its expiration) and compute the median annualized return per bucket.
+
+export type DteBucketKey = "0-7" | "8-14" | "15-21" | "22-35" | "36+";
+
+export type DteBucket = {
+  key: DteBucketKey;
+  label: string;
+  min: number;
+  max: number | null;       // null = open-ended (36+)
+  count: number;
+  median_annualized: number; // decimal (0.10 == 10%)
+  mean_annualized: number;   // decimal
+};
+
+const BUCKET_DEFS: { key: DteBucketKey; label: string; min: number; max: number | null }[] = [
+  { key: "0-7",   label: "0–7 DTE",   min: 0,  max: 7   },
+  { key: "8-14",  label: "8–14 DTE",  min: 8,  max: 14  },
+  { key: "15-21", label: "15–21 DTE", min: 15, max: 21  },
+  { key: "22-35", label: "22–35 DTE", min: 22, max: 35  },
+  { key: "36+",   label: "36+ DTE",   min: 36, max: null },
+];
+
+function median(values: number[]): number {
+  if (values.length === 0) return 0;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0
+    ? (sorted[mid - 1] + sorted[mid]) / 2
+    : sorted[mid];
+}
+
+export function bucketCyclesByDte(cycles: WheelCycle[]): DteBucket[] {
+  return BUCKET_DEFS.map((def) => {
+    const inBucket = cycles.filter((c) => {
+      if (c.dte_at_open < def.min) return false;
+      if (def.max !== null && c.dte_at_open > def.max) return false;
+      return true;
+    });
+    const annualized = inBucket.map((c) => c.annualized_return);
+    const mean = annualized.length > 0
+      ? annualized.reduce((s, x) => s + x, 0) / annualized.length
+      : 0;
+    return {
+      key: def.key,
+      label: def.label,
+      min: def.min,
+      max: def.max,
+      count: inBucket.length,
+      median_annualized: median(annualized),
+      mean_annualized: mean,
+    };
+  });
+}
+
+// Sweet-spot insight: compare the best meaningful bucket (>=3 trades) against
+// the weakest meaningful bucket. Returns null if fewer than two qualifying buckets.
+export type SweetSpotInsight = {
+  bestBucket: DteBucket;
+  worstBucket: DteBucket;
+  ratio: number;            // bestBucket.median / worstBucket.median (only if both > 0)
+  deltaPct: number;         // bestBucket.median - worstBucket.median
+};
+
+export function findSweetSpot(buckets: DteBucket[], minTrades = 3): SweetSpotInsight | null {
+  const meaningful = buckets.filter((b) => b.count >= minTrades);
+  if (meaningful.length < 2) return null;
+  const sorted = [...meaningful].sort((a, b) => b.median_annualized - a.median_annualized);
+  const best  = sorted[0];
+  const worst = sorted[sorted.length - 1];
+  if (best.key === worst.key) return null;
+  const ratio = worst.median_annualized > 0 ? best.median_annualized / worst.median_annualized : 0;
+  return {
+    bestBucket: best,
+    worstBucket: worst,
+    ratio,
+    deltaPct: best.median_annualized - worst.median_annualized,
+  };
 }
