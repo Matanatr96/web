@@ -77,14 +77,16 @@ export function buildTickerPnL(
         const mark = prices.get(p.option_symbol);
         if (mark !== undefined) {
           const isLong = p.strategy === "long_call" || p.strategy === "long_put";
-          const entry = isLong ? (p.premium_paid ?? 0) : p.premium_collected;
-          // Long: profit when mark rises above entry debit
-          // Short: profit when mark falls below entry credit
-          const pl = isLong
-            ? (mark - entry) * p.quantity * 100
-            : (entry - mark) * p.quantity * 100;
-          p.unrealized_pl = pl;
-          o.unrealized += pl;
+          const entry = isLong ? p.premium_paid : p.premium_collected;
+          if (entry != null) {
+            // Long: profit when mark rises above entry debit
+            // Short: profit when mark falls below entry credit
+            const pl = isLong
+              ? (mark - entry) * p.quantity * 100
+              : (entry - mark) * p.quantity * 100;
+            p.unrealized_pl = pl;
+            o.unrealized += pl;
+          }
         }
       }
     } else {
