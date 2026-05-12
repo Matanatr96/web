@@ -225,6 +225,26 @@ const fetchPriceHistoryCached = unstable_cache(
   { revalidate: 14400, tags: ["watchlist-data"] }, // 4h — daily prices update EOD
 );
 
+export type DatedClose = { date: string; close: number };
+
+async function fetchDatedHistoryRaw(symbol: string, start: string, end: string): Promise<DatedClose[]> {
+  const key = process.env.TRADIER_API_KEY;
+  if (!key) return [];
+  const res = await fetch(
+    `${PROD_BASE}/markets/history?symbol=${encodeURIComponent(symbol)}&interval=daily&start=${start}&end=${end}`,
+    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+  );
+  if (!res.ok) return [];
+  const data = (await res.json()) as TradierHistoryResponse;
+  return toArray(data.history?.day);
+}
+
+export const fetchDatedHistoryCached = unstable_cache(
+  fetchDatedHistoryRaw,
+  ["tradier-dated-history"],
+  { revalidate: 14400, tags: ["watchlist-data"] },
+);
+
 // Annualized 30-day historical volatility from a series of closing prices.
 function calcHv30(closes: number[]): number {
   if (closes.length < 31) return 0;
