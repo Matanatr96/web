@@ -3,7 +3,7 @@ export type Restaurant = {
   name: string;
   city: string;
   category: string;
-  cuisine: string;
+  cuisines: string[];
   overall: number;
   food: number | null;
   value: number | null;

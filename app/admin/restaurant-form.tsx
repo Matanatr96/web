@@ -50,8 +50,19 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [duplicatePlaceMatch, setDuplicatePlaceMatch] = useState<string | null>(null);
   const [category, setCategory] = useState(initial?.category ?? "Food");
-  const [selectedCuisine, setSelectedCuisine] = useState(initial?.cuisine ?? cuisineList[0]);
+  const [selectedCuisines, setSelectedCuisines] = useState<Set<string>>(
+    () => new Set(initial?.cuisines ?? []),
+  );
   const [googleTypeSuggestion, setGoogleTypeSuggestion] = useState<string | null>(null);
+
+  const toggleCuisine = useCallback((name: string) => {
+    setSelectedCuisines((prev) => {
+      const next = new Set(prev);
+      if (next.has(name)) next.delete(name);
+      else next.add(name);
+      return next;
+    });
+  }, []);
   const [food, setFood] = useState<number | null>(initial?.food ?? null);
   const [value, setValue] = useState<number | null>(initial?.value ?? null);
   const [service, setService] = useState<number | null>(initial?.service ?? null);
@@ -101,7 +112,15 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
           if (s > bestScore) { bestScore = s; best = cuisine; }
         }
       }
-      if (best) setSelectedCuisine(best);
+      // Add the auto-detected cuisine without clobbering any user selections.
+      if (best) {
+        setSelectedCuisines((prev) => {
+          if (prev.has(best!)) return prev;
+          const next = new Set(prev);
+          next.add(best!);
+          return next;
+        });
+      }
     }
   }, [existingPlaceIds, cuisineList]);
 
@@ -143,6 +162,10 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
     e.preventDefault();
     const fd = new FormData(e.currentTarget);
     setSubmitError(null);
+    if (selectedCuisines.size === 0) {
+      setSubmitError("Pick at least one cuisine.");
+      return;
+    }
     startTransition(async () => {
       try {
         const result = await action(fd);
@@ -156,7 +179,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         setSubmitError(err instanceof Error ? err.message : "An unexpected error occurred.");
       }
     });
-  }, [action, router]);
+  }, [action, router, selectedCuisines]);
 
   // Case-insensitive duplicate check
   const duplicateMatch = existingNames?.find(
@@ -237,21 +260,33 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         options={["Food", "Drink", "Dessert"]}
         onChange={(e) => setCategory(e.target.value)}
       />
-      <div>
-        <label className="block text-sm font-medium mb-1">
-          Cuisine<span className="text-red-500"> *</span>
-        </label>
-        <select
-          name="cuisine"
-          required
-          value={selectedCuisine}
-          onChange={(e) => setSelectedCuisine(e.target.value)}
-          className="w-full px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900"
-        >
-          {cuisineList.map((o) => (
-            <option key={o} value={o}>{o}</option>
-          ))}
-        </select>
+      <div className="sm:col-span-2">
+        <div className="flex items-baseline justify-between mb-1">
+          <label className="block text-sm font-medium">
+            Cuisines<span className="text-red-500"> *</span>
+          </label>
+          <span className="text-xs text-stone-400">
+            {selectedCuisines.size} selected
+          </span>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-x-3 gap-y-1.5 rounded-md border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 p-3 max-h-56 overflow-y-auto">
+          {cuisineList.map((c) => {
+            const checked = selectedCuisines.has(c);
+            return (
+              <label key={c} className="flex items-center gap-2 text-sm cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  name="cuisine"
+                  value={c}
+                  checked={checked}
+                  onChange={() => toggleCuisine(c)}
+                  className="h-4 w-4 rounded border-stone-300 dark:border-stone-700"
+                />
+                <span className={checked ? "font-medium" : "text-stone-600 dark:text-stone-400"}>{c}</span>
+              </label>
+            );
+          })}
+        </div>
         {googleTypeSuggestion && (
           <p className="text-xs text-stone-400 mt-1">
             Google Maps: <span className="font-medium text-stone-500">{googleTypeSuggestion}</span>

@@ -36,7 +36,7 @@ type Row = {
   name: string;
   city: string;
   category: string;
-  cuisine: string;
+  cuisine: string;        // primary cuisine from the CSV (one per row)
   overall: number;
   food: number | null;
   value: number | null;
@@ -158,13 +158,30 @@ async function main() {
   }
 
   console.log(`Inserting ${rows.length} rows...`);
-  // Insert in chunks to stay well under any request-size limits.
+  // Restaurants table no longer has a `cuisine` column — strip it from the
+  // payload and write the corresponding row into restaurant_cuisines after.
   const chunkSize = 100;
   for (let i = 0; i < rows.length; i += chunkSize) {
     const chunk = rows.slice(i, i + chunkSize);
-    const { error } = await supabase.from("restaurants").insert(chunk);
-    if (error) {
+    const payload = chunk.map(({ cuisine: _cuisine, ...rest }) => rest);
+    const { data: inserted, error } = await supabase
+      .from("restaurants")
+      .insert(payload)
+      .select("id, name");
+    if (error || !inserted) {
       console.error(`Insert failed at chunk starting ${i}:`, error);
+      process.exit(1);
+    }
+    // Pair each inserted row back to its cuisine by index (insert preserves order).
+    const cuisineRows = inserted.map((rec, idx) => ({
+      restaurant_id: rec.id,
+      cuisine_name: chunk[idx].cuisine,
+    }));
+    const { error: cErr } = await supabase
+      .from("restaurant_cuisines")
+      .insert(cuisineRows);
+    if (cErr) {
+      console.error(`Cuisine insert failed at chunk starting ${i}:`, cErr);
       process.exit(1);
     }
     console.log(`  inserted ${Math.min(i + chunkSize, rows.length)}/${rows.length}`);

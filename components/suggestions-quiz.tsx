@@ -36,7 +36,9 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
   const cuisinesInCity = useMemo(() => {
     if (!city) return [];
     return Array.from(
-      new Set(restaurants.filter((r) => r.city === city).map((r) => r.cuisine))
+      new Set(
+        restaurants.filter((r) => r.city === city).flatMap((r) => r.cuisines),
+      ),
     ).sort();
   }, [restaurants, city]);
 
@@ -49,8 +51,8 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
     if (!city || !cuisine) return [];
     const set = new Set(
       restaurants
-        .filter((r) => r.city === city && r.cuisine === cuisine)
-        .map((r) => r.category)
+        .filter((r) => r.city === city && r.cuisines.includes(cuisine))
+        .map((r) => r.category),
     );
     return CATEGORIES.filter((c) => set.has(c));
   }, [restaurants, city, cuisine]);
@@ -59,7 +61,10 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
     if (!city || !cuisine || !category) return [];
     return restaurants
       .filter(
-        (r) => r.city === city && r.cuisine === cuisine && r.category === category
+        (r) =>
+          r.city === city &&
+          r.cuisines.includes(cuisine) &&
+          r.category === category,
       )
       .sort((a, b) => b.overall - a.overall)
       .slice(0, MAX_RESULTS);

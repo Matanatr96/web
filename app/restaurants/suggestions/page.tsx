@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import SuggestionsQuiz from "@/components/suggestions-quiz";
 
 export const dynamic = "force-dynamic";
@@ -8,7 +8,7 @@ export const dynamic = "force-dynamic";
 export default async function SuggestionsPage() {
   const { data, error } = await getSupabase()
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_SELECT)
     .order("overall", { ascending: false });
 
   if (error) {
@@ -19,7 +19,7 @@ export default async function SuggestionsPage() {
     );
   }
 
-  const restaurants = (data ?? []) as Restaurant[];
+  const restaurants = (data ?? []).map(mapRestaurantRow);
 
   return (
     <div className="max-w-3xl mx-auto">

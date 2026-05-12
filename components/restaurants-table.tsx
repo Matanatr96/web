@@ -1,14 +1,14 @@
 "use client";
 
 import Link from "next/link";
-import { useMemo, useState } from "react";
+import { Fragment, useMemo, useState } from "react";
 import type { Restaurant } from "@/lib/types";
 import { fmt, lastVisitedColorClass, ratingColorClass, slugify } from "@/lib/utils";
 
 type SortKey =
   | "name"
   | "city"
-  | "cuisine"
+  | "cuisines"
   | "category"
   | "overall"
   | "food"
@@ -39,7 +39,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
     [restaurants],
   );
   const cuisines = useMemo(
-    () => Array.from(new Set(restaurants.map((r) => r.cuisine))).sort(),
+    () => Array.from(new Set(restaurants.flatMap((r) => r.cuisines))).sort(),
     [restaurants],
   );
   const categories = useMemo(
@@ -52,14 +52,14 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
     const list = restaurants.filter((r) => {
       if (q && !r.name.toLowerCase().includes(q)) return false;
       if (cityFilter && r.city !== cityFilter) return false;
-      if (cuisineFilter && r.cuisine !== cuisineFilter) return false;
+      if (cuisineFilter && !r.cuisines.includes(cuisineFilter)) return false;
       if (categoryFilter && r.category !== categoryFilter) return false;
       return true;
     });
     const dir = sortDir === "asc" ? 1 : -1;
     list.sort((a, b) => {
-      const av = a[sortKey];
-      const bv = b[sortKey];
+      const av = sortKey === "cuisines" ? (a.cuisines[0] ?? "") : a[sortKey];
+      const bv = sortKey === "cuisines" ? (b.cuisines[0] ?? "") : b[sortKey];
       if (av === null && bv === null) return 0;
       if (av === null) return 1;
       if (bv === null) return -1;
@@ -164,7 +164,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
             <tr>
               <Th onClick={() => onSort("name")} label={`Place ${arrow("name")}`} />
               <Th onClick={() => onSort("city")} label={`City ${arrow("city")}`} />
-              <Th onClick={() => onSort("cuisine")} label={`Cuisine ${arrow("cuisine")}`} />
+              <Th onClick={() => onSort("cuisines")} label={`Cuisine ${arrow("cuisines")}`} />
               <Th
                 onClick={() => onSort("overall")}
                 label={`Overall ${arrow("overall")}`}
@@ -218,12 +218,17 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
                   </Link>
                 </td>
                 <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                  <Link
-                    href={`/cuisine/${slugify(r.cuisine)}`}
-                    className="hover:underline"
-                  >
-                    {r.cuisine}
-                  </Link>
+                  {r.cuisines.map((c, i) => (
+                    <Fragment key={c}>
+                      {i > 0 && ", "}
+                      <Link
+                        href={`/cuisine/${slugify(c)}`}
+                        className="hover:underline"
+                      >
+                        {c}
+                      </Link>
+                    </Fragment>
+                  ))}
                 </td>
                 <td className={`px-3 py-2 text-right tabular-nums ${ratingColorClass(r.overall)}`}>
                   {fmt(r.overall, 2)}

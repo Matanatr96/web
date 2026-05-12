@@ -1,7 +1,8 @@
+import { Fragment } from "react";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { fmt, ratingColorClass, slugify } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
@@ -15,12 +16,12 @@ export default async function RestaurantDetail({ params }: Props) {
 
   const { data, error } = await getSupabase()
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_SELECT)
     .eq("id", numericId)
     .single();
 
   if (error || !data) notFound();
-  const r = data as Restaurant;
+  const r = mapRestaurantRow(data);
 
   const rows: { label: string; value: number | null }[] = [
     { label: "Food", value: r.food },
@@ -44,10 +45,19 @@ export default async function RestaurantDetail({ params }: Props) {
             {r.city}
           </Link>
           {" · "}
-          <Link href={`/cuisine/${slugify(r.cuisine)}`} className="hover:underline">
-            {r.cuisine}
-          </Link>
-          {" · "}
+          {r.cuisines.length > 0 ? (
+            <>
+              {r.cuisines.map((c, i) => (
+                <Fragment key={c}>
+                  {i > 0 && ", "}
+                  <Link href={`/cuisine/${slugify(c)}`} className="hover:underline">
+                    {c}
+                  </Link>
+                </Fragment>
+              ))}
+              {" · "}
+            </>
+          ) : null}
           <span>{r.category}</span>
         </p>
       </header>

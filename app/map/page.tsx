@@ -1,6 +1,6 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import type { Restaurant } from "@/lib/types";
+import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import RestaurantsMap from "@/components/restaurants-map";
 
 export const dynamic = "force-dynamic";
@@ -17,7 +17,7 @@ export default async function MapPage() {
 
   const { data, error } = await getSupabase()
     .from("restaurants")
-    .select("*")
+    .select(RESTAURANT_SELECT)
     .order("overall", { ascending: false });
 
   if (error) {
@@ -28,7 +28,7 @@ export default async function MapPage() {
     );
   }
 
-  const restaurants = (data ?? []) as Restaurant[];
+  const restaurants = (data ?? []).map(mapRestaurantRow);
   const withCoords = restaurants.filter((r) => r.lat !== null && r.lng !== null);
   const missing = restaurants.length - withCoords.length;
 
