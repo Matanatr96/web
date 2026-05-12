@@ -111,7 +111,7 @@ export default async function YieldCalendarPage({
               accent="#059669"
               legendLabel="less"
               showSecondary
-              formatSecondary={(v) => `${Math.round(v * 100)}% win rate`}
+              secondaryLabel="win rate"
             />
             <p className="mt-3 text-xs text-stone-500">
               Color scale tops out at the 95th-percentile week ({fmtUSD(scaleMax)}).
