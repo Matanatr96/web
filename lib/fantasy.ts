@@ -7,6 +7,8 @@ import type {
   FantasyStanding,
   FantasyTrade,
   FantasyWeeklyAverage,
+  Rivalry,
+  RivalryGame,
   ScoreRecord,
   ScheduleLotteryResult,
   TradeLeaderboardRow,
@@ -526,4 +528,183 @@ export function computeWeeklyStats(
     closest_matchup,
     bench_mistake,
   };
+}
+
+// Margin at-or-below which a game counts as "close" for rivalry heat.
+const RIVALRY_CLOSE_MARGIN = 10;
+
+function pairKey(a: string, b: string): string {
+  return a < b ? `${a}|${b}` : `${b}|${a}`;
+}
+
+/**
+ * Build pairwise H2H dossiers for every owner pair that has played at least one
+ * game (regular season or playoff). Includes a composite rivalry "heat" score
+ * combining games played, close-game count, playoff stakes, trade entanglement,
+ * and record balance.
+ */
+export function buildRivalries(
+  matchups: FantasyMatchup[],
+  trades: FantasyTrade[],
+  owners: FantasyOwner[],
+  leagues: FantasyLeague[],
+): Rivalry[] {
+  // Dedupe matchups: each game appears twice (once per owner). Keep one row
+  // per (season, week, canonical-pair-key), with A = lexicographically smaller
+  // user_id so the perspective is stable across the dataset.
+  type DedupedGame = RivalryGame & { a_id: string; b_id: string };
+  const seen = new Map<string, DedupedGame>();
+  for (const m of matchups) {
+    if (m.opponent_id == null) continue;
+    const key = `${m.season}|${m.week}|${pairKey(m.owner_id, m.opponent_id)}`;
+    if (seen.has(key)) continue;
+    const aIsOwner = m.owner_id < m.opponent_id;
+    const a_id = aIsOwner ? m.owner_id : m.opponent_id;
+    const b_id = aIsOwner ? m.opponent_id : m.owner_id;
+    const a_points = aIsOwner ? m.points : m.opponent_points;
+    const b_points = aIsOwner ? m.opponent_points : m.points;
+    const winner: "A" | "B" | "T" =
+      a_points > b_points ? "A" : a_points < b_points ? "B" : "T";
+    seen.set(key, {
+      a_id,
+      b_id,
+      season: m.season,
+      week: m.week,
+      is_playoff: !isRegularSeason(m.season, m.week, leagues),
+      a_points,
+      b_points,
+      winner,
+    });
+  }
+
+  // Count trades per canonical pair. A multi-party trade contributes one count
+  // per participating pair.
+  const tradeCounts = new Map<string, number>();
+  for (const t of trades) {
+    const ids = [...new Set(t.user_ids)];
+    for (let i = 0; i < ids.length; i++) {
+      for (let j = i + 1; j < ids.length; j++) {
+        const k = pairKey(ids[i], ids[j]);
+        tradeCounts.set(k, (tradeCounts.get(k) ?? 0) + 1);
+      }
+    }
+  }
+
+  // Group deduped games by canonical pair key.
+  const grouped = new Map<string, DedupedGame[]>();
+  for (const g of seen.values()) {
+    const k = pairKey(g.a_id, g.b_id);
+    const arr = grouped.get(k);
+    if (arr) arr.push(g);
+    else grouped.set(k, [g]);
+  }
+
+  const ownerById = new Map(owners.map((o) => [o.user_id, o.display_name]));
+
+  const rivalries: Rivalry[] = [];
+  for (const [k, gamesRaw] of grouped) {
+    const games = gamesRaw.sort(
+      (x, y) => x.season - y.season || x.week - y.week,
+    );
+    const first = games[0];
+    const { a_id, b_id } = first;
+
+    let a_wins = 0;
+    let b_wins = 0;
+    let ties = 0;
+    let a_total_points = 0;
+    let b_total_points = 0;
+    let close_games = 0;
+    let playoff_games = 0;
+    let biggest: DedupedGame | null = null;
+    let biggestMargin = -1;
+    let closest: DedupedGame | null = null;
+    let closestMargin = Number.POSITIVE_INFINITY;
+
+    for (const g of games) {
+      if (g.winner === "A") a_wins += 1;
+      else if (g.winner === "B") b_wins += 1;
+      else ties += 1;
+      a_total_points += g.a_points;
+      b_total_points += g.b_points;
+      const margin = Math.abs(g.a_points - g.b_points);
+      if (margin <= RIVALRY_CLOSE_MARGIN) close_games += 1;
+      if (g.is_playoff) playoff_games += 1;
+      if (margin > biggestMargin) {
+        biggestMargin = margin;
+        biggest = g;
+      }
+      if (margin < closestMargin) {
+        closestMargin = margin;
+        closest = g;
+      }
+    }
+
+    const games_played = games.length;
+    const avg_margin = (a_total_points - b_total_points) / games_played;
+    const trades_exchanged = tradeCounts.get(k) ?? 0;
+
+    // Heat score: weighted sum, scaled down for lopsided records so that a
+    // pair where one side dominates feels less heated than an even matchup.
+    const decisive = a_wins + b_wins;
+    const win_pct_a = decisive > 0 ? a_wins / decisive : 0.5;
+    const balance = 1 - Math.abs(win_pct_a - 0.5) * 0.8; // 0.6 (lopsided) → 1.0 (even)
+    const rivalry_score =
+      (games_played + close_games * 2 + playoff_games * 3 + trades_exchanged * 1.5) *
+      balance;
+
+    const toGame = (g: DedupedGame | null): RivalryGame | null =>
+      g == null
+        ? null
+        : {
+            season: g.season,
+            week: g.week,
+            is_playoff: g.is_playoff,
+            a_points: g.a_points,
+            b_points: g.b_points,
+            winner: g.winner,
+          };
+
+    rivalries.push({
+      a_id,
+      a_name: ownerById.get(a_id) ?? a_id,
+      b_id,
+      b_name: ownerById.get(b_id) ?? b_id,
+      games_played,
+      a_wins,
+      b_wins,
+      ties,
+      avg_margin,
+      a_total_points,
+      b_total_points,
+      close_games,
+      playoff_games,
+      trades_exchanged,
+      biggest_blowout: toGame(biggest),
+      closest_game: toGame(closest),
+      games: games.map((g) => ({
+        season: g.season,
+        week: g.week,
+        is_playoff: g.is_playoff,
+        a_points: g.a_points,
+        b_points: g.b_points,
+        winner: g.winner,
+      })),
+      rivalry_score,
+    });
+  }
+
+  rivalries.sort(
+    (x, y) =>
+      y.rivalry_score - x.rivalry_score ||
+      y.games_played - x.games_played ||
+      x.a_name.localeCompare(y.a_name),
+  );
+  return rivalries;
+}
+
+/** Find a rivalry by either ordering of owner ids. */
+export function findRivalry(rivalries: Rivalry[], idA: string, idB: string): Rivalry | null {
+  const k = pairKey(idA, idB);
+  return rivalries.find((r) => pairKey(r.a_id, r.b_id) === k) ?? null;
 }
