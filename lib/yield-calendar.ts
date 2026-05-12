@@ -55,10 +55,12 @@ export function buildYieldCalendar(
   }
 
   const byKey = new Map<string, YieldWeek>(grid.map((w) => [w.isoKey, w]));
-  // Accumulate distinct tickers per week as we walk.
   const tickerSets = new Map<string, Set<string>>(
     grid.map((w) => [w.isoKey, new Set<string>()]),
   );
+  // Maps option_symbol -> open-week isoKey so buy-to-close costs can be
+  // deducted from the week the position was opened rather than closed.
+  const openWeekBySymbol = new Map<string, string>();
 
   for (const t of trades) {
     if (t.side !== "sell_to_open") continue;
@@ -76,6 +78,7 @@ export function buildYieldCalendar(
 
     tickerSets.get(key)!.add(t.underlying);
     bucket.strategies[t.strategy] = (bucket.strategies[t.strategy] ?? 0) + qty;
+    openWeekBySymbol.set(t.option_symbol, key);
 
     // Win-rate: count this sell-to-open contract once it has a terminal status.
     const status = (t.status ?? "").toLowerCase();
@@ -83,6 +86,19 @@ export function buildYieldCalendar(
       bucket.closedCount += qty;
       if (isWinStatus(status)) bucket.wins += qty;
     }
+  }
+
+  // Subtract buy-to-close costs from the week the position was opened.
+  for (const t of trades) {
+    if (t.side !== "buy_to_close") continue;
+    const openKey = openWeekBySymbol.get(t.option_symbol);
+    if (!openKey) continue;
+    const bucket = byKey.get(openKey);
+    if (!bucket) continue;
+    const qty = Number(t.quantity) || 0;
+    const fill = Number(t.avg_fill_price) || 0;
+    const cost = fill * qty * 100;
+    if (Number.isFinite(cost)) bucket.premium -= cost;
   }
 
   for (const w of grid) {
