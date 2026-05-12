@@ -285,16 +285,34 @@ export type WeeklyStats = {
   bench_mistake: WeeklyStatBenchMistake | null;
 };
 
+export type PowerRanking = {
+  rank: number;
+  display_name: string;
+  reason: string;
+};
+
+export type FantasyBanter = {
+  id: number;
+  season: number;
+  week: number;
+  sender_name: string;
+  message: string;
+  sent_at: string;
+  imported_at: string;
+};
+
 export type WeeklySummary = {
   id: number;
   season: number;
   week: number;
   summary: string;
   haiku: string | null;
+  rankings: PowerRanking[] | null;
   stats: WeeklyStats;
   generated_at: string;
   created_at: string;
   updated_at: string;
+  posted_to_signal_at: string | null;
 };
 
 // Schedule Lottery: what would each owner's record have been under every other schedule?

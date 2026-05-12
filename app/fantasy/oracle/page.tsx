@@ -2,7 +2,7 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { isAdmin } from "@/lib/auth";
 import { computeWeeklyStats } from "@/lib/fantasy";
-import type { FantasyLeague, FantasyMatchup, FantasyOwner, FantasyPlayerScore, WeeklySummary } from "@/lib/types";
+import type { FantasyBanter, FantasyLeague, FantasyMatchup, FantasyOwner, FantasyPlayerScore, WeeklySummary } from "@/lib/types";
 import SeasonPicker from "@/components/season-picker";
 import OracleWeekView from "./OracleWeekView";
 
@@ -31,6 +31,7 @@ export default async function OraclePage({
     db.from("fantasy_weekly_summaries").select("*").order("season", { ascending: false }).order("week", { ascending: false }),
   ]);
 
+
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
   const matchups = (matchupData ?? []) as FantasyMatchup[];
@@ -46,13 +47,15 @@ export default async function OraclePage({
   const requestedWeek = params.week ? Number(params.week) : availableWeeks[0];
   const week = availableWeeks.includes(requestedWeek) ? requestedWeek : availableWeeks[0];
 
-  // Fetch player scores for selected week only.
-  const { data: playerScoreData } = await db
-    .from("fantasy_player_scores")
-    .select("*")
-    .eq("season", season)
-    .eq("week", week);
+  // Fetch player scores + banter for selected week.
+  const [{ data: playerScoreData }, { data: banterData }] = await Promise.all([
+    db.from("fantasy_player_scores").select("*").eq("season", season).eq("week", week),
+    week
+      ? db.from("fantasy_banter").select("*").eq("season", season).eq("week", week).order("sent_at", { ascending: true })
+      : Promise.resolve({ data: [] }),
+  ]);
   const playerScores = (playerScoreData ?? []) as FantasyPlayerScore[];
+  const banter = (banterData ?? []) as FantasyBanter[];
 
   const stats = week
     ? computeWeeklyStats(matchups, playerScores, owners, season, week)
@@ -113,6 +116,7 @@ export default async function OraclePage({
             week={week}
             stats={stats}
             initialSummary={currentSummary}
+            initialBanter={banter}
             isAdmin={admin}
           />
         </section>

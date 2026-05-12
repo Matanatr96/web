@@ -297,6 +297,7 @@ export default async function FantasyMatchupsPage({
             week={oracleWeek}
             stats={oracleStats}
             initialSummary={oracleSummary}
+            initialBanter={[]}
             isAdmin={admin}
           />
         </section>
