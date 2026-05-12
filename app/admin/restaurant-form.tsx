@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { isRedirectError } from "next/dist/client/components/redirect-error";
 import type { Restaurant } from "@/lib/types";
 import { computeOverall, CUISINES, RATING_WEIGHTS, fmt } from "@/lib/utils";
+import { matchCuisineFromGoogleType } from "@/lib/restaurants-query";
 import PlaceAutocomplete, { type PlacePick } from "@/components/place-autocomplete";
 
 type ReviewPromptData = { placeId: string; note: string | null; name: string };
@@ -84,43 +85,20 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         : null
     );
     // Try to auto-select cuisine from the Google Maps primary type.
-    // Uses a tiered fuzzy match across both the display name (e.g. "Sushi Restaurant")
-    // and the raw enum (e.g. "sushi_restaurant" → "sushi restaurant"):
-    //   1. Exact match on either signal
-    //   2. Cuisine name appears somewhere in the type string
-    //   3. Type string appears somewhere in the cuisine name
-    if (pick.googleType || pick.googleTypeRaw) {
-      if (pick.googleType) setGoogleTypeSuggestion(pick.googleType);
-      const signals = [
-        pick.googleType?.toLowerCase(),
-        pick.googleTypeRaw?.toLowerCase().replace(/_/g, " "),
-      ].filter(Boolean) as string[];
-
-      const score = (cuisine: string, signal: string) => {
-        const c = cuisine.toLowerCase();
-        if (c === signal) return 3;
-        if (signal.includes(c)) return 2;
-        if (c.includes(signal)) return 1;
-        return 0;
-      };
-
-      let best: string | null = null;
-      let bestScore = 0;
-      for (const cuisine of cuisineList) {
-        for (const signal of signals) {
-          const s = score(cuisine, signal);
-          if (s > bestScore) { bestScore = s; best = cuisine; }
-        }
-      }
+    if (pick.googleType) setGoogleTypeSuggestion(pick.googleType);
+    const best = matchCuisineFromGoogleType(
+      pick.googleType,
+      pick.googleTypeRaw,
+      cuisineList,
+    );
+    if (best) {
       // Add the auto-detected cuisine without clobbering any user selections.
-      if (best) {
-        setSelectedCuisines((prev) => {
-          if (prev.has(best!)) return prev;
-          const next = new Set(prev);
-          next.add(best!);
-          return next;
-        });
-      }
+      setSelectedCuisines((prev) => {
+        if (prev.has(best)) return prev;
+        const next = new Set(prev);
+        next.add(best);
+        return next;
+      });
     }
   }, [existingPlaceIds, cuisineList]);
 
