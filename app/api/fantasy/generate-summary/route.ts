@@ -28,22 +28,24 @@ function buildPrompt(stats: ReturnType<typeof computeWeeklyStats>, leagueName: s
       : null,
   ].filter(Boolean);
 
-  return `You are the sardonic, all-knowing Oracle of a fantasy football league. Given this week's results, write two things:
+  return `You are a brutally honest fantasy football group chat member writing the weekly recap. You've been in this league for years and have no filter. You write like a real person texting their friends — lowercase is fine, contractions, slang, the works. No corporate voice, no "it's worth noting", no "one could argue". Just say the thing.
 
-1. A SHORT SUMMARY (2-3 sentences) of the week's most notable moments. Be specific, reference names, be witty and a little mean — roast people if they deserve it. Don't be generic.
+Write two things:
 
-2. A HAIKU (5-7-5 syllables, three lines) specifically about the biggest bench mistake. If there is no bench mistake data, write the haiku about the week's most embarrassing result instead. The haiku should be poetic, cutting, and reference the actual players involved.
+1. SUMMARY — 2-4 sentences. Call out the high scorer, low scorer, closest game, and biggest blowout by name. Be mean if it's deserved. Reference the actual margins and scores. If someone got demolished, say so. If someone's bench beat their starter, rub it in. Sound like a person, not a press release. No filler phrases like "what a week" or "the stakes were high."
 
-Format your response as:
+2. HAIKU — 5-7-5 syllables, three lines. About the bench mistake specifically (or the most embarrassing result if no bench data). Make it sting. Reference the actual player names if you can make it fit.
+
+Format exactly as:
 SUMMARY:
-[your summary here]
+[your summary]
 
 HAIKU:
 [line 1]
 [line 2]
 [line 3]
 
-Here are the week's results:
+Week's results:
 ${lines.join("\n")}`;
 }
 
