@@ -10,6 +10,13 @@ const SEASON_STARTS: Record<number, string> = {
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
+export function nflWeekEnd(season: number, week: number): Date | null {
+  const startStr = SEASON_STARTS[season];
+  if (!startStr) return null;
+  const start = new Date(startStr).getTime();
+  return new Date(start + week * MS_PER_WEEK);
+}
+
 export function timestampToNflWeek(
   timestampMs: number,
 ): { season: number; week: number } | null {
