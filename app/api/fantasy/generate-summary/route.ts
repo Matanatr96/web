@@ -3,7 +3,10 @@ import Anthropic from "@anthropic-ai/sdk";
 import { getServiceClient, getSupabase } from "@/lib/supabase";
 import { isAdmin } from "@/lib/auth";
 import { computeWeeklyStats } from "@/lib/fantasy";
+import { nflWeekEnd } from "@/lib/nfl-week";
 import type { FantasyMatchup, FantasyOwner, FantasyPlayerScore, FantasyBanter, PowerRanking } from "@/lib/types";
+
+const BANTER_LOOKBACK_DAYS = 60;
 
 const client = new Anthropic();
 
@@ -24,7 +27,7 @@ function buildPrompt(
     .join("\n");
 
   const banterSection = banter.length > 0
-    ? `\nGroup chat messages this week:\n${banter.map((b) => `  ${b.sender_name}: ${b.message}`).join("\n")}`
+    ? `\nGroup chat messages from the last ${BANTER_LOOKBACK_DAYS} days (running jokes, trades, beefs — use as context, but the recap is about this week):\n${banter.map((b) => `  [${b.sent_at.slice(0, 10)}] ${b.sender_name}: ${b.message}`).join("\n")}`
     : "";
 
   const lines = [
@@ -128,6 +131,10 @@ export async function POST(req: Request) {
       if (existing) return NextResponse.json({ summary: existing });
     }
 
+    // Pull banter from the 2 months leading up to the end of this week.
+    const weekEnd = nflWeekEnd(season, week) ?? new Date();
+    const lookbackStart = new Date(weekEnd.getTime() - BANTER_LOOKBACK_DAYS * 24 * 60 * 60 * 1000);
+
     // Fetch required data in parallel.
     const [{ data: matchupData }, { data: ownerData }, { data: playerScoreData }, { data: leagueData }, { data: banterData }] =
       await Promise.all([
@@ -138,8 +145,8 @@ export async function POST(req: Request) {
         publicDb
           .from("fantasy_banter")
           .select("*")
-          .eq("season", season)
-          .eq("week", week)
+          .gte("sent_at", lookbackStart.toISOString())
+          .lte("sent_at", weekEnd.toISOString())
           .order("sent_at", { ascending: true }),
       ]);
 
