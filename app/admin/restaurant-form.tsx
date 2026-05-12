@@ -73,18 +73,35 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         : null
     );
     // Try to auto-select cuisine from the Google Maps primary type.
-    // e.g. "Sushi Restaurant" → strip " Restaurant" → "Sushi" → match against list.
-    if (pick.googleType) {
-      setGoogleTypeSuggestion(pick.googleType);
-      const stripped = pick.googleType
-        .replace(/\s+(Restaurant|Bar|Cafe|Café|Bakery|Diner|Bistro|Shop|Place|Joint|Stand|Spot)$/i, "")
-        .trim();
-      const match = cuisineList.find(
-        (c) =>
-          c.toLowerCase() === pick.googleType!.toLowerCase() ||
-          c.toLowerCase() === stripped.toLowerCase(),
-      );
-      if (match) setSelectedCuisine(match);
+    // Uses a tiered fuzzy match across both the display name (e.g. "Sushi Restaurant")
+    // and the raw enum (e.g. "sushi_restaurant" → "sushi restaurant"):
+    //   1. Exact match on either signal
+    //   2. Cuisine name appears somewhere in the type string
+    //   3. Type string appears somewhere in the cuisine name
+    if (pick.googleType || pick.googleTypeRaw) {
+      if (pick.googleType) setGoogleTypeSuggestion(pick.googleType);
+      const signals = [
+        pick.googleType?.toLowerCase(),
+        pick.googleTypeRaw?.toLowerCase().replace(/_/g, " "),
+      ].filter(Boolean) as string[];
+
+      const score = (cuisine: string, signal: string) => {
+        const c = cuisine.toLowerCase();
+        if (c === signal) return 3;
+        if (signal.includes(c)) return 2;
+        if (c.includes(signal)) return 1;
+        return 0;
+      };
+
+      let best: string | null = null;
+      let bestScore = 0;
+      for (const cuisine of cuisineList) {
+        for (const signal of signals) {
+          const s = score(cuisine, signal);
+          if (s > bestScore) { bestScore = s; best = cuisine; }
+        }
+      }
+      if (best) setSelectedCuisine(best);
     }
   }, [existingPlaceIds, cuisineList]);
 
@@ -132,7 +149,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
         if (result?.placeId) {
           setReviewPrompt({ placeId: result.placeId, note: result.note ?? null, name: result.name });
         } else {
-          router.push("/admin");
+          router.push("/admin/restaurants");
         }
       } catch (err) {
         if (isRedirectError(err)) throw err;
@@ -379,7 +396,7 @@ export default function RestaurantForm({ initial, action, submitLabel, existingN
       {reviewPrompt && (
         <GoogleReviewPrompt
           data={reviewPrompt}
-          onDismiss={() => router.push("/admin")}
+          onDismiss={() => router.push("/admin/restaurants")}
         />
       )}
     </form>
