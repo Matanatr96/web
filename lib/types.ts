@@ -194,6 +194,41 @@ export type TradeLeaderboardRow = {
   trade_count: number;
 };
 
+// One head-to-head game between two owners, deduped (one row per matchup, not two).
+export type RivalryGame = {
+  season: number;
+  week: number;
+  is_playoff: boolean;
+  a_points: number;
+  b_points: number;
+  // "A" = the owner with the lexicographically smaller user_id in the pair.
+  winner: "A" | "B" | "T";
+};
+
+// Aggregate head-to-head dossier for a pair of owners.
+export type Rivalry = {
+  a_id: string;
+  a_name: string;
+  b_id: string;
+  b_name: string;
+  games_played: number;
+  a_wins: number;
+  b_wins: number;
+  ties: number;
+  // From A's perspective: positive = A scores more on average.
+  avg_margin: number;
+  // Total points scored across all H2H games (each side).
+  a_total_points: number;
+  b_total_points: number;
+  close_games: number;        // games decided by <= 10 points
+  playoff_games: number;
+  trades_exchanged: number;   // count of fantasy_trades where both owners are participants
+  biggest_blowout: RivalryGame | null;   // largest |margin| game
+  closest_game: RivalryGame | null;      // smallest margin (non-tie if possible)
+  games: RivalryGame[];       // chronological, all H2H games
+  rivalry_score: number;      // composite heat metric
+};
+
 export type FantasyOwner = {
   user_id: string;
   display_name: string;
