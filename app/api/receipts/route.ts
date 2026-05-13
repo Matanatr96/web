@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
+import { isAdmin } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -26,11 +27,12 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "items required" }, { status: 400 });
     }
     const db = getServiceClient();
+    const admin = await isAdmin();
 
     const { data: receipt, error: rErr } = await db
       .from("receipts")
       .insert({
-        restaurant_id: body.restaurant_id,
+        restaurant_id: admin ? body.restaurant_id : null,
         visited_on: body.visited_on,
         subtotal: body.subtotal,
         tax: body.tax,
