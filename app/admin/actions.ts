@@ -7,6 +7,7 @@ import { isAdmin, logIn, logOut } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 import type { RestaurantInput } from "@/lib/types";
 import { computeOverall } from "@/lib/utils";
+import { weightedMeanRatings } from "@/lib/restaurant-visits";
 
 /** Parse a FormData value as a decimal number, or null if empty. */
 function num(fd: FormData, key: string): number | null {
@@ -250,4 +251,116 @@ export async function deleteCuisine(id: number, _fd?: FormData) {
   const { error } = await supabase.from("cuisines").delete().eq("id", id);
   if (error) throw new Error(`Delete failed: ${error.message}`);
   revalidatePath("/admin");
+}
+
+/**
+ * Recompute the recency-weighted ratings for a restaurant from its visit log
+ * and write the result back to the restaurants row. Also refreshes the
+ * cached visit_count and last_visited. Called after any visit mutation.
+ */
+async function recomputeRestaurantFromVisits(restaurantId: number) {
+  const supabase = getServiceClient();
+  const { data: rest, error: restErr } = await supabase
+    .from("restaurants")
+    .select("category")
+    .eq("id", restaurantId)
+    .single();
+  if (restErr || !rest) throw new Error(`Restaurant not found: ${restErr?.message}`);
+
+  const { data: visits, error: visitsErr } = await supabase
+    .from("restaurant_visits")
+    .select("visited_on, food, value, service, ambiance, vegan_options")
+    .eq("restaurant_id", restaurantId);
+  if (visitsErr) throw new Error(`Visit fetch failed: ${visitsErr.message}`);
+
+  const list = visits ?? [];
+  const visit_count = list.length;
+
+  let update: Record<string, unknown> = { visit_count };
+
+  if (visit_count > 0) {
+    const agg = weightedMeanRatings(list, rest.category);
+    // Find most recent visited_on for the last_visited cache.
+    const latest = list
+      .map((v) => v.visited_on)
+      .filter((d): d is string => !!d)
+      .sort()
+      .at(-1) ?? null;
+    update = {
+      ...update,
+      food: agg.food,
+      value: agg.value,
+      service: agg.service,
+      ambiance: agg.ambiance,
+      vegan_options: agg.vegan_options,
+      // The schema requires overall to be non-null. Fall back to the existing
+      // value if we somehow can't compute one (e.g., partial ratings + unknown
+      // category) — but in practice the weighted mean produces something.
+      ...(agg.overall !== null ? { overall: agg.overall } : {}),
+      last_visited: latest,
+    };
+  }
+
+  const { error: updErr } = await supabase
+    .from("restaurants")
+    .update(update)
+    .eq("id", restaurantId);
+  if (updErr) throw new Error(`Restaurant update failed: ${updErr.message}`);
+}
+
+export async function logVisit(restaurantId: number, fd: FormData) {
+  await assertAdmin();
+  const supabase = getServiceClient();
+
+  const visited_on =
+    optionalStr(fd, "visited_on") ?? new Date().toISOString().slice(0, 10);
+  const comment = optionalStr(fd, "comment");
+  const food = num(fd, "food");
+  const value = num(fd, "value");
+  const service = num(fd, "service");
+  const ambiance = num(fd, "ambiance");
+  const vegan_options = num(fd, "vegan_options");
+
+  // Look up the category so the per-visit overall is computed consistently
+  // with how the cached restaurant overall is computed.
+  const { data: rest, error: restErr } = await supabase
+    .from("restaurants")
+    .select("category")
+    .eq("id", restaurantId)
+    .single();
+  if (restErr || !rest) throw new Error(`Restaurant not found: ${restErr?.message}`);
+
+  const overall = computeOverall(rest.category, { food, value, service, ambiance, vegan_options });
+
+  const { error } = await supabase.from("restaurant_visits").insert({
+    restaurant_id: restaurantId,
+    visited_on,
+    comment,
+    food,
+    value,
+    service,
+    ambiance,
+    vegan_options,
+    overall,
+  });
+  if (error) throw new Error(`Visit insert failed: ${error.message}`);
+
+  await recomputeRestaurantFromVisits(restaurantId);
+
+  revalidatePath("/");
+  revalidatePath("/restaurants");
+  revalidatePath("/restaurants/table");
+  revalidatePath("/map");
+  revalidatePath(`/restaurant/${restaurantId}`);
+}
+
+export async function deleteVisit(visitId: number, restaurantId: number) {
+  await assertAdmin();
+  const supabase = getServiceClient();
+  const { error } = await supabase.from("restaurant_visits").delete().eq("id", visitId);
+  if (error) throw new Error(`Visit delete failed: ${error.message}`);
+  await recomputeRestaurantFromVisits(restaurantId);
+  revalidatePath("/restaurants");
+  revalidatePath("/restaurants/table");
+  revalidatePath(`/restaurant/${restaurantId}`);
 }
