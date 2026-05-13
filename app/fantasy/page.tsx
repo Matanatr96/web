@@ -102,6 +102,14 @@ export default async function FantasyPage() {
           <span className="text-sm text-stone-500">Pairwise H2H dossiers and heat leaderboard</span>
         </Link>
 
+        <Link
+          href="/fantasy/draft-grades"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Draft Grades</span>
+          <span className="text-sm text-stone-500">VOR scores for every manager&apos;s draft picks</span>
+        </Link>
+
       </div>
 
       <div className="grid gap-8 md:grid-cols-2 max-w-2xl">
