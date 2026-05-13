@@ -25,7 +25,7 @@ export default function LogVisitButton({ restaurantId, restaurantName, currentRa
         onClick={() => setOpen(true)}
         className="text-sm hover:underline"
       >
-        + Log visit
+        Log visit
       </button>
       {open && (
         <LogVisitModal
