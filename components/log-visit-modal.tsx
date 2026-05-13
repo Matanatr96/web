@@ -23,7 +23,7 @@ export default function LogVisitButton({ restaurantId, restaurantName, currentRa
       <button
         type="button"
         onClick={() => setOpen(true)}
-        className="px-3 py-1.5 text-xs rounded-md bg-stone-900 text-stone-50 dark:bg-stone-100 dark:text-stone-900 hover:opacity-90 font-medium"
+        className="text-sm hover:underline"
       >
         + Log visit
       </button>
