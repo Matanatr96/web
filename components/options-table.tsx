@@ -3,8 +3,7 @@
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
 import type { OptionsPosition, TradeSource } from "@/lib/types";
-
-const ROLL_DTE_THRESHOLD = 14;
+import { deriveAction, type ActionTone } from "@/lib/action-chip";
 
 function dteFromExpiration(iso: string): number {
   const today = new Date();
@@ -143,6 +142,74 @@ function StrikeGauge({
   );
 }
 
+function computePctCaptured(position: OptionsPosition, markPrice?: number): number | null {
+  const maxProfit = position.premium_collected * position.quantity * 100;
+  if (position.status === "open") {
+    if (markPrice != null) {
+      const pnl = (position.premium_collected - markPrice) * position.quantity * 100;
+      return maxProfit > 0 ? pnl / maxProfit : null;
+    }
+    if (position.unrealized_pl !== undefined) {
+      return maxProfit > 0 ? position.unrealized_pl / maxProfit : null;
+    }
+    return null;
+  }
+  return position.premium_collected > 0 ? position.net_premium / position.premium_collected : null;
+}
+
+const TONE_CLASS: Record<ActionTone, string> = {
+  green:   "bg-green-100 text-green-700 dark:bg-green-900/40 dark:text-green-300",
+  amber:   "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
+  red:     "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300",
+  neutral: "bg-stone-100 text-stone-600 dark:bg-stone-800 dark:text-stone-400",
+};
+
+function ActionChipBadge({
+  position,
+  markPrice,
+  livePrice,
+  source,
+}: {
+  position: OptionsPosition;
+  markPrice?: number;
+  livePrice?: number;
+  source?: TradeSource;
+}) {
+  if (position.status !== "open") {
+    return (
+      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[position.status]}`}>
+        {STATUS_LABEL[position.status]}
+      </span>
+    );
+  }
+
+  const dte = dteFromExpiration(position.expiration_date);
+  const pctCaptured = computePctCaptured(position, markPrice);
+
+  const isItm =
+    livePrice == null
+      ? null
+      : position.strategy === "cash_secured_put"
+        ? livePrice < position.strike
+        : livePrice > position.strike;
+
+  const chip = deriveAction({ dte, isItm, pctCaptured, spot: livePrice ?? null, strike: position.strike });
+
+  const rollHref =
+    chip.verb === "ROLL"
+      ? `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${position.option_symbol}`
+      : undefined;
+
+  const inner = (
+    <span className={`inline-flex flex-col items-start px-2 py-1 rounded-md text-xs font-medium ${TONE_CLASS[chip.tone]}`}>
+      <span className="font-semibold leading-tight">{chip.verb}</span>
+      <span className="font-normal opacity-75 leading-tight">{chip.reason}</span>
+    </span>
+  );
+
+  return rollHref ? <Link href={rollHref}>{inner}</Link> : inner;
+}
+
 // % of max profit captured, with a mini decay ring. Replaces "Total P&L".
 function PctCaptured({
   position,
@@ -151,20 +218,7 @@ function PctCaptured({
   position: OptionsPosition;
   markPrice?: number;
 }) {
-  const maxProfit = position.premium_collected * position.quantity * 100;
-  let capturedPct: number | null = null;
-
-  if (position.status === "open") {
-    if (markPrice != null) {
-      const pnl = (position.premium_collected - markPrice) * position.quantity * 100;
-      capturedPct = maxProfit > 0 ? pnl / maxProfit : null;
-    } else if (position.unrealized_pl !== undefined) {
-      capturedPct = maxProfit > 0 ? position.unrealized_pl / maxProfit : null;
-    }
-  } else {
-    capturedPct =
-      position.premium_collected > 0 ? position.net_premium / position.premium_collected : null;
-  }
+  const capturedPct = computePctCaptured(position, markPrice);
 
   if (capturedPct === null) return <span className="text-stone-400 text-sm">—</span>;
 
@@ -271,7 +325,7 @@ export default function OptionsTable({
               <th className="px-3 py-2 text-right">Spot vs Strike</th>
               <th className="px-3 py-2 text-right">Theta/day</th>
               <th className="px-3 py-2 text-right">% Captured</th>
-              <Th onClick={() => onSort("status")} label={`Status ${arrow("status")}`} />
+              <th className="px-3 py-2">Action</th>
             </tr>
           </thead>
           <tbody>
@@ -289,20 +343,6 @@ export default function OptionsTable({
                           {OPTION_TYPE[p.strategy]}
                         </span>
                         <span className="ml-1.5 text-stone-400 text-xs">·{p.quantity}x</span>
-                        {p.status === "open" &&
-                          (() => {
-                            const dte = dteFromExpiration(p.expiration_date);
-                            if (dte < 0 || dte > ROLL_DTE_THRESHOLD) return null;
-                            const href = `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${p.option_symbol}`;
-                            return (
-                              <Link
-                                href={href}
-                                className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
-                              >
-                                Roll?
-                              </Link>
-                            );
-                          })()}
                       </div>
                       {p.status === "open" && (
                         <FuseBar openDate={p.open_date} expirationDate={p.expiration_date} />
@@ -366,13 +406,14 @@ export default function OptionsTable({
                       <PctCaptured position={p} markPrice={markPrice} />
                     </td>
 
-                    {/* Status */}
+                    {/* Action chip */}
                     <td className="px-3 py-2">
-                      <span
-                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[p.status]}`}
-                      >
-                        {STATUS_LABEL[p.status]}
-                      </span>
+                      <ActionChipBadge
+                        position={p}
+                        markPrice={markPrice}
+                        livePrice={livePrice}
+                        source={source}
+                      />
                     </td>
                   </tr>
 
