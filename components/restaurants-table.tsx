@@ -16,6 +16,7 @@ type SortKey =
   | "service"
   | "ambiance"
   | "vegan_options"
+  | "visit_count"
   | "last_visited";
 
 type SortDir = "asc" | "desc";
@@ -92,6 +93,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
         "service",
         "ambiance",
         "vegan_options",
+        "visit_count",
       ];
       setSortDir(numeric.includes(key) ? "desc" : "asc");
     }
@@ -192,6 +194,11 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
                 align="right"
               />
               <Th
+                onClick={() => onSort("visit_count")}
+                label={`Visits ${arrow("visit_count")}`}
+                align="right"
+              />
+              <Th
                 onClick={() => onSort("last_visited")}
                 label={`Last Visited ${arrow("last_visited")}`}
                 align="right"
@@ -252,6 +259,9 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
                 >
                   {fmt(r.vegan_options)}
                 </td>
+                <td className="px-3 py-2 text-right tabular-nums text-stone-600 dark:text-stone-400">
+                  {r.visit_count}
+                </td>
                 <td className={`px-3 py-2 text-right whitespace-nowrap ${lastVisitedColorClass(r.last_visited)}`}>
                   {r.last_visited
                     ? new Date(r.last_visited + "T00:00:00").toLocaleDateString("en-US", {
@@ -266,7 +276,7 @@ export default function RestaurantsTable({ restaurants, fixedFilter }: Props) {
             {visible.length === 0 ? (
               <tr>
                 <td
-                  colSpan={10}
+                  colSpan={11}
                   className="px-3 py-8 text-center text-stone-500"
                 >
                   No restaurants match these filters.

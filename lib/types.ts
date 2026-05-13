@@ -17,11 +17,26 @@ export type Restaurant = {
   lng: number | null;
   place_id: string | null;
   photos: string[] | null;
+  visit_count: number;
   created_at: string;
   updated_at: string;
 };
 
-export type RestaurantInput = Omit<Restaurant, "id" | "created_at" | "updated_at">;
+export type RestaurantInput = Omit<Restaurant, "id" | "visit_count" | "created_at" | "updated_at">;
+
+export type RestaurantVisit = {
+  id: number;
+  restaurant_id: number;
+  visited_on: string;          // ISO date (YYYY-MM-DD)
+  comment: string | null;
+  food: number | null;
+  value: number | null;
+  service: number | null;
+  ambiance: number | null;
+  vegan_options: number | null;
+  overall: number | null;
+  created_at: string;
+};
 
 export type OptionStrategy = "covered_call" | "cash_secured_put" | "long_call" | "long_put";
 export type OptionSide = "sell_to_open" | "buy_to_close" | "buy_to_open" | "sell_to_close";
