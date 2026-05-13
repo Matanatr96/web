@@ -62,9 +62,10 @@ export default async function DraftGradesPage({
         <div>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Draft Grades</h1>
           <p className="mt-1 text-sm text-stone-500">
-            How well did each manager&apos;s picks perform? Scored by Value Over Replacement
-            (VOR): each pick&apos;s season points minus the positional replacement level (QB12,
-            RB24, WR24, TE12).
+            How well did each manager&apos;s picks perform? Scored by weighted VOR (wVOR): each
+            pick&apos;s season points minus the positional replacement level (QB12, RB24, WR24,
+            TE12), averaged with round anchors (R1=1.0, R2=0.5, R3=0.25) and within-round
+            exponential decay — earlier picks in a round count ~4% more per slot.
           </p>
         </div>
         <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/draft-grades" />
@@ -136,7 +137,7 @@ function GradeCard({
           }`}
         >
           {vorSign}
-          {row.total_vor.toFixed(1)} VOR
+          {row.total_vor.toFixed(1)} wVOR
         </span>
 
         {/* Letter grade */}

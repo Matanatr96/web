@@ -716,6 +716,12 @@ const GRADED_POSITIONS = new Set(["QB", "RB", "WR", "TE"]);
 // Number of starters per position per team (12-team standard scoring).
 const STARTERS_PER_TEAM: Record<string, number> = { QB: 1, RB: 2, WR: 2, TE: 1 };
 
+// Hybrid pick weight: round anchor (R1=1, R2=0.5, R3=0.25) × within-round
+// exponential decay (~4% per slot). Earlier picks in a round count more.
+const pickWeight = (round: number, pickNumber: number): number =>
+  (1 / Math.pow(2, round - 1)) * Math.exp(-0.04 * (pickNumber - 1));
+
+
 /**
  * Compute VOR-based draft grades for each owner in a season.
  *
@@ -806,7 +812,9 @@ export function computeDraftGrades(
 
   const rows: DraftGradeRow[] = [];
   for (const [owner_id, ownerPicks] of ownerPickMap) {
-    const total_vor = ownerPicks.reduce((s, p) => s + p.vor, 0);
+    const weightedSum = ownerPicks.reduce((s, p) => s + p.vor * pickWeight(p.round, p.pick_number), 0);
+    const totalWeight = ownerPicks.reduce((s, p) => s + pickWeight(p.round, p.pick_number), 0);
+    const total_vor = totalWeight > 0 ? weightedSum / totalWeight : 0;
     ownerPicks.sort((a, b) => b.vor - a.vor); // steals at top, busts at bottom
     rows.push({
       owner_id,
