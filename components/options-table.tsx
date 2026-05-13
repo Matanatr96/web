@@ -1,7 +1,17 @@
 "use client";
 
 import React, { useMemo, useState } from "react";
-import type { OptionsPosition } from "@/lib/types";
+import Link from "next/link";
+import type { OptionsPosition, TradeSource } from "@/lib/types";
+
+const ROLL_DTE_THRESHOLD = 14;
+
+function dteFromExpiration(iso: string): number {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const exp = new Date(iso + "T00:00:00");
+  return Math.round((exp.getTime() - today.getTime()) / 86_400_000);
+}
 
 type SortKey = "expiration_date" | "net_premium" | "status" | "open_date";
 
@@ -69,12 +79,14 @@ export default function OptionsTable({
   optionPrices,
   optionGreeks,
   statusFilter = "",
+  source,
 }: {
   positions: OptionsPosition[];
   monthlyReturn?: Record<string, number>;
   optionPrices?: Record<string, number>;
   optionGreeks?: Map<string, number>;
   statusFilter?: string;
+  source?: TradeSource;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -139,6 +151,19 @@ export default function OptionsTable({
                   >
                     <td className="px-3 py-2 whitespace-nowrap">
                       {fmtExpiration(p.expiration_date)} {fmtStrike(p.strike)} {OPTION_TYPE[p.strategy]}
+                      {p.status === "open" && (() => {
+                        const dte = dteFromExpiration(p.expiration_date);
+                        if (dte < 0 || dte > ROLL_DTE_THRESHOLD) return null;
+                        const href = `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${p.option_symbol}`;
+                        return (
+                          <Link
+                            href={href}
+                            className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                          >
+                            Roll?
+                          </Link>
+                        );
+                      })()}
                     </td>
                     <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
                     <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>

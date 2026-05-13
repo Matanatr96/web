@@ -301,6 +301,7 @@ export default async function OptionsPage({
               monthlyReturn={positionMonthlyReturn}
               optionPrices={optionPrices}
               optionGreeks={optionGreeks}
+              source={source}
             />
           ))}
         </>
