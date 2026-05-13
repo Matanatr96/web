@@ -250,6 +250,12 @@ export default async function OptionsPage() {
                   name: "Roll-or-Hold",
                   desc: "Roll yield vs. hold comparison for expiring positions",
                 },
+                {
+                  href: "/stonks/premium-pace",
+                  icon: "📈",
+                  name: "Pace vs. SPY",
+                  desc: "Your annualized return vs. SPY buy-and-hold",
+                },
               ].map(({ href, icon, name, desc }) => (
                 <Link
                   key={href}
