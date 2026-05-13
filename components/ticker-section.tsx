@@ -29,7 +29,7 @@ export default function TickerSection({
   optionGreeks: Map<string, number>;
   source?: TradeSource;
 }) {
-  const [statusFilter, setStatusFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("open");
 
   return (
     <section className="flex flex-col gap-4">
@@ -99,6 +99,7 @@ export default function TickerSection({
           monthlyReturn={monthlyReturn}
           optionPrices={optionPrices}
           optionGreeks={optionGreeks}
+          livePrice={livePrice}
           statusFilter={statusFilter}
           source={source}
         />

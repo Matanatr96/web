@@ -14,10 +14,8 @@ function dteFromExpiration(iso: string): number {
 }
 
 type SortKey = "expiration_date" | "net_premium" | "status" | "open_date";
-
 type SortDir = "asc" | "desc";
 
-// Green ≥ 1%/mo · Amber 0.5–1% · Muted < 0.5%
 function premiumColor(pct: number): string {
   if (pct >= 1) return "text-green-700 dark:text-green-400";
   if (pct >= 0.5) return "text-amber-600 dark:text-amber-400";
@@ -57,14 +55,6 @@ const STATUS_CLASS: Record<OptionsPosition["status"], string> = {
   assigned: "bg-amber-100 text-amber-700 dark:bg-amber-900/40 dark:text-amber-300",
 };
 
-function fmtDate(iso: string) {
-  return new Date(iso + (iso.length === 10 ? "T00:00:00" : "")).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-    year: "numeric",
-  });
-}
-
 function fmtUSD(n: number) {
   return n.toLocaleString("en-US", {
     style: "currency",
@@ -73,11 +63,163 @@ function fmtUSD(n: number) {
   });
 }
 
+// Shrinking bar showing time remaining. Renders below the contract label for open positions.
+function FuseBar({ openDate, expirationDate }: { openDate: string; expirationDate: string }) {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const open = new Date(openDate);
+  const exp = new Date(expirationDate + "T00:00:00");
+  const originalDte = Math.max(1, Math.round((exp.getTime() - open.getTime()) / 86_400_000));
+  const dte = Math.max(0, Math.round((exp.getTime() - today.getTime()) / 86_400_000));
+  const pctRemaining = dte / originalDte;
+
+  const barColor =
+    pctRemaining > 0.5
+      ? "bg-green-500"
+      : pctRemaining > 0.25
+        ? "bg-amber-500"
+        : "bg-red-500";
+
+  return (
+    <div className="mt-1 flex items-center gap-1.5">
+      <div className="w-14 h-1 rounded-full bg-stone-200 dark:bg-stone-700 overflow-hidden">
+        <div
+          className={`h-full rounded-full ${barColor}`}
+          style={{ width: `${Math.max(2, pctRemaining * 100)}%` }}
+        />
+      </div>
+      <span className="text-[10px] text-stone-400">{dte}d left</span>
+    </div>
+  );
+}
+
+// Dot gauge showing spot vs strike. Positive = OTM (safe), negative = ITM (danger).
+function StrikeGauge({
+  spot,
+  strike,
+  strategy,
+}: {
+  spot: number;
+  strike: number;
+  strategy: OptionsPosition["strategy"];
+}) {
+  const isShort = strategy === "cash_secured_put" || strategy === "covered_call";
+  const isCSP = strategy === "cash_secured_put";
+  // For CSP: OTM when spot > strike. For CC: OTM when spot < strike.
+  const otm = isCSP ? (spot - strike) / spot : (strike - spot) / spot;
+
+  const range = 0.15;
+  const clamped = Math.max(-range, Math.min(range, otm));
+  const dotPct = ((clamped + range) / (2 * range)) * 100;
+
+  const dotColor =
+    !isShort || otm > 0.05
+      ? "bg-green-500"
+      : otm > 0
+        ? "bg-amber-500"
+        : "bg-red-500";
+
+  const textColor =
+    !isShort || otm > 0.05
+      ? "text-green-600 dark:text-green-400"
+      : otm > 0
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+
+  return (
+    <div className="flex flex-col items-end gap-0.5">
+      <span className={`text-xs font-medium tabular-nums ${textColor}`}>
+        {otm > 0 ? "+" : ""}
+        {(otm * 100).toFixed(1)}% OTM
+      </span>
+      <div className="relative w-16 h-1.5 rounded-full bg-stone-200 dark:bg-stone-700">
+        <div className="absolute inset-y-0 left-1/2 w-px bg-stone-400 dark:bg-stone-500" />
+        <div
+          className={`absolute top-1/2 -translate-y-1/2 w-2.5 h-2.5 rounded-full ${dotColor} border-2 border-white dark:border-stone-900`}
+          style={{ left: `calc(${dotPct}% - 5px)` }}
+        />
+      </div>
+    </div>
+  );
+}
+
+// % of max profit captured, with a mini decay ring. Replaces "Total P&L".
+function PctCaptured({
+  position,
+  markPrice,
+}: {
+  position: OptionsPosition;
+  markPrice?: number;
+}) {
+  const maxProfit = position.premium_collected * position.quantity * 100;
+  let capturedPct: number | null = null;
+
+  if (position.status === "open") {
+    if (markPrice != null) {
+      const pnl = (position.premium_collected - markPrice) * position.quantity * 100;
+      capturedPct = maxProfit > 0 ? pnl / maxProfit : null;
+    } else if (position.unrealized_pl !== undefined) {
+      capturedPct = maxProfit > 0 ? position.unrealized_pl / maxProfit : null;
+    }
+  } else {
+    capturedPct =
+      position.premium_collected > 0 ? position.net_premium / position.premium_collected : null;
+  }
+
+  if (capturedPct === null) return <span className="text-stone-400 text-sm">—</span>;
+
+  const pct = Math.round(capturedPct * 100);
+  const textColor =
+    pct >= 50
+      ? "text-green-600 dark:text-green-400"
+      : pct >= 0
+        ? "text-amber-600 dark:text-amber-400"
+        : "text-red-600 dark:text-red-400";
+
+  const r = 7;
+  const circ = 2 * Math.PI * r;
+  const clampedPct = Math.max(0, Math.min(100, pct));
+  const dash = (clampedPct / 100) * circ;
+  const ringColor = pct >= 50 ? "text-green-500" : pct >= 0 ? "text-amber-500" : "text-red-500";
+
+  return (
+    <div className="flex items-center justify-end gap-1.5">
+      <div className="flex flex-col items-end">
+        <span className={`text-sm font-semibold tabular-nums ${textColor}`}>{pct}%</span>
+        <span className="text-[10px] text-stone-400">captured</span>
+      </div>
+      <svg width="18" height="18" className="-rotate-90">
+        <circle
+          cx="9"
+          cy="9"
+          r={r}
+          strokeWidth="2.5"
+          stroke="currentColor"
+          fill="none"
+          className="text-stone-200 dark:text-stone-700"
+        />
+        <circle
+          cx="9"
+          cy="9"
+          r={r}
+          strokeWidth="2.5"
+          stroke="currentColor"
+          fill="none"
+          strokeDasharray={`${dash} ${circ}`}
+          strokeLinecap="round"
+          className={ringColor}
+        />
+      </svg>
+    </div>
+  );
+}
+
 export default function OptionsTable({
   positions,
   monthlyReturn,
   optionPrices,
   optionGreeks,
+  livePrice,
   statusFilter = "",
   source,
 }: {
@@ -85,6 +227,7 @@ export default function OptionsTable({
   monthlyReturn?: Record<string, number>;
   optionPrices?: Record<string, number>;
   optionGreeks?: Map<string, number>;
+  livePrice?: number;
   statusFilter?: string;
   source?: TradeSource;
 }) {
@@ -124,94 +267,124 @@ export default function OptionsTable({
           <thead className="sticky top-0 bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
             <tr>
               <Th onClick={() => onSort("expiration_date")} label={`Contract ${arrow("expiration_date")}`} />
-              <th className="px-3 py-2">Qty</th>
-              <Th onClick={() => onSort("net_premium")}     label={`Net Premium ${arrow("net_premium")}`} align="right" />
-              <th className="px-3 py-2 text-right">Mark</th>
+              <Th onClick={() => onSort("net_premium")} label={`Net Premium ${arrow("net_premium")}`} align="right" />
+              <th className="px-3 py-2 text-right">Spot vs Strike</th>
               <th className="px-3 py-2 text-right">Theta/day</th>
-              <th className="px-3 py-2 text-right">Total P&amp;L</th>
-              <Th onClick={() => onSort("status")}          label={`Status ${arrow("status")}`} />
-              <Th onClick={() => onSort("open_date")}       label={`Opened ${arrow("open_date")}`} />
+              <th className="px-3 py-2 text-right">% Captured</th>
+              <Th onClick={() => onSort("status")} label={`Status ${arrow("status")}`} />
             </tr>
           </thead>
           <tbody>
             {visible.map((p) => {
               const markPrice = optionPrices?.[p.option_symbol];
-              const totalPnl =
-                p.status === "open" && p.unrealized_pl !== undefined
-                  ? p.unrealized_pl
-                  : p.net_premium * p.quantity * 100;
-              const pnlClass = totalPnl >= 0
-                ? "text-green-600 dark:text-green-400"
-                : "text-red-600 dark:text-red-400";
 
               return (
                 <React.Fragment key={p.option_symbol}>
-                  <tr
-                    className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50"
-                  >
+                  <tr className="border-t border-stone-200 dark:border-stone-800 hover:bg-stone-50 dark:hover:bg-stone-900/50">
+                    {/* Contract — qty folded in, Fuse bar for open positions */}
                     <td className="px-3 py-2 whitespace-nowrap">
-                      {fmtExpiration(p.expiration_date)} {fmtStrike(p.strike)} {OPTION_TYPE[p.strategy]}
-                      {p.status === "open" && (() => {
-                        const dte = dteFromExpiration(p.expiration_date);
-                        if (dte < 0 || dte > ROLL_DTE_THRESHOLD) return null;
-                        const href = `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${p.option_symbol}`;
-                        return (
-                          <Link
-                            href={href}
-                            className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
-                          >
-                            Roll?
-                          </Link>
-                        );
-                      })()}
-                    </td>
-                    <td className="px-3 py-2 tabular-nums">{p.quantity}</td>
-                    <td className={`px-3 py-2 text-right tabular-nums ${pnlClass}`}>
-                      {fmtUSD(p.net_premium)}
-                      <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
-                      {monthlyReturn && Number.isFinite(monthlyReturn[p.option_symbol]) && p.status === "open" && (
-                        <span className={`ml-1.5 text-xs font-normal ${premiumColor(monthlyReturn[p.option_symbol])}`}>
-                          {monthlyReturn[p.option_symbol].toFixed(2)}%/mo
+                      <div>
+                        <span>
+                          {fmtExpiration(p.expiration_date)} {fmtStrike(p.strike)}{" "}
+                          {OPTION_TYPE[p.strategy]}
                         </span>
+                        <span className="ml-1.5 text-stone-400 text-xs">·{p.quantity}x</span>
+                        {p.status === "open" &&
+                          (() => {
+                            const dte = dteFromExpiration(p.expiration_date);
+                            if (dte < 0 || dte > ROLL_DTE_THRESHOLD) return null;
+                            const href = `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${p.option_symbol}`;
+                            return (
+                              <Link
+                                href={href}
+                                className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold uppercase tracking-wide bg-amber-100 text-amber-700 hover:bg-amber-200 dark:bg-amber-900/40 dark:text-amber-300 dark:hover:bg-amber-900/60"
+                              >
+                                Roll?
+                              </Link>
+                            );
+                          })()}
+                      </div>
+                      {p.status === "open" && (
+                        <FuseBar openDate={p.open_date} expirationDate={p.expiration_date} />
                       )}
                     </td>
-                    <td className="px-3 py-2 text-right tabular-nums text-stone-500">
-                      {p.status === "open" && markPrice != null ? fmtUSD(markPrice) : "—"}
+
+                    {/* Net Premium */}
+                    <td className="px-3 py-2 text-right tabular-nums">
+                      <span>{fmtUSD(p.net_premium)}</span>
+                      <span className="text-stone-400 dark:text-stone-600 text-xs ml-1">/share</span>
+                      {monthlyReturn &&
+                        Number.isFinite(monthlyReturn[p.option_symbol]) &&
+                        p.status === "open" && (
+                          <div className={`text-xs font-normal ${premiumColor(monthlyReturn[p.option_symbol])}`}>
+                            {monthlyReturn[p.option_symbol].toFixed(2)}%/mo
+                          </div>
+                        )}
                     </td>
+
+                    {/* Spot vs Strike gauge */}
+                    <td className="px-3 py-2 text-right">
+                      {p.status === "open" && livePrice != null ? (
+                        <StrikeGauge
+                          spot={livePrice}
+                          strike={p.strike}
+                          strategy={p.strategy}
+                        />
+                      ) : (
+                        <span className="text-stone-400">—</span>
+                      )}
+                    </td>
+
+                    {/* Theta/day */}
                     <td className="px-3 py-2 text-right tabular-nums">
                       {(() => {
-                        if (p.status !== "open" || !optionGreeks) return <span className="text-stone-400">—</span>;
+                        if (p.status !== "open" || !optionGreeks)
+                          return <span className="text-stone-400">—</span>;
                         const rawTheta = optionGreeks.get(p.option_symbol);
-                        if (rawTheta == null) return <span className="text-stone-400">—</span>;
-                        const isShort = p.strategy === "cash_secured_put" || p.strategy === "covered_call";
+                        if (rawTheta == null)
+                          return <span className="text-stone-400">—</span>;
+                        const isShort =
+                          p.strategy === "cash_secured_put" ||
+                          p.strategy === "covered_call";
                         const dailyTheta = (isShort ? -1 : 1) * rawTheta * 100 * p.quantity;
                         return (
-                          <span className={dailyTheta >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}>
+                          <span
+                            className={
+                              dailyTheta >= 0
+                                ? "text-green-600 dark:text-green-400"
+                                : "text-red-600 dark:text-red-400"
+                            }
+                          >
                             {fmtUSD(dailyTheta)}
                           </span>
                         );
                       })()}
                     </td>
-                    <td className={`px-3 py-2 text-right tabular-nums font-semibold ${pnlClass}`}>
-                      {fmtUSD(totalPnl)}
+
+                    {/* % Captured */}
+                    <td className="px-3 py-2 text-right">
+                      <PctCaptured position={p} markPrice={markPrice} />
                     </td>
+
+                    {/* Status */}
                     <td className="px-3 py-2">
-                      <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[p.status]}`}>
+                      <span
+                        className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[p.status]}`}
+                      >
                         {STATUS_LABEL[p.status]}
                       </span>
                     </td>
-                    <td className="px-3 py-2 whitespace-nowrap text-stone-500">{fmtDate(p.open_date)}</td>
                   </tr>
+
                   {p.assigned_equity_trades?.map((t) => (
                     <tr
                       key={`${p.option_symbol}-assignment-${t.id}`}
                       className="bg-amber-50 dark:bg-amber-900/10"
                     >
-                      <td colSpan={8} className="px-3 py-1.5 text-xs text-stone-500">
-                        ↳{" "}
-                        {t.quantity} shares{" "}
-                        {t.side === "sell" ? "called away" : "put to you"}{" "}
-                        at {fmtUSD(t.avg_fill_price)} · {fmtDate(t.order_date)}
+                      <td colSpan={6} className="px-3 py-1.5 text-xs text-stone-500">
+                        ↳ {t.quantity} shares{" "}
+                        {t.side === "sell" ? "called away" : "put to you"} at{" "}
+                        {fmtUSD(t.avg_fill_price)} · {new Date(t.order_date + (t.order_date.length === 10 ? "T00:00:00" : "")).toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
                       </td>
                     </tr>
                   ))}
@@ -220,7 +393,7 @@ export default function OptionsTable({
             })}
             {visible.length === 0 && (
               <tr>
-                <td colSpan={8} className="px-3 py-8 text-center text-stone-500">
+                <td colSpan={6} className="px-3 py-8 text-center text-stone-500">
                   No positions match these filters.
                 </td>
               </tr>
