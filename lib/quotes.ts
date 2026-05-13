@@ -342,6 +342,29 @@ function toCandidate(
   return { expiration, dte, strike: opt.strike, bid, mid: (bid + ask) / 2, delta: opt.greeks?.delta ?? null, otm_pct, monthly_return_pct };
 }
 
+export type OptionQuote = {
+  strike: number;
+  option_type: string;
+  bid: number;
+  ask: number;
+  delta: number | null;
+};
+
+export async function getExpirations(symbol: string): Promise<string[]> {
+  return fetchExpirationsCached(symbol);
+}
+
+export async function getOptionChain(symbol: string, expiration: string): Promise<OptionQuote[]> {
+  const raw = await fetchOptionChainCached(symbol, expiration);
+  return raw.map((o) => ({
+    strike: o.strike,
+    option_type: o.option_type,
+    bid: o.bid ?? 0,
+    ask: o.ask ?? 0,
+    delta: o.greeks?.delta ?? null,
+  }));
+}
+
 export async function getWheelOptions(
   tickers: string[],
   quotes: Map<string, StockQuote>,
