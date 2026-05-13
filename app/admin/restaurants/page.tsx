@@ -7,6 +7,7 @@ import { fmt } from "@/lib/utils";
 import { deleteRestaurant } from "../actions";
 import DeleteButton from "../delete-button";
 import CuisineManager from "../add-cuisine-form";
+import LogVisitButton from "@/components/log-visit-modal";
 
 export const dynamic = "force-dynamic";
 
@@ -90,6 +91,17 @@ export default async function RestaurantsAdminPage() {
                   </td>
                   <td className="px-3 py-2 text-right">
                     <div className="flex items-center justify-end gap-2">
+                      <LogVisitButton
+                        restaurantId={r.id}
+                        restaurantName={r.name}
+                        currentRatings={{
+                          food: r.food,
+                          value: r.value,
+                          service: r.service,
+                          ambiance: r.ambiance,
+                          vegan_options: r.vegan_options,
+                        }}
+                      />
                       <Link
                         href={`/admin/${r.id}/edit`}
                         className="text-sm hover:underline"
