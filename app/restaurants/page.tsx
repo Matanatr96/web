@@ -10,7 +10,7 @@ export default function RestaurantsPage() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 max-w-2xl">
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4 max-w-2xl">
         <Link
           href="/restaurants/table"
           className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
@@ -33,6 +33,14 @@ export default function RestaurantsPage() {
         >
           <span className="font-semibold">Suggestions</span>
           <span className="text-sm text-stone-500">Answer a few questions, get a pick</span>
+        </Link>
+
+        <Link
+          href="/restaurants/receipt"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Split a Receipt</span>
+          <span className="text-sm text-stone-500">Snap a receipt, split items, see who owes what</span>
         </Link>
       </div>
     </div>
