@@ -82,6 +82,31 @@ type SleeperWaiverBudget = {
   amount: number;
 };
 
+type SleeperDraftMeta = {
+  draft_id: string;
+  status: string;       // "complete" | "drafting" | "pre_draft"
+  type: string;         // "snake" | "auction" | ...
+  season: string;
+  season_type: string;  // "regular" | "pre" | "post"
+  league_id: string;
+};
+
+type SleeperPickRaw = {
+  draft_id: string;
+  picked_by: string;    // user_id of drafter
+  player_id: string;
+  round: number;
+  pick_no: number;
+  metadata: {
+    position?: string;
+    team?: string;
+    first_name?: string;
+    last_name?: string;
+    adp_formatted?: string;
+    adp?: string;
+  };
+};
+
 type SleeperTransaction = {
   transaction_id: string;
   type: string;                 // "trade" | "waiver" | "free_agent" | ...
@@ -411,6 +436,44 @@ async function syncSeason(
     if (tErr) throw tErr;
   }
   console.log(`  trades: ${tradeRows.length} rows`);
+
+  // Draft picks
+  const drafts = await fetchJson<SleeperDraftMeta[]>(`${SLEEPER}/league/${leagueId}/drafts`);
+  const completedDrafts = drafts.filter(
+    (d) => d.status === "complete" && d.season_type === "regular",
+  );
+  for (const draft of completedDrafts) {
+    const rawPicks = await fetchJson<SleeperPickRaw[]>(`${SLEEPER}/draft/${draft.draft_id}/picks`);
+    const pickRows = rawPicks
+      .filter((p) => p.picked_by) // skip empty/computer picks
+      .map((p) => {
+        const meta = players.get(p.player_id);
+        const adpStr = p.metadata?.adp_formatted ?? p.metadata?.adp;
+        const firstName = p.metadata?.first_name ?? "";
+        const lastName = p.metadata?.last_name ?? "";
+        const fallbackName = [firstName, lastName].filter(Boolean).join(" ") || p.player_id;
+        return {
+          season,
+          league_id: leagueId,
+          draft_id: draft.draft_id,
+          owner_id: p.picked_by,
+          player_id: p.player_id,
+          player_name: meta?.name ?? fallbackName,
+          position: meta?.position ?? p.metadata?.position ?? null,
+          team: meta?.team ?? p.metadata?.team ?? null,
+          round: p.round,
+          pick_number: p.pick_no,
+          adp: adpStr ? parseFloat(adpStr) : null,
+        };
+      });
+    if (pickRows.length > 0) {
+      const { error: dpErr } = await db
+        .from("fantasy_draft_picks")
+        .upsert(pickRows, { onConflict: "draft_id,pick_number" });
+      if (dpErr) throw dpErr;
+    }
+    console.log(`  draft ${draft.draft_id}: ${pickRows.length} picks`);
+  }
 }
 
 async function main() {

@@ -350,6 +350,41 @@ export type WeeklySummary = {
   posted_to_signal_at: string | null;
 };
 
+export type FantasyDraftPick = {
+  id: number;
+  season: number;
+  league_id: string;
+  draft_id: string;
+  owner_id: string;
+  player_id: string;
+  player_name: string;
+  position: string | null;
+  team: string | null;
+  round: number;
+  pick_number: number;
+  adp: number | null;
+  created_at: string;
+};
+
+export type DraftPickGrade = {
+  player_id: string;
+  player_name: string;
+  position: string;
+  round: number;
+  pick_number: number;
+  season_pts: number;
+  replacement_pts: number;
+  vor: number;
+};
+
+export type DraftGradeRow = {
+  owner_id: string;
+  display_name: string;
+  total_vor: number;
+  letter_grade: string;
+  picks: DraftPickGrade[];
+};
+
 // Schedule Lottery: what would each owner's record have been under every other schedule?
 export type ScheduleLotteryCell = {
   wins: number;

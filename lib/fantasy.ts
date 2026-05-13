@@ -1,5 +1,8 @@
 import type {
   BlowoutRecord,
+  DraftGradeRow,
+  DraftPickGrade,
+  FantasyDraftPick,
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
@@ -707,4 +710,125 @@ export function buildRivalries(
 export function findRivalry(rivalries: Rivalry[], idA: string, idB: string): Rivalry | null {
   const k = pairKey(idA, idB);
   return rivalries.find((r) => pairKey(r.a_id, r.b_id) === k) ?? null;
+}
+
+const GRADED_POSITIONS = new Set(["QB", "RB", "WR", "TE"]);
+// Number of starters per position per team (12-team standard scoring).
+const STARTERS_PER_TEAM: Record<string, number> = { QB: 1, RB: 2, WR: 2, TE: 1 };
+
+/**
+ * Compute VOR-based draft grades for each owner in a season.
+ *
+ * VOR per pick = player_season_pts - replacement_level_pts_at_position
+ * Replacement level = points scored by the Nth player at that position, where
+ * N = starters_per_team × number of teams in the draft.
+ *
+ * Only QB/RB/WR/TE picks are graded; K and DEF are excluded.
+ * Player season totals are derived by summing across all rosters (trades don't
+ * affect the grade — we care about whether you *identified* the talent).
+ */
+export function computeDraftGrades(
+  picks: FantasyDraftPick[],
+  playerScores: FantasyPlayerScore[],
+  owners: FantasyOwner[],
+  season: number,
+): DraftGradeRow[] {
+  const seasonPicks = picks.filter((p) => p.season === season);
+  if (seasonPicks.length === 0) return [];
+
+  const teamCount = new Set(seasonPicks.map((p) => p.owner_id)).size;
+
+  // Aggregate season total per player across all rosters.
+  const playerTotals = new Map<string, number>();
+  for (const ps of playerScores) {
+    if (ps.season !== season) continue;
+    playerTotals.set(ps.player_id, (playerTotals.get(ps.player_id) ?? 0) + ps.points);
+  }
+
+  // Derive each player's position: prefer pick metadata, fall back to player_scores.
+  const playerPosition = new Map<string, string>();
+  for (const pick of seasonPicks) {
+    if (pick.position) playerPosition.set(pick.player_id, pick.position);
+  }
+  for (const ps of playerScores) {
+    if (ps.season === season && ps.position && !playerPosition.has(ps.player_id)) {
+      playerPosition.set(ps.player_id, ps.position);
+    }
+  }
+
+  // Build sorted points list per position from every player who scored >0.
+  const positionPts = new Map<string, number[]>();
+  for (const [playerId, pts] of playerTotals) {
+    const pos = playerPosition.get(playerId);
+    if (!pos || !GRADED_POSITIONS.has(pos)) continue;
+    const arr = positionPts.get(pos) ?? [];
+    arr.push(pts);
+    positionPts.set(pos, arr);
+  }
+
+  // Replacement level = points of the (N+1)th player sorted descending (0-indexed at N).
+  const replacementLevel = new Map<string, number>();
+  for (const pos of GRADED_POSITIONS) {
+    const n = (STARTERS_PER_TEAM[pos] ?? 1) * teamCount;
+    const sorted = (positionPts.get(pos) ?? []).sort((a, b) => b - a);
+    replacementLevel.set(pos, sorted[n] ?? sorted[sorted.length - 1] ?? 0);
+  }
+
+  // Grade each pick.
+  type InternalPick = DraftPickGrade & { owner_id: string };
+  const pickGrades: InternalPick[] = [];
+  for (const pick of seasonPicks) {
+    const pos = pick.position;
+    if (!pos || !GRADED_POSITIONS.has(pos)) continue;
+    const season_pts = playerTotals.get(pick.player_id) ?? 0;
+    const replacement_pts = replacementLevel.get(pos) ?? 0;
+    pickGrades.push({
+      owner_id: pick.owner_id,
+      player_id: pick.player_id,
+      player_name: pick.player_name,
+      position: pos,
+      round: pick.round,
+      pick_number: pick.pick_number,
+      season_pts,
+      replacement_pts,
+      vor: season_pts - replacement_pts,
+    });
+  }
+
+  // Group by owner and sum VOR.
+  const ownerById = new Map(owners.map((o) => [o.user_id, o]));
+  const ownerPickMap = new Map<string, InternalPick[]>();
+  for (const pg of pickGrades) {
+    const arr = ownerPickMap.get(pg.owner_id) ?? [];
+    arr.push(pg);
+    ownerPickMap.set(pg.owner_id, arr);
+  }
+
+  const rows: DraftGradeRow[] = [];
+  for (const [owner_id, ownerPicks] of ownerPickMap) {
+    const total_vor = ownerPicks.reduce((s, p) => s + p.vor, 0);
+    ownerPicks.sort((a, b) => b.vor - a.vor); // steals at top, busts at bottom
+    rows.push({
+      owner_id,
+      display_name: ownerById.get(owner_id)?.display_name ?? owner_id,
+      total_vor,
+      letter_grade: "",
+      picks: ownerPicks.map(({ owner_id: _oid, ...p }) => p),
+    });
+  }
+
+  rows.sort((a, b) => b.total_vor - a.total_vor);
+
+  // Letter grade by percentile rank (0 = best, 1 = worst).
+  const n = rows.length;
+  rows.forEach((row, i) => {
+    const pct = n > 1 ? i / (n - 1) : 0;
+    if (pct <= 0.15) row.letter_grade = "A";
+    else if (pct <= 0.40) row.letter_grade = "B";
+    else if (pct <= 0.60) row.letter_grade = "C";
+    else if (pct <= 0.85) row.letter_grade = "D";
+    else row.letter_grade = "F";
+  });
+
+  return rows;
 }
