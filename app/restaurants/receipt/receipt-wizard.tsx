@@ -45,11 +45,11 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
     setParsing(true);
     setParseError(null);
     try {
-      const base64 = await fileToBase64(file);
+      const base64 = await compressImage(file, 1200, 0.75);
       const resp = await fetch("/api/receipts/parse", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ image_base64: base64, media_type: file.type || "image/jpeg" }),
+        body: JSON.stringify({ image_base64: base64, media_type: "image/jpeg" }),
       });
       const json = await resp.json();
       if (!resp.ok) throw new Error(json.error ?? "parse failed");
@@ -631,16 +631,24 @@ function RestaurantPicker({
   );
 }
 
-function fileToBase64(file: File): Promise<string> {
+function compressImage(file: File, maxPx: number, quality: number): Promise<string> {
   return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => {
-      const result = reader.result as string;
-      const comma = result.indexOf(",");
-      resolve(comma >= 0 ? result.slice(comma + 1) : result);
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const scale = Math.min(1, maxPx / Math.max(img.width, img.height));
+      const canvas = document.createElement("canvas");
+      canvas.width = Math.round(img.width * scale);
+      canvas.height = Math.round(img.height * scale);
+      const ctx = canvas.getContext("2d")!;
+      ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+      const dataUrl = canvas.toDataURL("image/jpeg", quality);
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
     };
-    reader.onerror = () => reject(reader.error);
-    reader.readAsDataURL(file);
+    img.onerror = () => { URL.revokeObjectURL(url); reject(new Error("image load failed")); };
+    img.src = url;
   });
 }
 
