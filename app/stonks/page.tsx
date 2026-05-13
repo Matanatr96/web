@@ -7,6 +7,7 @@ import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
 import { annotateAssignments } from "@/lib/assignment";
 import { getLiveQuotes, getOpenOptionGreeks, getWatchlistQuotes } from "@/lib/quotes";
+import { buildRollOrHoldRows } from "@/lib/roll-or-hold";
 import TickerSection from "@/components/ticker-section";
 import SourcePicker from "@/components/source-picker";
 import SyncTradesButton from "@/components/sync-trades-button";
@@ -75,6 +76,29 @@ export default async function OptionsPage({
     : {};
 
   const pnlByTicker = new Map(pnl.map((p) => [p.ticker, p]));
+
+  // Build roll targets for positions expiring within 14 days.
+  // Merge option prices + stock quotes so buildRollOrHoldRows has both.
+  const capitalByTicker = new Map<string, number>(
+    pnl.map((p) => [p.ticker, p.avg_cost_basis ?? 0]),
+  );
+  const liveMarks = new Map<string, number>([
+    ...quotes.prices,
+    ...[...stockQuotes.entries()]
+      .filter(([, v]) => v.last != null)
+      .map(([k, v]) => [k, v.last!] as [string, number]),
+  ]);
+  const rollRows = source === "prod"
+    ? await buildRollOrHoldRows(positions, capitalByTicker, liveMarks)
+    : [];
+  const rollTargetBySymbol = new Map(
+    rollRows
+      .filter((r) => r.best_strike ?? r.same_strike)
+      .map((r) => {
+        const target = r.best_strike ?? r.same_strike!;
+        return [r.position.option_symbol, { strike: target.strike, dte: r.roll_dte! }];
+      }),
+  );
 
   // Per-position monthly return % — same formula as watchlist:
   // (premium_collected / capital_per_share) * (30 / originalDte) * 100
@@ -301,6 +325,7 @@ export default async function OptionsPage({
               monthlyReturn={positionMonthlyReturn}
               optionPrices={optionPrices}
               optionGreeks={optionGreeks}
+              rollTargets={rollTargetBySymbol}
               source={source}
             />
           ))}

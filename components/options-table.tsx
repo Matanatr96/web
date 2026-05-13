@@ -168,11 +168,13 @@ function ActionChipBadge({
   position,
   markPrice,
   livePrice,
+  rollTarget,
   source,
 }: {
   position: OptionsPosition;
   markPrice?: number;
   livePrice?: number;
+  rollTarget?: { strike: number; dte: number } | null;
   source?: TradeSource;
 }) {
   if (position.status !== "open") {
@@ -193,7 +195,7 @@ function ActionChipBadge({
         ? livePrice < position.strike
         : livePrice > position.strike;
 
-  const chip = deriveAction({ dte, isItm, pctCaptured, spot: livePrice ?? null, strike: position.strike });
+  const chip = deriveAction({ dte, isItm, pctCaptured, spot: livePrice ?? null, strike: position.strike }, rollTarget);
 
   const rollHref =
     chip.verb === "ROLL"
@@ -274,6 +276,7 @@ export default function OptionsTable({
   optionPrices,
   optionGreeks,
   livePrice,
+  rollTargets,
   statusFilter = "",
   source,
 }: {
@@ -282,6 +285,7 @@ export default function OptionsTable({
   optionPrices?: Record<string, number>;
   optionGreeks?: Map<string, number>;
   livePrice?: number;
+  rollTargets?: Map<string, { strike: number; dte: number }>;
   statusFilter?: string;
   source?: TradeSource;
 }) {
@@ -412,6 +416,7 @@ export default function OptionsTable({
                         position={p}
                         markPrice={markPrice}
                         livePrice={livePrice}
+                        rollTarget={rollTargets?.get(p.option_symbol)}
                         source={source}
                       />
                     </td>
