@@ -1,17 +1,19 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { isAdmin } from "@/lib/auth";
 import ReceiptWizard from "./receipt-wizard";
 
 export const dynamic = "force-dynamic";
 
 export default async function ReceiptPage() {
   const supabase = getSupabase();
-  const { data } = await supabase
-    .from("restaurants")
-    .select("id, name, city")
-    .order("name");
+  const admin = await isAdmin();
 
-  const restaurants = (data ?? []) as { id: number; name: string; city: string }[];
+  const restaurants = admin
+    ? ((
+        await supabase.from("restaurants").select("id, name, city").order("name")
+      ).data ?? []) as { id: number; name: string; city: string }[]
+    : [];
 
   return (
     <div className="max-w-3xl mx-auto">
@@ -24,7 +26,7 @@ export default async function ReceiptPage() {
       <p className="text-sm text-stone-500 mb-6">
         Snap a picture, assign items, see who owes what.
       </p>
-      <ReceiptWizard restaurants={restaurants} />
+      <ReceiptWizard restaurants={restaurants} isAdmin={admin} />
     </div>
   );
 }

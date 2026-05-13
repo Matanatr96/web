@@ -8,7 +8,7 @@ import { splitReceipt } from "@/lib/receipts";
 type Restaurant = { id: number; name: string; city: string };
 type Step = "upload" | "review" | "diners" | "assign" | "tip" | "summary";
 
-export default function ReceiptWizard({ restaurants }: { restaurants: Restaurant[] }) {
+export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: Restaurant[]; isAdmin: boolean }) {
   const [step, setStep] = useState<Step>("upload");
   const [parseModel, setParseModel] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
@@ -223,11 +223,13 @@ export default function ReceiptWizard({ restaurants }: { restaurants: Restaurant
         <p className="text-sm text-stone-500 mb-3">
           Edit anything the parser got wrong.
         </p>
-        <RestaurantPicker
-          restaurants={restaurants}
-          value={restaurantId}
-          onChange={setRestaurantId}
-        />
+        {isAdmin && (
+          <RestaurantPicker
+            restaurants={restaurants}
+            value={restaurantId}
+            onChange={setRestaurantId}
+          />
+        )}
         <table className="w-full text-sm mt-4">
           <thead>
             <tr className="text-left text-stone-500">
