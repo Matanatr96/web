@@ -1,6 +1,12 @@
 import { getExpirations, getOptionChain } from "./quotes";
 import type { OptionsPosition } from "./types";
 
+// Minimum monthly return a credit roll must clear to beat "let it expire and
+// redeploy capital." Late-DTE remaining-extrinsic rates can spike to nonsense
+// numbers, so we hurdle against an absolute target instead of comparing rates
+// directly. 2%/mo ≈ premium-selling baseline for CSP/CC.
+export const HURDLE_MONTHLY_RETURN_PCT = 2.0;
+
 export type RollOption = {
   strike: number;
   bid: number;
@@ -14,6 +20,10 @@ export type RollOrHoldRow = {
   dte_remaining: number;
   capital: number;
   current_mark: number | null;
+  spot: number | null;
+  is_itm: boolean | null;
+  remaining_extrinsic: number | null;
+  hold_monthly_return_pct: number | null;
   roll_expiration: string | null;
   roll_dte: number | null;
   same_strike: RollOption | null;
@@ -84,16 +94,46 @@ export async function buildRollOrHoldRows(
         (pos.strategy === "cash_secured_put" ? pos.strike : null);
 
       const current_mark = liveMarks.get(pos.option_symbol) ?? null;
+      const spot = liveMarks.get(pos.underlying) ?? null;
+
+      const is_itm =
+        spot == null
+          ? null
+          : pos.strategy === "cash_secured_put"
+            ? spot < pos.strike
+            : spot > pos.strike;
+
+      const intrinsic =
+        spot == null
+          ? null
+          : pos.strategy === "cash_secured_put"
+            ? Math.max(0, pos.strike - spot)
+            : Math.max(0, spot - pos.strike);
+
+      const remaining_extrinsic =
+        current_mark != null && intrinsic != null
+          ? Math.max(0, current_mark - intrinsic)
+          : null;
+
+      const effectiveCapital = capital ?? pos.strike;
+      const hold_monthly_return_pct =
+        remaining_extrinsic != null && dte_remaining > 0 && effectiveCapital > 0
+          ? (remaining_extrinsic / effectiveCapital) * (30 / dte_remaining) * 100
+          : null;
 
       const base: Omit<RollOrHoldRow, "roll_expiration" | "roll_dte" | "same_strike" | "best_strike"> = {
         position: pos,
         dte_remaining,
-        capital: capital ?? pos.strike,
+        capital: effectiveCapital,
         current_mark,
+        spot,
+        is_itm,
+        remaining_extrinsic,
+        hold_monthly_return_pct,
       };
 
       if (!capital) {
-        return { ...base, capital: pos.strike, roll_expiration: null, roll_dte: null, same_strike: null, best_strike: null };
+        return { ...base, roll_expiration: null, roll_dte: null, same_strike: null, best_strike: null };
       }
 
       try {

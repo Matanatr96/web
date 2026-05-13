@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import type { TickerPnL, OptionsPosition } from "@/lib/types";
+import type { TickerPnL, OptionsPosition, TradeSource } from "@/lib/types";
 import OptionsTable from "@/components/options-table";
 
 function fmtUSD(n: number) {
@@ -17,6 +17,7 @@ export default function TickerSection({
   monthlyReturn,
   optionPrices,
   optionGreeks,
+  source,
 }: {
   ticker: string;
   livePrice?: number;
@@ -26,6 +27,7 @@ export default function TickerSection({
   monthlyReturn: Record<string, number>;
   optionPrices: Record<string, number>;
   optionGreeks: Map<string, number>;
+  source?: TradeSource;
 }) {
   const [statusFilter, setStatusFilter] = useState("");
 
@@ -98,6 +100,7 @@ export default function TickerSection({
           optionPrices={optionPrices}
           optionGreeks={optionGreeks}
           statusFilter={statusFilter}
+          source={source}
         />
       ) : (
         <p className="text-sm text-stone-400">No options activity.</p>
