@@ -47,7 +47,7 @@ export type OptionsTrade = {
   updated_at: string;
 };
 
-export type TradeSource = "prod" | "sandbox";
+export type TradeSource = "prod";
 
 export type EquityTrade = {
   id: number;

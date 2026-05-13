@@ -44,7 +44,7 @@ function sell(overrides: Partial<EquityTrade> = {}): EquityTrade {
   return {
     id: nextEquityId++,
     tradier_id: nextEquityId,
-    source: "sandbox",
+    source: "prod",
     symbol: "AAPL",
     side: "sell",
     quantity: 100,

@@ -2,7 +2,7 @@
 
 import React, { useMemo, useState } from "react";
 import Link from "next/link";
-import type { OptionsPosition, TradeSource } from "@/lib/types";
+import type { OptionsPosition } from "@/lib/types";
 import { deriveAction, type ActionTone } from "@/lib/action-chip";
 
 function dteFromExpiration(iso: string): number {
@@ -169,13 +169,11 @@ function ActionChipBadge({
   markPrice,
   livePrice,
   rollTarget,
-  source,
 }: {
   position: OptionsPosition;
   markPrice?: number;
   livePrice?: number;
   rollTarget?: { strike: number; dte: number } | null;
-  source?: TradeSource;
 }) {
   if (position.status !== "open") {
     return (
@@ -199,7 +197,7 @@ function ActionChipBadge({
 
   const rollHref =
     chip.verb === "ROLL"
-      ? `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}#${position.option_symbol}`
+      ? `/stonks/roll-or-hold#${position.option_symbol}`
       : undefined;
 
   const inner = (
@@ -278,7 +276,6 @@ export default function OptionsTable({
   livePrice,
   rollTargets,
   statusFilter = "",
-  source,
 }: {
   positions: OptionsPosition[];
   monthlyReturn?: Record<string, number>;
@@ -287,7 +284,6 @@ export default function OptionsTable({
   livePrice?: number;
   rollTargets?: Map<string, { strike: number; dte: number }>;
   statusFilter?: string;
-  source?: TradeSource;
 }) {
   const [sortKey, setSortKey] = useState<SortKey>("open_date");
   const [sortDir, setSortDir] = useState<SortDir>("desc");
@@ -417,7 +413,6 @@ export default function OptionsTable({
                         markPrice={markPrice}
                         livePrice={livePrice}
                         rollTarget={rollTargets?.get(p.option_symbol)}
-                        source={source}
                       />
                     </td>
                   </tr>

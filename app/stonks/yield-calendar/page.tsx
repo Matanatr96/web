@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { hasStonksAccess, isAdmin } from "@/lib/auth";
+import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { OptionsTrade, TradeSource } from "@/lib/types";
+import type { OptionsTrade } from "@/lib/types";
 import {
   buildYieldCalendar,
   premiumPercentile,
@@ -25,25 +25,16 @@ function fmtPct(n: number): string {
   return `${Math.round(n * 100)}%`;
 }
 
-export default async function YieldCalendarPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ source?: string }>;
-}) {
+export default async function YieldCalendarPage() {
   if (!(await hasStonksAccess())) {
     redirect("/stonks/login");
   }
-
-  const adminUser = await isAdmin();
-  const { source: sourceParam } = await searchParams;
-  const source: TradeSource =
-    adminUser && sourceParam === "sandbox" ? "sandbox" : "prod";
 
   const db = getSupabase();
   const { data: optionsData } = await db
     .from("options_trades")
     .select("*")
-    .eq("source", source)
+    .eq("source", "prod")
     .order("order_date", { ascending: false });
 
   const trades = (optionsData ?? []) as OptionsTrade[];
@@ -80,7 +71,7 @@ export default async function YieldCalendarPage({
           </p>
         </div>
         <Link
-          href={`/stonks${source === "sandbox" ? "?source=sandbox" : ""}`}
+          href="/stonks"
           className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 self-start whitespace-nowrap"
         >
           ← Back to trades

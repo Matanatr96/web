@@ -3,19 +3,19 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 
-export default function SyncTradesButton({ source }: { source: "prod" | "sandbox" }) {
+export default function SyncTradesButton() {
   const router = useRouter();
   const [state, setState] = useState<"idle" | "loading" | "done" | "error">("idle");
   const [message, setMessage] = useState("");
 
-  async function handleSync() {
+  async function handleSync(full: boolean) {
     setState("loading");
     setMessage("");
     try {
       const res = await fetch("/api/options/sync", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ sandbox: source === "sandbox" }),
+        body: JSON.stringify({ full }),
       });
       const json = await res.json();
       if (!res.ok) throw new Error(json.error ?? "Unknown error");
@@ -34,11 +34,20 @@ export default function SyncTradesButton({ source }: { source: "prod" | "sandbox
   return (
     <div className="flex items-center gap-2">
       <button
-        onClick={handleSync}
+        onClick={() => handleSync(false)}
         disabled={state === "loading"}
         className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-50 transition"
       >
-        {state === "loading" ? "Syncing…" : "Sync trades"}
+        {state === "loading" ? "Syncing…" : "Sync new"}
+      </button>
+
+      <button
+        onClick={() => handleSync(true)}
+        disabled={state === "loading"}
+        title="Re-fetch every order Tradier returns and upsert — slower but catches anything the incremental sync missed."
+        className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 disabled:opacity-50 transition"
+      >
+        Sync all
       </button>
 
       {message && (

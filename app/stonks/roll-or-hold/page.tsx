@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { hasStonksAccess, isAdmin } from "@/lib/auth";
+import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { EquityTrade, OptionsTrade, TradeSource } from "@/lib/types";
+import type { EquityTrade, OptionsTrade } from "@/lib/types";
 import { buildPositions } from "@/lib/positions";
 import { buildTickerPnL } from "@/lib/pnl";
 import { getLiveQuotes } from "@/lib/quotes";
@@ -32,23 +32,15 @@ function strategyLabel(s: string) {
   return s === "cash_secured_put" ? "CSP" : s === "covered_call" ? "CC" : s;
 }
 
-export default async function RollOrHoldPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ source?: string }>;
-}) {
+export default async function RollOrHoldPage() {
   if (!(await hasStonksAccess())) {
     redirect("/stonks/login");
   }
 
-  const adminUser = await isAdmin();
-  const { source: sourceParam } = await searchParams;
-  const source: TradeSource = adminUser && sourceParam === "sandbox" ? "sandbox" : "prod";
-
   const db = getSupabase();
   const [{ data: optionsData }, { data: equityData }] = await Promise.all([
-    db.from("options_trades").select("*").eq("source", source).order("order_date", { ascending: false }),
-    db.from("equity_trades").select("*").eq("source", source).order("order_date", { ascending: true }),
+    db.from("options_trades").select("*").eq("source", "prod").order("order_date", { ascending: false }),
+    db.from("equity_trades").select("*").eq("source", "prod").order("order_date", { ascending: true }),
   ]);
 
   const trades = (optionsData ?? []) as OptionsTrade[];
@@ -60,9 +52,7 @@ export default async function RollOrHoldPage({
   const openOptionSymbols = openPositions.map((p) => p.option_symbol);
   const openUnderlyings = Array.from(new Set(openPositions.map((p) => p.underlying)));
 
-  const quotes = source === "prod"
-    ? await getLiveQuotes(openUnderlyings, openOptionSymbols)
-    : { prices: new Map<string, number>(), available: false };
+  const quotes = await getLiveQuotes(openUnderlyings, openOptionSymbols);
 
   // Capital per ticker: CSP uses strike, CC uses avg cost basis.
   const capitalByTicker = new Map<string, number>(
@@ -83,7 +73,7 @@ export default async function RollOrHoldPage({
           </p>
         </div>
         <Link
-          href={`/stonks${source === "sandbox" ? "?source=sandbox" : ""}`}
+          href="/stonks"
           className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 self-start whitespace-nowrap"
         >
           ← Back to trades

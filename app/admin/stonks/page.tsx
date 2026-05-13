@@ -147,26 +147,19 @@ export default async function StonksAdminPage() {
         <p className="text-sm text-stone-500 mb-4">
           Download raw trades as CSV for manual verification.
         </p>
-        <div className="flex flex-wrap gap-4">
-          {(["prod", "sandbox"] as const).map((source) => (
-            <div key={source} className="flex flex-col gap-2">
-              <p className="text-xs uppercase tracking-wide text-stone-400 font-medium">{source}</p>
-              <div className="flex gap-2">
-                <a
-                  href={`/api/options/export?source=${source}&table=options`}
-                  className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
-                >
-                  Options trades ↓
-                </a>
-                <a
-                  href={`/api/options/export?source=${source}&table=equity`}
-                  className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
-                >
-                  Equity trades ↓
-                </a>
-              </div>
-            </div>
-          ))}
+        <div className="flex gap-2">
+          <a
+            href="/api/options/export?table=options"
+            className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+          >
+            Options trades ↓
+          </a>
+          <a
+            href="/api/options/export?table=equity"
+            className="px-3 py-2 text-sm rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 transition"
+          >
+            Equity trades ↓
+          </a>
         </div>
       </section>
 

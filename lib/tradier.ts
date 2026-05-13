@@ -1,7 +1,6 @@
 import type { OptionStrategy, OptionSide, OptionType } from "./types";
 
 const PROD_BASE = "https://api.tradier.com/v1";
-const SANDBOX_BASE = "https://sandbox.tradier.com/v1";
 
 function requireEnv(name: string): string {
   const v = process.env[name];
@@ -9,14 +8,12 @@ function requireEnv(name: string): string {
   return v;
 }
 
-function getConfig(sandbox: boolean) {
-  return sandbox
-    ? { base: SANDBOX_BASE, key: requireEnv("TRADIER_SANDBOX_KEY"), account: requireEnv("TRADIER_SANDBOX_ACCOUNT") }
-    : { base: PROD_BASE,    key: requireEnv("TRADIER_API_KEY"),     account: requireEnv("TRADIER_ACCOUNT_ID") };
+function getConfig() {
+  return { base: PROD_BASE, key: requireEnv("TRADIER_API_KEY"), account: requireEnv("TRADIER_ACCOUNT_ID") };
 }
 
-async function tradierFetch<T>(path: string, sandbox: boolean): Promise<T> {
-  const { base, key } = getConfig(sandbox);
+async function tradierFetch<T>(path: string): Promise<T> {
+  const { base, key } = getConfig();
   const url = `${base}${path}`;
   let res: Response;
   try {
@@ -105,7 +102,7 @@ function inferStrategy(order: TradierOrder): OptionStrategy | null {
 
 export type NormalizedOrder = {
   tradier_id: number;
-  source: "prod" | "sandbox";
+  source: "prod";
   underlying: string;
   option_symbol: string;
   option_type: OptionType;
@@ -122,7 +119,7 @@ export type NormalizedOrder = {
 
 export type NormalizedEquityOrder = {
   tradier_id: number;
-  source: "prod" | "sandbox";
+  source: "prod";
   symbol: string;
   side: "buy" | "sell";
   quantity: number;
@@ -132,11 +129,10 @@ export type NormalizedEquityOrder = {
   transaction_date: string | null;
 };
 
-export async function fetchEquityOrders(sandbox = false): Promise<NormalizedEquityOrder[]> {
-  const { account } = getConfig(sandbox);
+export async function fetchEquityOrders(): Promise<NormalizedEquityOrder[]> {
+  const { account } = getConfig();
   const data = await tradierFetch<TradierOrdersResponse>(
     `/accounts/${account}/orders`,
-    sandbox,
   );
 
   if (!data.orders || data.orders === "null") return [];
@@ -147,7 +143,7 @@ export async function fetchEquityOrders(sandbox = false): Promise<NormalizedEqui
     .filter((o) => o.class === "equity" && o.status?.toLowerCase() === "filled")
     .map((o): NormalizedEquityOrder => ({
       tradier_id:      o.id,
-      source:          sandbox ? "sandbox" : "prod",
+      source:          "prod",
       symbol:          o.symbol.toUpperCase(),
       side:            o.side.toLowerCase() as "buy" | "sell",
       quantity:        o.exec_quantity || o.quantity,
@@ -158,11 +154,10 @@ export async function fetchEquityOrders(sandbox = false): Promise<NormalizedEqui
     }));
 }
 
-export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
-  const { account } = getConfig(sandbox);
+export async function fetchOrders(): Promise<NormalizedOrder[]> {
+  const { account } = getConfig();
   const data = await tradierFetch<TradierOrdersResponse>(
     `/accounts/${account}/orders`,
-    sandbox,
   );
 
   if (!data.orders || data.orders === "null") return [];
@@ -173,7 +168,6 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
   return raw
     .filter((o) => o.class === "option" && o.status?.toLowerCase() === "filled")
     .flatMap((o): NormalizedOrder[] => {
-      // Sandbox omits option_type/strike/expiration_date — parse from option_symbol.
       const parsed = parseOptionSymbol(o.option_symbol ?? "");
       if (!parsed && !o.option_type) {
         console.warn("[fetchOrders] could not parse option_symbol, dropping trade:", JSON.stringify(o));
@@ -191,7 +185,7 @@ export async function fetchOrders(sandbox = false): Promise<NormalizedOrder[]> {
       }
       return [{
         tradier_id:      o.id,
-        source:          sandbox ? "sandbox" : "prod",
+        source:          "prod",
         underlying:      o.symbol.toUpperCase(),
         option_symbol:   o.option_symbol,
         option_type:     resolved.option_type as OptionType,

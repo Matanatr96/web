@@ -13,7 +13,7 @@ function makeTrade(
   return {
     id:               nextId++,
     tradier_id:       nextId++,
-    source:           "sandbox",
+    source:           "prod",
     underlying:       "AAPL",
     option_symbol:    "AAPL260101C00150000",
     option_type:      "call",
