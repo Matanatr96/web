@@ -26,14 +26,13 @@ export async function GET(req: NextRequest) {
     }
 
     const { searchParams } = req.nextUrl;
-    const source = searchParams.get("source") === "sandbox" ? "sandbox" : "prod";
     const table  = searchParams.get("table") === "equity" ? "equity_trades" : "options_trades";
 
     const db = getServiceClient();
     const { data, error } = await db
       .from(table)
       .select("*")
-      .eq("source", source)
+      .eq("source", "prod")
       .order("order_date", { ascending: true });
 
     if (error) {
@@ -41,7 +40,7 @@ export async function GET(req: NextRequest) {
     }
 
     const csv = toCsv((data ?? []) as Record<string, unknown>[]);
-    const filename = `${table}_${source}_${new Date().toISOString().slice(0, 10)}.csv`;
+    const filename = `${table}_${new Date().toISOString().slice(0, 10)}.csv`;
 
     return new NextResponse(csv, {
       headers: {

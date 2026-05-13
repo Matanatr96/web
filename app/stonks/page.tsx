@@ -2,14 +2,13 @@ import Link from "next/link";
 import { redirect } from "next/navigation";
 import { hasStonksAccess, isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { OptionsTrade, EquityTrade, TradeSource } from "@/lib/types";
+import type { OptionsTrade, EquityTrade } from "@/lib/types";
 import { buildTickerPnL } from "@/lib/pnl";
 import { buildPositions } from "@/lib/positions";
 import { annotateAssignments } from "@/lib/assignment";
 import { getLiveQuotes, getOpenOptionGreeks, getWatchlistQuotes } from "@/lib/quotes";
 import { buildRollOrHoldRows } from "@/lib/roll-or-hold";
 import TickerSection from "@/components/ticker-section";
-import SourcePicker from "@/components/source-picker";
 import SyncTradesButton from "@/components/sync-trades-button";
 
 export const dynamic = "force-dynamic";
@@ -18,24 +17,18 @@ function fmtUSD(n: number) {
   return n.toLocaleString("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2 });
 }
 
-export default async function OptionsPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ source?: string }>;
-}) {
+export default async function OptionsPage() {
   if (!(await hasStonksAccess())) {
     redirect("/stonks/login");
   }
 
   const adminUser = await isAdmin();
-  const { source: sourceParam } = await searchParams;
-  const source: TradeSource = adminUser && sourceParam === "sandbox" ? "sandbox" : "prod";
 
   const db = getSupabase();
 
   const [{ data: optionsData }, { data: equityData }] = await Promise.all([
-    db.from("options_trades").select("*").eq("source", source).order("order_date", { ascending: false }),
-    db.from("equity_trades").select("*").eq("source", source).order("order_date", { ascending: true }),
+    db.from("options_trades").select("*").eq("source", "prod").order("order_date", { ascending: false }),
+    db.from("equity_trades").select("*").eq("source", "prod").order("order_date", { ascending: true }),
   ]);
 
   const trades    = (optionsData ?? []) as OptionsTrade[];
@@ -54,15 +47,9 @@ export default async function OptionsPage({
   ).sort();
 
   const [quotes, optionGreeks, stockQuotes] = await Promise.all([
-    source === "prod"
-      ? getLiveQuotes(equitySymbols, openOptionSymbols)
-      : Promise.resolve({ prices: new Map<string, number>(), available: false }),
-    source === "prod"
-      ? getOpenOptionGreeks(openOptionSymbols)
-      : Promise.resolve(new Map<string, number>()),
-    source === "prod"
-      ? getWatchlistQuotes(underlyingTickers)
-      : Promise.resolve(new Map<string, { last: number | null }>()),
+    getLiveQuotes(equitySymbols, openOptionSymbols),
+    getOpenOptionGreeks(openOptionSymbols),
+    getWatchlistQuotes(underlyingTickers),
   ]);
 
   const pnl = buildTickerPnL(equity, positions, quotes.available ? quotes.prices : undefined);
@@ -88,9 +75,7 @@ export default async function OptionsPage({
       .filter(([, v]) => v.last != null)
       .map(([k, v]) => [k, v.last!] as [string, number]),
   ]);
-  const rollRows = source === "prod"
-    ? await buildRollOrHoldRows(positions, capitalByTicker, liveMarks)
-    : [];
+  const rollRows = await buildRollOrHoldRows(positions, capitalByTicker, liveMarks);
   const rollTargetBySymbol = new Map(
     rollRows
       .filter((r) => r.best_strike ?? r.same_strike)
@@ -176,8 +161,7 @@ export default async function OptionsPage({
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <SourcePicker current={source} isAdmin={adminUser} />
-          {adminUser && <SyncTradesButton source={source} />}
+          {adminUser && <SyncTradesButton />}
         </div>
       </div>
 
@@ -237,31 +221,31 @@ export default async function OptionsPage({
             <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
               {[
                 {
-                  href: `/stonks/heatmap${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  href: "/stonks/heatmap",
                   icon: "⬡",
                   name: "Strike Heatmap",
                   desc: "Strike distribution across open positions",
                 },
                 {
-                  href: `/stonks/wheels${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  href: "/stonks/wheels",
                   icon: "🏆",
                   name: "Hall of Fame",
                   desc: "Closed wheel cycles by annualized return",
                 },
                 {
-                  href: `/stonks/dte-oracle${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  href: "/stonks/dte-oracle",
                   icon: "◎",
                   name: "DTE Oracle",
                   desc: "Median return by days-to-expiry bucket",
                 },
                 {
-                  href: `/stonks/yield-calendar${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  href: "/stonks/yield-calendar",
                   icon: "◫",
                   name: "Yield Calendar",
                   desc: "Weekly premium collected, heatmap view",
                 },
                 {
-                  href: `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  href: "/stonks/roll-or-hold",
                   icon: "⟳",
                   name: "Roll-or-Hold",
                   desc: "Roll yield vs. hold comparison for expiring positions",
@@ -326,7 +310,6 @@ export default async function OptionsPage({
               optionPrices={optionPrices}
               optionGreeks={optionGreeks}
               rollTargets={rollTargetBySymbol}
-              source={source}
             />
           ))}
         </>

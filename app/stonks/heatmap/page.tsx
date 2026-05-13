@@ -1,31 +1,23 @@
 import Link from "next/link";
 import { redirect } from "next/navigation";
-import { hasStonksAccess, isAdmin } from "@/lib/auth";
+import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
-import type { OptionsTrade, TradeSource } from "@/lib/types";
+import type { OptionsTrade } from "@/lib/types";
 import { buildHeatmapPoints } from "@/lib/strike-heatmap";
 import StrikeHeatmap from "@/components/strike-heatmap";
 
 export const dynamic = "force-dynamic";
 
-export default async function HeatmapPage({
-  searchParams,
-}: {
-  searchParams: Promise<{ source?: string }>;
-}) {
+export default async function HeatmapPage() {
   if (!(await hasStonksAccess())) {
     redirect("/stonks/login");
   }
-
-  const adminUser = await isAdmin();
-  const { source: sourceParam } = await searchParams;
-  const source: TradeSource = adminUser && sourceParam === "sandbox" ? "sandbox" : "prod";
 
   const db = getSupabase();
   const { data: optionsData } = await db
     .from("options_trades")
     .select("*")
-    .eq("source", source)
+    .eq("source", "prod")
     .order("order_date", { ascending: false });
 
   const trades = (optionsData ?? []) as OptionsTrade[];
@@ -43,7 +35,7 @@ export default async function HeatmapPage({
           </p>
         </div>
         <Link
-          href={`/stonks${source === "sandbox" ? "?source=sandbox" : ""}`}
+          href="/stonks"
           className="text-sm text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 self-start"
         >
           ← Back to trades

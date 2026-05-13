@@ -5,13 +5,12 @@ import { isAdmin } from "@/lib/auth";
 
 async function getLatestOrderDate(
   table: "options_trades" | "equity_trades",
-  source: string,
 ): Promise<Date | null> {
   const db = getServiceClient();
   const { data } = await db
     .from(table)
     .select("order_date")
-    .eq("source", source)
+    .eq("source", "prod")
     .order("order_date", { ascending: false })
     .limit(1)
     .single();
@@ -25,19 +24,19 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
     }
 
-    const { sandbox = false } = await req.json().catch(() => ({}));
-    const source = sandbox ? "sandbox" : "prod";
+    const { full = false } = await req.json().catch(() => ({}));
     const db = getServiceClient();
 
     // Fetch from Tradier and get our latest known dates in parallel.
+    // In `full` mode, skip the watermark and upsert every order Tradier returns —
+    // the (tradier_id, source) unique constraint dedupes existing rows.
     const [optionsOrders, equityOrders, latestOptions, latestEquity] = await Promise.all([
-      fetchOrders(sandbox),
-      fetchEquityOrders(sandbox),
-      getLatestOrderDate("options_trades", source),
-      getLatestOrderDate("equity_trades", source),
+      fetchOrders(),
+      fetchEquityOrders(),
+      full ? Promise.resolve(null) : getLatestOrderDate("options_trades"),
+      full ? Promise.resolve(null) : getLatestOrderDate("equity_trades"),
     ]);
 
-    // Filter to only records newer than what we already have.
     const newOptions = latestOptions
       ? optionsOrders.filter((o) => new Date(o.order_date) > latestOptions)
       : optionsOrders;
