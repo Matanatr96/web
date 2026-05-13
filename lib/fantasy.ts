@@ -721,6 +721,7 @@ const STARTERS_PER_TEAM: Record<string, number> = { QB: 1, RB: 2, WR: 2, TE: 1 }
 const pickWeight = (round: number, pickNumber: number): number =>
   (1 / Math.pow(2, round - 1)) * Math.exp(-0.04 * (pickNumber - 1));
 
+
 /**
  * Compute VOR-based draft grades for each owner in a season.
  *
