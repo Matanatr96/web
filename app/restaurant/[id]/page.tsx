@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { fmt, ratingColorClass, slugify } from "@/lib/utils";
+import { computeSelfAverage, type ReceiptRow } from "@/lib/restaurant-receipts";
 
 export const dynamic = "force-dynamic";
 
@@ -14,14 +15,27 @@ export default async function RestaurantDetail({ params }: Props) {
   const numericId = Number(id);
   if (!Number.isFinite(numericId)) notFound();
 
-  const { data, error } = await getSupabase()
-    .from("restaurants")
-    .select(RESTAURANT_SELECT)
-    .eq("id", numericId)
-    .single();
+  const supabase = getSupabase();
+  const [{ data, error }, { data: receiptData }] = await Promise.all([
+    supabase
+      .from("restaurants")
+      .select(RESTAURANT_SELECT)
+      .eq("id", numericId)
+      .single(),
+    supabase
+      .from("receipts")
+      .select(
+        "id, visited_on, subtotal, tax, tip, total, created_at, items:receipt_items(id, name, price, qty, assignments:receipt_item_diners(diner_id, share, diner:diners(name)))",
+      )
+      .eq("restaurant_id", numericId)
+      .order("visited_on", { ascending: false, nullsFirst: false })
+      .order("created_at", { ascending: false }),
+  ]);
 
   if (error || !data) notFound();
   const r = mapRestaurantRow(data);
+  const receipts = (receiptData ?? []) as ReceiptRow[];
+  const anushSpend = computeSelfAverage(receipts, "Anush");
 
   const rows: { label: string; value: number | null }[] = [
     { label: "Food", value: r.food },
@@ -73,6 +87,17 @@ export default async function RestaurantDetail({ params }: Props) {
             {fmt(r.overall, 2)}
           </span>
         </div>
+        {anushSpend && (
+          <div className="mt-3 text-sm text-stone-500">
+            Avg spend per visit:{" "}
+            <span className="font-medium text-stone-700 dark:text-stone-300 tabular-nums">
+              ${anushSpend.avg.toFixed(2)}
+            </span>{" "}
+            <span className="text-stone-400">
+              · {anushSpend.count} visit{anushSpend.count === 1 ? "" : "s"}
+            </span>
+          </div>
+        )}
         <dl className="grid grid-cols-1 sm:grid-cols-2 gap-3 mt-6">
           {rows.map(({ label, value }) => (
             <div
@@ -107,6 +132,39 @@ export default async function RestaurantDetail({ params }: Props) {
         </div>
       )}
 
+      {receipts.length > 0 && (
+        <div className="rounded-md border border-stone-200 dark:border-stone-800 p-6 bg-white dark:bg-stone-900 mb-6">
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-sm uppercase tracking-wide text-stone-500">Visits</h2>
+            <Link
+              href="/restaurants/receipt"
+              className="text-xs text-stone-500 hover:underline"
+            >
+              + new receipt
+            </Link>
+          </div>
+          <ul className="divide-y divide-stone-100 dark:divide-stone-800">
+            {receipts.map((rc) => {
+              const date = rc.visited_on ?? rc.created_at.slice(0, 10);
+              const diners = uniqueDinerNames(rc);
+              return (
+                <li key={rc.id} className="py-2 flex items-baseline justify-between text-sm">
+                  <div>
+                    <span className="font-medium tabular-nums">{date}</span>
+                    {diners.length > 0 && (
+                      <span className="text-stone-500"> · {diners.join(", ")}</span>
+                    )}
+                  </div>
+                  <span className="tabular-nums text-stone-700 dark:text-stone-300">
+                    ${Number(rc.total).toFixed(2)}
+                  </span>
+                </li>
+              );
+            })}
+          </ul>
+        </div>
+      )}
+
       {r.note ? (
         <div className="rounded-md border border-stone-200 dark:border-stone-800 p-6 bg-white dark:bg-stone-900">
           <h2 className="text-sm uppercase tracking-wide text-stone-500 mb-2">
@@ -121,4 +179,14 @@ export default async function RestaurantDetail({ params }: Props) {
       )}
     </article>
   );
+}
+
+function uniqueDinerNames(rc: ReceiptRow): string[] {
+  const set = new Set<string>();
+  for (const it of rc.items) {
+    for (const a of it.assignments) {
+      if (a.diner?.name) set.add(a.diner.name);
+    }
+  }
+  return Array.from(set);
 }
