@@ -99,6 +99,7 @@ export default function TickerSection({
           monthlyReturn={monthlyReturn}
           optionPrices={optionPrices}
           optionGreeks={optionGreeks}
+          livePrice={livePrice}
           statusFilter={statusFilter}
           source={source}
         />
