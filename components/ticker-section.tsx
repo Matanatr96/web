@@ -17,6 +17,7 @@ export default function TickerSection({
   monthlyReturn,
   optionPrices,
   optionGreeks,
+  rollTargets,
   source,
 }: {
   ticker: string;
@@ -27,6 +28,7 @@ export default function TickerSection({
   monthlyReturn: Record<string, number>;
   optionPrices: Record<string, number>;
   optionGreeks: Map<string, number>;
+  rollTargets?: Map<string, { strike: number; dte: number }>;
   source?: TradeSource;
 }) {
   const [statusFilter, setStatusFilter] = useState("open");
@@ -100,6 +102,7 @@ export default function TickerSection({
           optionPrices={optionPrices}
           optionGreeks={optionGreeks}
           livePrice={livePrice}
+          rollTargets={rollTargets}
           statusFilter={statusFilter}
           source={source}
         />
