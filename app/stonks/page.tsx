@@ -236,6 +236,12 @@ export default async function OptionsPage({
                   name: "Yield Calendar",
                   desc: "Weekly premium collected, heatmap view",
                 },
+                {
+                  href: `/stonks/roll-or-hold${source === "sandbox" ? "?source=sandbox" : ""}`,
+                  icon: "⟳",
+                  name: "Roll-or-Hold",
+                  desc: "Roll yield vs. hold comparison for expiring positions",
+                },
               ].map(({ href, icon, name, desc }) => (
                 <Link
                   key={href}
