@@ -129,15 +129,34 @@ export type NormalizedEquityOrder = {
   transaction_date: string | null;
 };
 
-export async function fetchEquityOrders(): Promise<NormalizedEquityOrder[]> {
+// Fetches all pages of /accounts/{id}/orders. Tradier paginates this endpoint
+// (default 25 per page) so a single call can silently miss orders for accounts
+// with many recent fills.
+//
+// IMPORTANT: /orders only returns the CURRENT market session's orders per
+// Tradier docs. Once a day rolls over, trades fall off this endpoint. The DB
+// retains them via prior syncs, but if a trade is opened and closed without a
+// sync happening in between, both legs will be permanently invisible. Migrating
+// to /accounts/{id}/history is a follow-up that needs the real response shape.
+async function fetchAllOrders(): Promise<TradierOrder[]> {
   const { account } = getConfig();
-  const data = await tradierFetch<TradierOrdersResponse>(
-    `/accounts/${account}/orders`,
-  );
+  const pageSize = 100;
+  const all: TradierOrder[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const data = await tradierFetch<TradierOrdersResponse>(
+      `/accounts/${account}/orders?page=${page}&limit=${pageSize}&includeTags=true`,
+    );
+    if (!data.orders || data.orders === "null") break;
+    const batch = toArray(data.orders.order);
+    if (batch.length === 0) break;
+    all.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+  return all;
+}
 
-  if (!data.orders || data.orders === "null") return [];
-
-  const raw = toArray(data.orders.order);
+export async function fetchEquityOrders(): Promise<NormalizedEquityOrder[]> {
+  const raw = await fetchAllOrders();
 
   return raw
     .filter((o) => o.class === "equity" && o.status?.toLowerCase() === "filled")
@@ -154,16 +173,132 @@ export async function fetchEquityOrders(): Promise<NormalizedEquityOrder[]> {
     }));
 }
 
-export async function fetchOrders(): Promise<NormalizedOrder[]> {
+// --- /history endpoint: backfill source for past-session trades --------------
+
+type TradierHistoryEvent = {
+  amount: number;
+  date: string;
+  type: string;          // "trade", "option", "dividend", etc.
+  trade?: {
+    commission: number;
+    description: string;
+    price: number;
+    quantity: number;    // negative = sell, positive = buy
+    symbol: string;
+    trade_type: string;  // "option", "equity"
+  };
+};
+
+type TradierHistoryResponse = {
+  history: { event: TradierHistoryEvent | TradierHistoryEvent[] } | "null";
+};
+
+// Deterministic synthetic tradier_id for /history-sourced rows. /history events
+// don't include an order id, so we hash the trade's invariants into a negative
+// 32-bit number that won't collide with real Tradier order ids (always positive).
+// Re-running backfill is idempotent because the same trade produces the same id.
+export function syntheticHistoryId(
+  symbol: string,
+  isoDate: string,
+  quantity: number,
+  price: number,
+): number {
+  const s = `hist|${symbol}|${isoDate}|${quantity}|${price}`;
+  let h = 0 >>> 0;
+  for (let i = 0; i < s.length; i++) {
+    h = (((h * 31) >>> 0) + s.charCodeAt(i)) >>> 0;
+  }
+  return -(h + 1);
+}
+
+// Fetch all option-trade history events. /history paginates; iterate until empty.
+export async function fetchHistoricalOptionOrders(): Promise<NormalizedOrder[]> {
   const { account } = getConfig();
-  const data = await tradierFetch<TradierOrdersResponse>(
-    `/accounts/${account}/orders`,
-  );
+  const pageSize = 100;
+  const events: TradierHistoryEvent[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const data = await tradierFetch<TradierHistoryResponse>(
+      `/accounts/${account}/history?page=${page}&limit=${pageSize}&type=option`,
+    );
+    if (!data.history || data.history === "null") break;
+    const batch = toArray(data.history.event);
+    if (batch.length === 0) break;
+    events.push(...batch);
+    if (batch.length < pageSize) break;
+  }
 
-  if (!data.orders || data.orders === "null") return [];
+  // Group by option_symbol so we can infer open vs close from chronological
+  // order of the qty-sign within each symbol.
+  type Item = { ev: TradierHistoryEvent; symbol: string; date: string; qty: number; price: number };
+  const items: Item[] = [];
+  for (const ev of events) {
+    if (ev.type !== "trade" || !ev.trade) continue;
+    if (ev.trade.trade_type?.toLowerCase() !== "option") continue;
+    const symbol = ev.trade.symbol;
+    if (!symbol) continue;
+    items.push({ ev, symbol, date: ev.date, qty: ev.trade.quantity, price: ev.trade.price });
+  }
+  items.sort((a, b) => a.date.localeCompare(b.date));
 
-  const raw = toArray(data.orders.order);
-  console.log("[fetchOrders] raw orders from Tradier:", JSON.stringify(raw, null, 2));
+  const seenOpenSide = new Map<string, "buy" | "sell">();
+  const out: NormalizedOrder[] = [];
+  for (const it of items) {
+    const parsed = parseOptionSymbol(it.symbol);
+    if (!parsed) continue;
+    const qtyAbs = Math.abs(it.qty);
+    if (!qtyAbs) continue;
+
+    const sign: "buy" | "sell" = it.qty > 0 ? "buy" : "sell";
+    const opened = seenOpenSide.get(it.symbol);
+
+    let side: OptionSide;
+    let strategy: OptionStrategy;
+    if (!opened) {
+      // First event seen for this symbol — assume it's the open.
+      seenOpenSide.set(it.symbol, sign);
+      if (sign === "sell") {
+        side = "sell_to_open";
+        strategy = parsed.option_type === "put" ? "cash_secured_put" : "covered_call";
+      } else {
+        side = "buy_to_open";
+        strategy = parsed.option_type === "put" ? "long_put" : "long_call";
+      }
+    } else if (sign !== opened) {
+      // Opposite sign of opening — this is the close.
+      side = opened === "sell" ? "buy_to_close" : "sell_to_close";
+      strategy = opened === "sell"
+        ? (parsed.option_type === "put" ? "cash_secured_put" : "covered_call")
+        : (parsed.option_type === "put" ? "long_put" : "long_call");
+    } else {
+      // Same sign as the open — scaling into the position. Treat as additional open.
+      side = sign === "sell" ? "sell_to_open" : "buy_to_open";
+      strategy = sign === "sell"
+        ? (parsed.option_type === "put" ? "cash_secured_put" : "covered_call")
+        : (parsed.option_type === "put" ? "long_put" : "long_call");
+    }
+
+    out.push({
+      tradier_id:      syntheticHistoryId(it.symbol, it.date, it.qty, it.price),
+      source:          "prod",
+      underlying:      it.symbol.replace(/\d{6}[CP]\d{8}$/, "").toUpperCase(),
+      option_symbol:   it.symbol,
+      option_type:     parsed.option_type as OptionType,
+      strategy,
+      side,
+      strike:          parsed.strike,
+      expiration_date: parsed.expiration_date,
+      quantity:        qtyAbs,
+      avg_fill_price:  it.price,
+      status:          "filled",
+      order_date:      it.date,
+      transaction_date: it.date,
+    });
+  }
+  return out;
+}
+
+export async function fetchOrders(): Promise<NormalizedOrder[]> {
+  const raw = await fetchAllOrders();
 
   return raw
     .filter((o) => o.class === "option" && o.status?.toLowerCase() === "filled")

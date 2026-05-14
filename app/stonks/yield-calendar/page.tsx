@@ -3,6 +3,7 @@ import { redirect } from "next/navigation";
 import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
 import type { OptionsTrade } from "@/lib/types";
+import { buildPositions } from "@/lib/positions";
 import {
   buildYieldCalendar,
   premiumPercentile,
@@ -38,7 +39,8 @@ export default async function YieldCalendarPage() {
     .order("order_date", { ascending: false });
 
   const trades = (optionsData ?? []) as OptionsTrade[];
-  const weeks = buildYieldCalendar(trades, { weeks: 52 });
+  const positions = buildPositions(trades);
+  const weeks = buildYieldCalendar(trades, { weeks: 52, positions });
 
   const totalPremium = weeks.reduce((s, w) => s + w.premium, 0);
   const activeWeeks = weeks.filter((w) => w.premium > 0).length;

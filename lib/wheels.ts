@@ -121,11 +121,14 @@ export function buildWheelCycles(
       }
 
       // Sum premium from every CC opened on/after startDate and on/before endDate.
+      // Skip OTHER assigned CCs — they will (or already did) terminate their own
+      // wheel cycle, so their premium belongs there, not here. The exit CC for
+      // this cycle is kept explicitly.
       const cycleCCs = ccs.filter(
         (c) =>
           dateOnly(c.open_date) >= startDate &&
           dateOnly(c.open_date) <= endDate &&
-          (c.option_symbol === exitCC?.option_symbol || !usedCcIds.has(c.option_symbol) || c.status !== "assigned"),
+          (c.status !== "assigned" || c.option_symbol === exitCC?.option_symbol),
       );
 
       const ccPremium = cycleCCs.reduce(
@@ -140,7 +143,10 @@ export function buildWheelCycles(
       const capital = csp.strike * 100 * csp.quantity;
       const daysHeld = daysBetween(startDate, endDate);
       const returnPct = capital > 0 ? totalProfit / capital : 0;
-      const annualized = returnPct * (365 / daysHeld);
+      // Floor the annualization denominator at 7 days. A 1-day wheel scaled to
+      // 365x dominates the DTE Oracle's median and crowns outliers as the
+      // "sweet spot". days_held is still reported as the true holding period.
+      const annualized = returnPct * (365 / Math.max(7, daysHeld));
 
       const cspOpenDate = dateOnly(csp.open_date);
       const dteAtOpen = Math.max(
