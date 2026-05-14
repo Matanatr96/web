@@ -1,15 +1,28 @@
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { OptionsPosition } from "@/lib/types";
 import { deriveAction, type ActionTone } from "@/lib/action-chip";
 
-function dteFromExpiration(iso: string): number {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+// Returns DTE (days-to-expiry) relative to the given `today`. Pass a stable
+// client-side `today` (see useClientToday) to avoid hydration mismatches when
+// rendered from a server component.
+function dteFromExpiration(iso: string, today: Date): number {
   const exp = new Date(iso + "T00:00:00");
   return Math.round((exp.getTime() - today.getTime()) / 86_400_000);
+}
+
+// Reads "today at local midnight" only on the client to avoid SSR/CSR
+// timezone & clock divergence. Returns null on the server pass.
+function useClientToday(): Date | null {
+  const [today, setToday] = useState<Date | null>(null);
+  useEffect(() => {
+    const t = new Date();
+    t.setHours(0, 0, 0, 0);
+    setToday(t);
+  }, []);
+  return today;
 }
 
 type SortKey = "expiration_date" | "net_premium" | "status" | "open_date";
@@ -64,8 +77,16 @@ function fmtUSD(n: number) {
 
 // Shrinking bar showing time remaining. Renders below the contract label for open positions.
 function FuseBar({ openDate, expirationDate }: { openDate: string; expirationDate: string }) {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
+  const today = useClientToday();
+  if (!today) {
+    // Server pass + initial client paint: render a static placeholder so the
+    // server-rendered HTML matches the client's first render exactly.
+    return (
+      <div className="mt-1 flex items-center gap-1.5">
+        <div className="w-14 h-1 rounded-full bg-stone-200 dark:bg-stone-700" />
+      </div>
+    );
+  }
   const open = new Date(openDate);
   const exp = new Date(expirationDate + "T00:00:00");
   const originalDte = Math.max(1, Math.round((exp.getTime() - open.getTime()) / 86_400_000));
@@ -143,6 +164,14 @@ function StrikeGauge({
 }
 
 function computePctCaptured(position: OptionsPosition, markPrice?: number): number | null {
+  // % captured = "fraction of max profit realized so far". This is only
+  // meaningful for SHORT options (CSP/CC) where max profit is the credit
+  // collected at open. Long options have unbounded upside, so the metric
+  // doesn't apply — return null.
+  const isShort =
+    position.strategy === "cash_secured_put" || position.strategy === "covered_call";
+  if (!isShort) return null;
+
   const maxProfit = position.premium_collected * position.quantity * 100;
   if (position.status === "open") {
     if (markPrice != null) {
@@ -175,6 +204,7 @@ function ActionChipBadge({
   livePrice?: number;
   rollTarget?: { strike: number; dte: number } | null;
 }) {
+  const today = useClientToday();
   if (position.status !== "open") {
     return (
       <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${STATUS_CLASS[position.status]}`}>
@@ -182,8 +212,12 @@ function ActionChipBadge({
       </span>
     );
   }
+  if (!today) {
+    // Server pass placeholder — keeps SSR output stable until client mounts.
+    return <span className="px-2 py-1 rounded-md text-xs font-medium bg-stone-100 dark:bg-stone-800 text-stone-400">…</span>;
+  }
 
-  const dte = dteFromExpiration(position.expiration_date);
+  const dte = dteFromExpiration(position.expiration_date, today);
   const pctCaptured = computePctCaptured(position, markPrice);
 
   const isItm =

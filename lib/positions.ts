@@ -17,14 +17,41 @@ export function buildPositions(trades: OptionsTrade[]): OptionsPosition[] {
     const closeSide = isLong ? "sell_to_close" : "buy_to_close";
 
     const opens = legs.filter((l) => l.side === openSide);
-    if (opens.length === 0) continue;
+    const close = legs.find((l) => l.side === closeSide);
+
+    // Orphan close: a close-side leg exists but the opening trade was never
+    // ingested (common when /orders' current-session window dropped the open
+    // before sync ran). Surface as a partial position so the user can spot it
+    // and investigate, instead of silently dropping the symbol.
+    if (opens.length === 0) {
+      if (!close) continue;
+      // Infer long vs short from the close side. buy_to_close implies a prior
+      // short; sell_to_close implies a prior long. legs.some at the top of the
+      // loop only sees `buy_to_open` so isLong is false here either way — re-derive.
+      const orphanIsLong = close.side === "sell_to_close";
+      positions.push({
+        underlying:        close.underlying,
+        option_symbol:     symbol,
+        strategy:          close.strategy,
+        strike:            close.strike,
+        expiration_date:   close.expiration_date,
+        quantity:          close.quantity,
+        premium_collected: orphanIsLong ? close.avg_fill_price : 0,
+        premium_paid:      orphanIsLong ? null : close.avg_fill_price,
+        net_premium:       0, // unknown — opening fill is missing
+        status:            "closed",
+        open_date:         close.order_date,
+        close_date:        close.order_date,
+        orphan_open:       true,
+      });
+      continue;
+    }
     opens.sort((a, b) => a.order_date.localeCompare(b.order_date));
 
     const totalQty = opens.reduce((sum, l) => sum + l.quantity, 0);
     const weightedAvgFill =
       opens.reduce((sum, l) => sum + l.avg_fill_price * l.quantity, 0) / totalQty;
 
-    const close = legs.find((l) => l.side === closeSide);
     const firstOpen = opens[0];
 
     const premiumCollected = isLong ? (close?.avg_fill_price ?? 0) : weightedAvgFill;

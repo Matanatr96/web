@@ -131,6 +131,10 @@ export type OptionsPosition = {
   close_date: string | null;
   unrealized_pl?: number;            // (mark - entry) * qty * 100, sign-correct per long/short
   assigned_equity_trades?: EquityTrade[]; // heuristically matched equity trades from assignment
+  // True when the opening trade is missing from the database — only a close-side
+  // leg was found. The position is surfaced (instead of silently dropped) so the
+  // user can investigate; premium/strategy fields are inferred from the close.
+  orphan_open?: boolean;
 };
 
 // Fantasy football (Sleeper).

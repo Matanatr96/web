@@ -123,11 +123,21 @@ export default async function OptionsPage() {
     new Set([...positions.map((p) => p.underlying), ...pnl.map((p) => p.ticker)]),
   ).sort();
 
-  const totalPremium      = positions.reduce((sum, p) => sum + p.net_premium * p.quantity * 100, 0);
+  // Net Premium = realized premium across closed/expired/assigned positions.
+  // Open positions are excluded — their net_premium is unrealized (and for
+  // longs it's intentionally negative, which would mislead the aggregate).
+  const totalPremium      = positions.reduce(
+    (sum, p) => p.status === "open" ? sum : sum + p.net_premium * p.quantity * 100,
+    0,
+  );
   const totalRealizedPnL  = pnl.reduce((sum, p) => sum + p.total_realized_pl, 0);
   const openCount         = positions.filter((p) => p.status === "open").length;
   const closedCount       = positions.filter((p) => p.status !== "open").length;
-  const winCount          = positions.filter((p) => p.status !== "open" && p.net_premium > 0).length;
+  // Assignment is a loss outcome even when net_premium (the credit kept) is positive,
+  // because the equity P/L from being put/called swamps the option credit.
+  const winCount          = positions.filter(
+    (p) => p.status !== "open" && p.status !== "assigned" && p.net_premium > 0,
+  ).length;
   const winRate           = closedCount > 0 ? Math.round((winCount / closedCount) * 100) : null;
   const hasUnrealized     = quotes.available;
   const totalUnrealizedPnL = hasUnrealized
@@ -150,6 +160,10 @@ export default async function OptionsPage() {
     : null;
 
   const isEmpty = positions.length === 0 && pnl.length === 0;
+  // Positions where the opening leg is missing from the DB — usually because
+  // /orders' current-session window dropped the open before a sync ran. Surface
+  // them so the user can investigate (and add a /history backfill if needed).
+  const orphans = positions.filter((p) => p.orphan_open);
 
   return (
     <div className="flex flex-col gap-10 max-w-5xl mx-auto px-4">
@@ -164,6 +178,24 @@ export default async function OptionsPage() {
           {adminUser && <SyncTradesButton />}
         </div>
       </div>
+
+      {orphans.length > 0 && (
+        <div className="rounded-lg border border-amber-300 bg-amber-50 dark:border-amber-700 dark:bg-amber-900/20 px-4 py-3 text-sm">
+          <div className="font-semibold text-amber-800 dark:text-amber-300">
+            ⚠ {orphans.length} orphan position{orphans.length !== 1 ? "s" : ""} detected
+          </div>
+          <p className="mt-1 text-amber-900/80 dark:text-amber-200/80">
+            A closing trade exists but the opening trade is missing from the database. Usually means a sync didn&apos;t run on the day the position was opened. P/L is unknown until the open is backfilled.
+          </p>
+          <ul className="mt-2 text-xs text-amber-900/80 dark:text-amber-200/80 font-mono list-disc pl-5">
+            {orphans.map((p) => (
+              <li key={p.option_symbol}>
+                {p.option_symbol} · {p.underlying} · close fill ${p.premium_paid ?? p.premium_collected}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {isEmpty ? (
         <p className="text-sm text-stone-500">

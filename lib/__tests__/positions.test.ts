@@ -97,9 +97,14 @@ describe("buildPositions — short positions", () => {
     expect(pos.status).toBe("assigned");
   });
 
-  it("does not create a position when there is no open leg", () => {
+  it("surfaces an orphan_open position when only a close-side leg exists", () => {
     const trades = [makeTrade({ side: "buy_to_close", avg_fill_price: 0.50 })];
-    expect(buildPositions(trades)).toHaveLength(0);
+    const positions = buildPositions(trades);
+    expect(positions).toHaveLength(1);
+    expect(positions[0].orphan_open).toBe(true);
+    expect(positions[0].status).toBe("closed");
+    expect(positions[0].premium_paid).toBe(0.50);
+    expect(positions[0].net_premium).toBe(0);
   });
 
   it("sets correct underlying, strike, expiration_date, quantity from the open leg", () => {

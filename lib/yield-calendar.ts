@@ -1,4 +1,4 @@
-import type { OptionsTrade, OptionStrategy } from "@/lib/types";
+import type { OptionsTrade, OptionStrategy, OptionsPosition } from "@/lib/types";
 
 // One week-bucket in the yield calendar.
 export type YieldWeek = {
@@ -27,10 +27,19 @@ export type YieldWeek = {
 // ISO week of `endDate` (UTC). The returned array is chronological.
 export function buildYieldCalendar(
   trades: OptionsTrade[],
-  options: { weeks?: number; endDate?: Date } = {},
+  options: { weeks?: number; endDate?: Date; positions?: OptionsPosition[] } = {},
 ): YieldWeek[] {
   const weeks = options.weeks ?? 52;
   const endDate = options.endDate ?? new Date();
+
+  // Map option_symbol -> derived position status. Per-trade `status` is always
+  // "filled" once an order fills and does NOT reflect whether the position has
+  // terminated. Use the position-level status (open / closed / expired /
+  // assigned) computed by buildPositions for win-rate accounting.
+  const statusBySymbol = new Map<string, OptionsPosition["status"]>();
+  for (const p of options.positions ?? []) {
+    statusBySymbol.set(p.option_symbol, p.status);
+  }
 
   // Build the grid of week anchors first so empty weeks render correctly.
   const lastMonday = isoWeekMonday(endDate);
@@ -80,11 +89,14 @@ export function buildYieldCalendar(
     bucket.strategies[t.strategy] = (bucket.strategies[t.strategy] ?? 0) + qty;
     openWeekBySymbol.set(t.option_symbol, key);
 
-    // Win-rate: count this sell-to-open contract once it has a terminal status.
-    const status = (t.status ?? "").toLowerCase();
-    if (isClosedStatus(status)) {
+    // Win-rate: count this sell-to-open contract once its POSITION has a
+    // terminal status. Skip when positions aren't supplied (callers haven't
+    // migrated) — leaves winRate null rather than reporting 100% by accident.
+    const posStatus = statusBySymbol.get(t.option_symbol);
+    if (posStatus && posStatus !== "open") {
       bucket.closedCount += qty;
-      if (isWinStatus(status)) bucket.wins += qty;
+      // Assignment is a loss outcome: the option went ITM and was exercised.
+      if (posStatus !== "assigned") bucket.wins += qty;
     }
   }
 
@@ -107,23 +119,6 @@ export function buildYieldCalendar(
   }
 
   return grid;
-}
-
-// Sell-to-open is "won" when it expires worthless or is bought back (closed).
-// Brokers report these as "expired" or "filled"/"closed"; we accept any closed
-// status other than "assigned" as a win since assignment means it went ITM.
-function isClosedStatus(status: string): boolean {
-  return (
-    status === "expired" ||
-    status === "filled" ||
-    status === "closed" ||
-    status === "assigned"
-  );
-}
-
-function isWinStatus(status: string): boolean {
-  // Anything closed that isn't assignment counts as keeping the premium.
-  return status === "expired" || status === "filled" || status === "closed";
 }
 
 // --- ISO week helpers (UTC) -------------------------------------------------
