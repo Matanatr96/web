@@ -54,6 +54,8 @@ export function buildTickerPnL(
     openPremium: number;
     unrealized: number;
     cspCollateral: number;
+    hasOpenPositions: boolean;
+    hasAnyMark: boolean;
   };
   const optionsByTicker = new Map<string, OptionsState>();
 
@@ -63,11 +65,14 @@ export function buildTickerPnL(
       openPremium: 0,
       unrealized: 0,
       cspCollateral: 0,
+      hasOpenPositions: false,
+      hasAnyMark: false,
     };
     const dollars = p.net_premium * p.quantity * 100;
 
     if (p.status === "open") {
       o.openPremium += dollars;
+      o.hasOpenPositions = true;
 
       if (p.strategy === "cash_secured_put") {
         o.cspCollateral += p.strike * 100 * p.quantity;
@@ -86,6 +91,7 @@ export function buildTickerPnL(
               : (entry - mark) * p.quantity * 100;
             p.unrealized_pl = pl;
             o.unrealized += pl;
+            o.hasAnyMark = true;
           }
         }
       }
@@ -113,6 +119,8 @@ export function buildTickerPnL(
         openPremium: 0,
         unrealized: 0,
         cspCollateral: 0,
+        hasOpenPositions: false,
+        hasAnyMark: false,
       };
 
       const equityTotalCost = eq.shares * eq.avgCost;
@@ -134,13 +142,23 @@ export function buildTickerPnL(
 
       if (prices) {
         const currentPrice = prices.get(ticker);
-        const unrealizedEquity =
-          eq.shares > 0 && currentPrice !== undefined
-            ? eq.shares * (currentPrice - eq.avgCost)
-            : 0;
-        result.unrealized_equity_pl = unrealizedEquity;
-        result.unrealized_options_pl = op.unrealized;
-        result.total_pl = result.total_realized_pl + unrealizedEquity + op.unrealized;
+        // Equity: known 0 when no shares held; otherwise needs a quote.
+        if (eq.shares === 0) {
+          result.unrealized_equity_pl = 0;
+        } else if (currentPrice !== undefined) {
+          result.unrealized_equity_pl = eq.shares * (currentPrice - eq.avgCost);
+        }
+        // Options: known 0 when no open positions; if open positions exist,
+        // only report when we actually got at least one mark.
+        if (!op.hasOpenPositions) {
+          result.unrealized_options_pl = 0;
+        } else if (op.hasAnyMark) {
+          result.unrealized_options_pl = op.unrealized;
+        }
+        result.total_pl =
+          result.total_realized_pl +
+          (result.unrealized_equity_pl ?? 0) +
+          (result.unrealized_options_pl ?? 0);
       }
 
       return result;

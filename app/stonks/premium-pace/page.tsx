@@ -4,7 +4,7 @@ import { hasStonksAccess } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
 import { buildPositions } from "@/lib/positions";
 import { buildTickerPnL } from "@/lib/pnl";
-import { fetchDatedHistoryCached } from "@/lib/quotes";
+import { fetchDatedHistoryCached, getLiveQuotes } from "@/lib/quotes";
 import { computePremiumPace } from "@/lib/premium-pace";
 import type { EquityTrade, OptionsTrade } from "@/lib/types";
 
@@ -49,7 +49,26 @@ export default async function PremiumPacePage() {
     fetchDatedHistoryCached("SPY", startDate, today),
   ]);
 
-  const pnl = buildTickerPnL(equityTrades, positions);
+  // First pass: build pnl without quotes so we know which tickers have open
+  // equity or open option exposure. We need quotes for both to mark to market.
+  const pnlDry = buildTickerPnL(equityTrades, positions);
+  const openOptionSymbols = positions
+    .filter((p) => p.status === "open")
+    .map((p) => p.option_symbol);
+  const underlyings = Array.from(
+    new Set([
+      ...positions.filter((p) => p.status === "open").map((p) => p.underlying),
+      ...pnlDry.filter((t) => t.shares_open > 0).map((t) => t.ticker),
+    ]),
+  );
+
+  const quotes = await getLiveQuotes(underlyings, openOptionSymbols);
+
+  const pnl = buildTickerPnL(
+    equityTrades,
+    positions,
+    quotes.available ? quotes.prices : undefined,
+  );
   const pace = computePremiumPace(pnl, spyHistory, startDate);
 
   const winning = pace ? pace.deltaPct >= 0 : false;
@@ -98,9 +117,12 @@ export default async function PremiumPacePage() {
           </dl>
 
           <p className="text-xs text-stone-400">
-            Your return = (options realized P&L + open premium collected + equity realized P&L) ÷ total capital tied up,
+            Your return = (realized P&L + mark-to-market on open positions) ÷ total capital tied up,
             annualized over {Math.round(pace.daysElapsed)} days.
-            SPY return uses Tradier daily closing prices over the same window, annualized identically.
+            {quotes.available
+              ? " Open options and shares are marked to live quotes."
+              : " Market closed: open shares use cost basis and open options assume premium collected (expire worthless)."}
+            {" "}SPY return uses Tradier daily closing prices over the same window, annualized identically.
           </p>
         </>
       )}

@@ -54,10 +54,13 @@ export default async function RollOrHoldPage() {
 
   const quotes = await getLiveQuotes(openUnderlyings, openOptionSymbols);
 
-  // Capital per ticker: CSP uses strike, CC uses avg cost basis.
-  const capitalByTicker = new Map<string, number>(
-    pnl.map((p) => [p.ticker, p.avg_cost_basis ?? 0]),
-  );
+  // Cost basis for covered-call capital — only include tickers where we
+  // actually own shares with a positive cost. CSPs handle capital themselves
+  // (strike) inside buildRollOrHoldRows, so they don't need to be in this map.
+  const capitalByTicker = new Map<string, number>();
+  for (const p of pnl) {
+    if (p.avg_cost_basis > 0) capitalByTicker.set(p.ticker, p.avg_cost_basis);
+  }
 
   const rows = await buildRollOrHoldRows(positions, capitalByTicker, quotes.prices);
 

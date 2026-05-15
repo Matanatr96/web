@@ -340,7 +340,17 @@ describe("buildTickerPnL — options", () => {
     // Prices map has the equity ticker but not the option symbol
     const prices = new Map([["AAPL", 155]]);
     const [result] = buildTickerPnL([], [pos], prices);
-    expect(result.unrealized_options_pl).toBe(0);
+    // Open position exists but no mark — leave undefined so callers can
+    // fall back to options_open_premium instead of treating it as $0 P/L.
+    expect(result.unrealized_options_pl).toBeUndefined();
+  });
+
+  it("leaves unrealized_equity_pl undefined when shares are open but no quote is available", () => {
+    const trade = makeTrade({ symbol: "AAPL", side: "buy", quantity: 10, avg_fill_price: 100 });
+    // Empty prices map — quote lookup misses
+    const prices = new Map<string, number>();
+    const [result] = buildTickerPnL([trade], [], prices);
+    expect(result.unrealized_equity_pl).toBeUndefined();
   });
 
   it("combines equity and options for the same ticker", () => {

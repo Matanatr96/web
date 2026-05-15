@@ -89,9 +89,13 @@ export async function buildRollOrHoldRows(
       const exp = new Date(pos.expiration_date + "T00:00:00");
       const dte_remaining = Math.max(0, Math.round((exp.getTime() - today.getTime()) / 86_400_000));
 
+      // CSP capital is always the strike (cash collateral) — independent of
+      // whether you own shares. CC capital is the cost basis of the underlying
+      // shares; if we don't know that, we can't compute hold/roll returns.
       const capital =
-        capitalByTicker.get(pos.underlying) ??
-        (pos.strategy === "cash_secured_put" ? pos.strike : null);
+        pos.strategy === "cash_secured_put"
+          ? pos.strike
+          : capitalByTicker.get(pos.underlying) || null;
 
       const current_mark = liveMarks.get(pos.option_symbol) ?? null;
       const spot = liveMarks.get(pos.underlying) ?? null;
@@ -115,7 +119,7 @@ export async function buildRollOrHoldRows(
           ? Math.max(0, current_mark - intrinsic)
           : null;
 
-      const effectiveCapital = capital ?? pos.strike;
+      const effectiveCapital = capital ?? 0;
       const hold_monthly_return_pct =
         remaining_extrinsic != null && dte_remaining > 0 && effectiveCapital > 0
           ? (remaining_extrinsic / effectiveCapital) * (30 / dte_remaining) * 100
