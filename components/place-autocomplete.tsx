@@ -103,8 +103,8 @@ function AutocompleteInner({
         components.find((c) => c.types.includes("sublocality")) ??
         components.find((c) => c.types.includes("administrative_area_level_2"));
       const pickedName = place.displayName ?? "";
-      const p = place as unknown as { primaryTypeDisplayName?: { text: string }; primaryType?: string };
-      const googleType = p.primaryTypeDisplayName?.text;
+      const p = place as unknown as { primaryTypeDisplayName?: string; primaryType?: string };
+      const googleType = p.primaryTypeDisplayName ?? undefined;
       const googleTypeRaw = p.primaryType;
       setName(pickedName);
       onTextChangeRef.current?.(pickedName);
