@@ -17,8 +17,16 @@ export function computePremiumPace(
 ): PremiumPaceData | null {
   if (pnl.length === 0 || spyHistory.length < 2) return null;
 
+  // Mark-to-market when live quotes are available — matches SPY's price-based
+  // return for an apples-to-apples comparison. Falls back per-ticker to
+  // "premium expires worthless" / no equity markup when a mark is missing.
   const totalGain = pnl.reduce(
-    (s, t) => s + t.options_realized_pl + t.options_open_premium + t.equity_realized_pl,
+    (s, t) =>
+      s +
+      t.options_realized_pl +
+      t.equity_realized_pl +
+      (t.unrealized_options_pl ?? t.options_open_premium) +
+      (t.unrealized_equity_pl ?? 0),
     0,
   );
   const totalCapital = pnl.reduce((s, t) => s + t.total_capital_tied_up, 0);
