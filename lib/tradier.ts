@@ -212,6 +212,46 @@ export function syntheticHistoryId(
 }
 
 // Fetch all option-trade history events. /history paginates; iterate until empty.
+export async function fetchHistoricalEquityOrders(): Promise<NormalizedEquityOrder[]> {
+  const { account } = getConfig();
+  const pageSize = 100;
+  const events: TradierHistoryEvent[] = [];
+  for (let page = 1; page <= 50; page++) {
+    const data = await tradierFetch<TradierHistoryResponse>(
+      `/accounts/${account}/history?page=${page}&limit=${pageSize}&type=trade`,
+    );
+    if (!data.history || data.history === "null") break;
+    const batch = toArray(data.history.event);
+    if (batch.length === 0) break;
+    events.push(...batch);
+    if (batch.length < pageSize) break;
+  }
+
+  const out: NormalizedEquityOrder[] = [];
+  for (const ev of events) {
+    if (ev.type !== "trade" || !ev.trade) continue;
+    if (ev.trade.trade_type?.toLowerCase() !== "equity") continue;
+    const symbol = ev.trade.symbol?.toUpperCase();
+    if (!symbol) continue;
+    const qty = ev.trade.quantity;
+    if (!qty) continue;
+    const qtyAbs = Math.abs(qty);
+    const side: "buy" | "sell" = qty > 0 ? "buy" : "sell";
+    out.push({
+      tradier_id:      syntheticHistoryId(symbol, ev.date, qty, ev.trade.price),
+      source:          "prod",
+      symbol,
+      side,
+      quantity:        qtyAbs,
+      avg_fill_price:  ev.trade.price,
+      status:          "filled",
+      order_date:      ev.date,
+      transaction_date: ev.date,
+    });
+  }
+  return out;
+}
+
 export async function fetchHistoricalOptionOrders(): Promise<NormalizedOrder[]> {
   const { account } = getConfig();
   const pageSize = 100;

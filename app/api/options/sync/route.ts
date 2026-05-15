@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
-import { fetchOrders, fetchEquityOrders, fetchHistoricalOptionOrders } from "@/lib/tradier";
+import { fetchOrders, fetchEquityOrders, fetchHistoricalOptionOrders, fetchHistoricalEquityOrders } from "@/lib/tradier";
 import { getServiceClient } from "@/lib/supabase";
 import { isAdmin } from "@/lib/auth";
 
@@ -33,31 +33,34 @@ export async function POST(req: NextRequest) {
     // We only insert when a matching real trade isn't already present, to avoid
     // creating phantom duplicates of trades that /orders also captured.
     if (backfill) {
-      let inserted = 0;
-      let skipped = 0;
+      let optionsInserted = 0;
+      let optionsSkipped = 0;
+      let equityInserted = 0;
+      let equitySkipped = 0;
       try {
-        const histOrders = await fetchHistoricalOptionOrders();
-        // Pull existing rows once so we can skip dupes locally.
-        const { data: existing } = await db
+        const [histOrders, histEquity] = await Promise.all([
+          fetchHistoricalOptionOrders(),
+          fetchHistoricalEquityOrders(),
+        ]);
+
+        // --- Options backfill ---
+        const { data: existingOptions } = await db
           .from("options_trades")
           .select("option_symbol, side, quantity, avg_fill_price")
           .eq("source", "prod");
-        const existingKeys = new Set<string>(
-          (existing ?? []).map(
+        const existingOptionKeys = new Set<string>(
+          (existingOptions ?? []).map(
             (r) => `${r.option_symbol}|${r.side}|${r.quantity}|${Number(r.avg_fill_price).toFixed(4)}`,
           ),
         );
-        const newRows = histOrders.filter((o) => {
+        const newOptionRows = histOrders.filter((o) => {
           const key = `${o.option_symbol}|${o.side}|${o.quantity}|${o.avg_fill_price.toFixed(4)}`;
-          if (existingKeys.has(key)) {
-            skipped++;
-            return false;
-          }
+          if (existingOptionKeys.has(key)) { optionsSkipped++; return false; }
           return true;
         });
-        if (newRows.length > 0) {
+        if (newOptionRows.length > 0) {
           const { error, count } = await db.from("options_trades").upsert(
-            newRows.map((o) => ({
+            newOptionRows.map((o) => ({
               tradier_id:       o.tradier_id,
               source:           o.source,
               underlying:       o.underlying,
@@ -76,15 +79,55 @@ export async function POST(req: NextRequest) {
             { onConflict: "tradier_id,source", count: "exact" },
           );
           if (error) {
-            return NextResponse.json({ error: `backfill upsert: ${error.message}` }, { status: 500 });
+            return NextResponse.json({ error: `backfill options upsert: ${error.message}` }, { status: 500 });
           }
-          inserted = count ?? newRows.length;
+          optionsInserted = count ?? newOptionRows.length;
+        }
+
+        // --- Equity backfill ---
+        const { data: existingEquity } = await db
+          .from("equity_trades")
+          .select("symbol, side, quantity, avg_fill_price")
+          .eq("source", "prod");
+        const existingEquityKeys = new Set<string>(
+          (existingEquity ?? []).map(
+            (r) => `${r.symbol}|${r.side}|${r.quantity}|${Number(r.avg_fill_price).toFixed(4)}`,
+          ),
+        );
+        const newEquityRows = histEquity.filter((o) => {
+          const key = `${o.symbol}|${o.side}|${o.quantity}|${o.avg_fill_price.toFixed(4)}`;
+          if (existingEquityKeys.has(key)) { equitySkipped++; return false; }
+          return true;
+        });
+        if (newEquityRows.length > 0) {
+          const { error, count } = await db.from("equity_trades").upsert(
+            newEquityRows.map((o) => ({
+              tradier_id:       o.tradier_id,
+              source:           o.source,
+              symbol:           o.symbol,
+              side:             o.side,
+              quantity:         o.quantity,
+              avg_fill_price:   o.avg_fill_price,
+              status:           o.status,
+              order_date:       o.order_date,
+              transaction_date: o.transaction_date,
+            })),
+            { onConflict: "tradier_id,source", count: "exact" },
+          );
+          if (error) {
+            return NextResponse.json({ error: `backfill equity upsert: ${error.message}` }, { status: 500 });
+          }
+          equityInserted = count ?? newEquityRows.length;
         }
       } catch (e) {
         const msg = e instanceof Error ? e.message : String(e);
         return NextResponse.json({ error: `backfill: ${msg}` }, { status: 500 });
       }
-      return NextResponse.json({ mode: "backfill", inserted, skipped });
+      return NextResponse.json({
+        mode: "backfill",
+        options: { inserted: optionsInserted, skipped: optionsSkipped },
+        equity:  { inserted: equityInserted,  skipped: equitySkipped  },
+      });
     }
 
     // Fetch from Tradier and get our latest known dates in parallel.
