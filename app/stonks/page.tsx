@@ -150,6 +150,17 @@ export default async function OptionsPage() {
   const totalCapitalTiedUp = pnl.reduce((sum, p) => sum + p.total_capital_tied_up, 0);
 
   const openPositions = positions.filter((p) => p.status === "open");
+  const ccCount = openPositions.filter((p) => p.strategy === "covered_call").length;
+  const cspCount = openPositions.filter((p) => p.strategy === "cash_secured_put").length;
+  const nearestExpiryPos = openPositions.length > 0
+    ? openPositions.reduce((nearest, pos) =>
+        pos.expiration_date < nearest.expiration_date ? pos : nearest
+      )
+    : null;
+  const nearestDTE = nearestExpiryPos
+    ? Math.round((new Date(nearestExpiryPos.expiration_date + "T00:00:00").getTime() - Date.now()) / 86400000)
+    : null;
+
   const totalDailyTheta = optionGreeks.size > 0
     ? openPositions.reduce((sum, pos) => {
         const theta = optionGreeks.get(pos.option_symbol);
@@ -278,33 +289,17 @@ export default async function OptionsPage() {
 
           {/* Open positions summary */}
           {openPositions.length > 0 && (
-            <section className="flex flex-col gap-3">
-              <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500">
-                Open Positions · {openPositions.length} contract{openPositions.length !== 1 ? "s" : ""}
-              </h2>
-              <dl className="grid grid-cols-3 gap-3">
-                <Stat
-                  label="Premium Collected"
-                  value={fmtUSD(openPremiumCollected)}
-                  highlight={openPremiumCollected >= 0 ? "green" : "red"}
-                />
-                <Stat
-                  label="Capital Tied Up"
-                  value={totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
-                />
-                <Stat
-                  label="Avg Return"
-                  value={aggregateMonthlyPct != null ? `${aggregateMonthlyPct.toFixed(2)}%/mo` : "—"}
-                  highlight={
-                    aggregateMonthlyPct != null
-                      ? aggregateMonthlyPct >= 1 ? "green"
-                      : aggregateMonthlyPct >= 0.5 ? "amber"
-                      : undefined
-                      : undefined
-                  }
-                />
-              </dl>
-            </section>
+            <OpenPositionsBand
+              openCount={openPositions.length}
+              openPremiumCollected={openPremiumCollected}
+              totalCapitalTiedUp={totalCapitalTiedUp}
+              totalDailyTheta={totalDailyTheta}
+              aggregateMonthlyPct={aggregateMonthlyPct}
+              ccCount={ccCount}
+              cspCount={cspCount}
+              nearestExpiry={nearestExpiryPos}
+              nearestDTE={nearestDTE}
+            />
           )}
 
           {/* Per-ticker sections */}
@@ -328,6 +323,151 @@ export default async function OptionsPage() {
   );
 }
 
+
+function OpenPositionsBand({
+  openCount,
+  openPremiumCollected,
+  totalCapitalTiedUp,
+  totalDailyTheta,
+  aggregateMonthlyPct,
+  ccCount,
+  cspCount,
+  nearestExpiry,
+  nearestDTE,
+}: {
+  openCount: number;
+  openPremiumCollected: number;
+  totalCapitalTiedUp: number;
+  totalDailyTheta: number | null;
+  aggregateMonthlyPct: number | null;
+  ccCount: number;
+  cspCount: number;
+  nearestExpiry: { underlying: string; expiration_date: string } | null;
+  nearestDTE: number | null;
+}) {
+  const thetaColorClass = totalDailyTheta == null
+    ? "text-stone-400 dark:text-stone-600"
+    : totalDailyTheta >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const thirtyDayProjection = totalDailyTheta !== null ? totalDailyTheta * 30 : null;
+
+  const barPct = aggregateMonthlyPct != null ? Math.min((aggregateMonthlyPct / 2) * 100, 100) : 0;
+  const barColorClass = aggregateMonthlyPct == null
+    ? ""
+    : aggregateMonthlyPct >= 1 ? "bg-green-500"
+    : aggregateMonthlyPct >= 0.5 ? "bg-amber-500"
+    : "bg-stone-300 dark:bg-stone-600";
+  const pctColorClass = aggregateMonthlyPct == null
+    ? "text-stone-400 dark:text-stone-600"
+    : aggregateMonthlyPct >= 1 ? "text-green-600 dark:text-green-400"
+    : aggregateMonthlyPct >= 0.5 ? "text-amber-600 dark:text-amber-400"
+    : "";
+
+  const totalStrategies = ccCount + cspCount;
+  const ccPct = totalStrategies > 0 ? (ccCount / totalStrategies) * 100 : 0;
+
+  const dteColorClass = nearestDTE == null
+    ? "text-stone-400 dark:text-stone-600"
+    : nearestDTE <= 3 ? "text-red-600 dark:text-red-400"
+    : nearestDTE <= 7 ? "text-amber-600 dark:text-amber-400"
+    : "text-stone-500 dark:text-stone-400";
+
+  const fmtExpDate = nearestExpiry
+    ? new Date(nearestExpiry.expiration_date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" })
+    : null;
+
+  return (
+    <section>
+      <h2 className="text-sm font-semibold uppercase tracking-wide text-stone-500 mb-3">
+        Open Positions · {openCount} contract{openCount !== 1 ? "s" : ""}
+      </h2>
+      <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 flex items-stretch divide-x divide-stone-200 dark:divide-stone-800">
+
+        {/* Zone 1: Exposure */}
+        <div className="flex-[2] px-6 py-4">
+          <dd className={`text-3xl font-bold tabular-nums ${totalCapitalTiedUp > 0 ? "" : "text-stone-400 dark:text-stone-600"}`}>
+            {totalCapitalTiedUp > 0 ? fmtUSD(totalCapitalTiedUp) : "—"}
+          </dd>
+          <dt className="text-xs uppercase tracking-wide text-stone-500 mt-1">Capital Tied Up</dt>
+          <div className="mt-3 flex gap-6">
+            <div>
+              <div className={`text-sm font-semibold tabular-nums ${openPremiumCollected >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+                {fmtUSD(openPremiumCollected)}
+              </div>
+              <div className="text-xs text-stone-400 mt-0.5">collected</div>
+            </div>
+            <div>
+              <div className="text-sm font-semibold tabular-nums text-stone-600 dark:text-stone-400">
+                {openCount} contract{openCount !== 1 ? "s" : ""}
+              </div>
+              <div className="text-xs text-stone-400 mt-0.5">open</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Zone 2: Yield */}
+        <div className="flex-[2] px-6 py-4">
+          <dd className={`text-3xl font-bold tabular-nums ${thetaColorClass}`}>
+            {totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
+          </dd>
+          <dt className="text-xs uppercase tracking-wide text-stone-500 mt-1">Daily Theta</dt>
+          <div className="mt-2 relative w-32">
+            <div className="h-1 rounded-full bg-stone-100 dark:bg-stone-800 overflow-hidden">
+              <div className={`h-full rounded-full ${barColorClass}`} style={{ width: `${barPct}%` }} />
+            </div>
+            <div className="absolute top-0 h-1 w-px bg-stone-400 dark:bg-stone-500" style={{ left: "50%" }} />
+          </div>
+          <div className="mt-2 text-sm">
+            <span className={`font-semibold tabular-nums ${pctColorClass}`}>
+              {aggregateMonthlyPct != null ? `${aggregateMonthlyPct.toFixed(2)}%/mo` : "—"}
+            </span>
+            {thirtyDayProjection !== null && (
+              <span className="text-xs text-stone-400 ml-1.5">· {fmtUSD(thirtyDayProjection)}/30d</span>
+            )}
+          </div>
+        </div>
+
+        {/* Zone 3: Intel */}
+        <div className="flex-[1.5] px-6 py-4 flex flex-col gap-3">
+          {/* CC/CSP strategy split */}
+          <div>
+            <div className="text-xs uppercase tracking-wide text-stone-500 mb-2">Strategy Mix</div>
+            {totalStrategies > 0 ? (
+              <>
+                <div className="h-1.5 rounded-full bg-stone-100 dark:bg-stone-800 overflow-hidden">
+                  <div className="h-full rounded-l-full bg-blue-500" style={{ width: `${ccPct}%` }} />
+                </div>
+                <div className="mt-1.5 flex justify-between text-xs text-stone-500">
+                  <span>{ccCount} CC</span>
+                  <span>{cspCount} CSP</span>
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-stone-400">—</div>
+            )}
+          </div>
+          <div className="border-t border-stone-200 dark:border-stone-800" />
+          {/* Nearest expiry */}
+          <div>
+            <div className="text-xs uppercase tracking-wide text-stone-500 mb-1">Next Up</div>
+            {nearestExpiry && nearestDTE !== null ? (
+              <>
+                <div className="text-sm font-semibold text-stone-700 dark:text-stone-300">
+                  {nearestExpiry.underlying} {fmtExpDate}
+                </div>
+                <div className={`text-xs font-medium tabular-nums mt-0.5 ${dteColorClass}`}>
+                  {nearestDTE}d to exp
+                </div>
+              </>
+            ) : (
+              <div className="text-sm text-stone-400">—</div>
+            )}
+          </div>
+        </div>
+
+      </div>
+    </section>
+  );
+}
 
 function ScorecardBand({
   totalPL, totalRealizedPnL, totalUnrealizedPnL,
