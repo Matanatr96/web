@@ -203,47 +203,19 @@ export default async function OptionsPage() {
         </p>
       ) : (
         <>
-          {/* Summary stats — Performance · Activity · Options mechanics */}
-          <dl className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
-            {/* Performance */}
-            <Stat
-              label="Total P/L"
-              value={totalPL !== null ? fmtUSD(totalPL) : fmtUSD(totalRealizedPnL)}
-              highlight={(totalPL ?? totalRealizedPnL) >= 0 ? "green" : "red"}
-              dim={totalPL === null}
-            />
-            <Stat
-              label="Realized P/L"
-              value={fmtUSD(totalRealizedPnL)}
-              highlight={totalRealizedPnL >= 0 ? "green" : "red"}
-            />
-            <Stat
-              label="Unrealized P/L"
-              value={totalUnrealizedPnL !== null ? fmtUSD(totalUnrealizedPnL) : "—"}
-              highlight={totalUnrealizedPnL !== null ? (totalUnrealizedPnL >= 0 ? "green" : "red") : undefined}
-              dim={totalUnrealizedPnL === null}
-            />
-            {/* Activity */}
-            <Stat label="Open Positions" value={String(openCount)} />
-            <Stat label="Closed / Expired" value={String(closedCount)} />
-            <Stat
-              label="Win Rate"
-              value={winRate !== null ? `${winRate}%` : "—"}
-              highlight={winRate !== null && winRate >= 50 ? "green" : winRate !== null ? "red" : undefined}
-            />
-            {/* Options mechanics */}
-            <Stat
-              label="Net Premium"
-              value={fmtUSD(totalPremium)}
-              highlight={totalPremium >= 0 ? "green" : "red"}
-            />
-            <Stat
-              label="Daily Theta"
-              value={totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
-              highlight={totalDailyTheta !== null ? (totalDailyTheta >= 0 ? "green" : "red") : undefined}
-              dim={totalDailyTheta === null}
-            />
-          </dl>
+          {/* Summary stats — Scorecard Band */}
+          <ScorecardBand
+            totalPL={totalPL}
+            totalRealizedPnL={totalRealizedPnL}
+            totalUnrealizedPnL={totalUnrealizedPnL}
+            winRate={winRate}
+            winCount={winCount}
+            closedCount={closedCount}
+            totalPremium={totalPremium}
+            totalDailyTheta={totalDailyTheta}
+            openCount={openCount}
+            openPremiumCollected={openPremiumCollected}
+          />
 
           {/* Analytics tools */}
           <section>
@@ -352,6 +324,102 @@ export default async function OptionsPage() {
           ))}
         </>
       )}
+    </div>
+  );
+}
+
+
+function ScorecardBand({
+  totalPL, totalRealizedPnL, totalUnrealizedPnL,
+  winRate, winCount, closedCount, totalPremium,
+  totalDailyTheta, openCount, openPremiumCollected,
+}: {
+  totalPL: number | null;
+  totalRealizedPnL: number;
+  totalUnrealizedPnL: number | null;
+  winRate: number | null;
+  winCount: number;
+  closedCount: number;
+  totalPremium: number;
+  totalDailyTheta: number | null;
+  openCount: number;
+  openPremiumCollected: number;
+}) {
+  const displayTotal = totalPL ?? totalRealizedPnL;
+  const totalDim = totalPL === null;
+  const totalColorClass = displayTotal >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const realizedColorClass = totalRealizedPnL >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const unrealizedColorClass = totalUnrealizedPnL == null
+    ? "text-stone-400 dark:text-stone-600"
+    : totalUnrealizedPnL >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const winRateColorClass = winRate == null
+    ? "text-stone-400 dark:text-stone-600"
+    : winRate >= 50 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const thetaDim = totalDailyTheta === null;
+  const thetaColorClass = thetaDim
+    ? "text-stone-400 dark:text-stone-600"
+    : totalDailyTheta! >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400";
+  const earnsBackDays = totalDailyTheta != null && totalDailyTheta > 0 && openPremiumCollected > 0
+    ? Math.ceil(openPremiumCollected / totalDailyTheta)
+    : null;
+
+  return (
+    <div className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 flex items-stretch divide-x divide-stone-200 dark:divide-stone-800">
+      {/* Zone 1: P/L */}
+      <div className="flex-[2] px-6 py-4">
+        <dd className={`text-3xl font-bold tabular-nums ${totalDim ? "text-stone-400 dark:text-stone-600" : totalColorClass}`}>
+          {fmtUSD(displayTotal)}
+        </dd>
+        <dt className="text-xs uppercase tracking-wide text-stone-500 mt-1">Total P/L</dt>
+        <div className="mt-3 flex gap-6">
+          <div>
+            <div className={`text-sm font-semibold tabular-nums ${realizedColorClass}`}>{fmtUSD(totalRealizedPnL)}</div>
+            <div className="text-xs text-stone-400 mt-0.5">Realized</div>
+          </div>
+          <div>
+            <div className={`text-sm font-semibold tabular-nums ${unrealizedColorClass}`}>
+              {totalUnrealizedPnL !== null ? fmtUSD(totalUnrealizedPnL) : "—"}
+            </div>
+            <div className="text-xs text-stone-400 mt-0.5">Unrealized</div>
+          </div>
+        </div>
+      </div>
+
+      {/* Zone 2: Track Record */}
+      <div className="flex-[2] px-6 py-4">
+        <dd className={`text-3xl font-bold tabular-nums ${winRateColorClass}`}>
+          {winRate !== null ? `${winRate}%` : "—"}
+        </dd>
+        <dt className="text-xs uppercase tracking-wide text-stone-500 mt-1">Win Rate</dt>
+        <div className="mt-2 h-1 rounded-full bg-stone-100 dark:bg-stone-800 overflow-hidden w-28">
+          {winRate !== null && (
+            <div
+              className={`h-full rounded-full ${winRate >= 50 ? "bg-green-500" : "bg-red-500"}`}
+              style={{ width: `${winRate}%` }}
+            />
+          )}
+        </div>
+        <div className="mt-2 text-sm">
+          <span className={`font-semibold tabular-nums ${totalPremium >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+            {fmtUSD(totalPremium)}
+          </span>
+          <span className="text-xs text-stone-400 ml-1.5">net premium · {winCount}/{closedCount} wins</span>
+        </div>
+      </div>
+
+      {/* Zone 3: Machine State */}
+      <div className="flex-[1.5] px-6 py-4">
+        <dd className={`text-3xl font-bold tabular-nums ${thetaColorClass}`}>
+          {totalDailyTheta !== null ? fmtUSD(totalDailyTheta) : "—"}
+        </dd>
+        <dt className="text-xs uppercase tracking-wide text-stone-500 mt-1">Daily Theta</dt>
+        <div className="mt-3 text-sm text-stone-500">
+          {openCount} open
+          {earnsBackDays !== null && (
+            <span className="text-stone-400"> · recoups in ~{earnsBackDays}d</span>
+          )}
+        </div>
+      </div>
     </div>
   );
 }
