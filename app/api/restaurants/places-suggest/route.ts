@@ -49,7 +49,7 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "Missing city, cuisine, or category" }, { status: 400 });
   }
 
-  const apiKey = process.env.GOOGLE_MAPS_SERVER_KEY;
+  const apiKey = process.env.GOOGLE_MAPS_SERVER_KEY ?? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
   if (!apiKey) {
     return NextResponse.json({ error: "Places API not configured" }, { status: 500 });
   }
