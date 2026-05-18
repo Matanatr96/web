@@ -1,0 +1,8 @@
+{
+  "crons": [
+    {
+      "path": "/api/cron/csp-scanner",
+      "schedule": "*/10 13-21 * * 1-5"
+    }
+  ]
+}
