@@ -30,7 +30,7 @@ function mid(q: TradierQuote): number {
   return (q.bid + q.ask) / 2;
 }
 
-async function fetchQuotesRaw(symbols: string[]): Promise<[string, number][]> {
+async function fetchQuotesRaw(symbols: string[]): Promise<[string, number, number][]> {
   const key = process.env.TRADIER_API_KEY;
   if (!key || symbols.length === 0) return [];
 
@@ -47,7 +47,7 @@ async function fetchQuotesRaw(symbols: string[]): Promise<[string, number][]> {
 
   const data = (await res.json()) as TradierQuotesResponse;
   const quotes = toArray(data.quotes?.quote);
-  return quotes.map((q) => [q.symbol, mid(q)]);
+  return quotes.map((q) => [q.symbol, mid(q), q.ask]);
 }
 
 // Cached version — revalidates every 60s. Cache key is the sorted, joined symbol list.
@@ -493,6 +493,7 @@ export async function getOpenOptionGreeks(symbols: string[]): Promise<Map<string
 
 export type LiveQuotes = {
   prices: Map<string, number>; // equity symbol or OCC option symbol → mid price
+  asks: Map<string, number>;   // same key space → ask price (for buy-to-close cost)
   available: boolean;
 };
 
@@ -501,17 +502,19 @@ export async function getLiveQuotes(
   optionSymbols: string[],
 ): Promise<LiveQuotes> {
   if (!isMarketOpen()) {
-    return { prices: new Map(), available: false };
+    return { prices: new Map(), asks: new Map(), available: false };
   }
 
   try {
     // Sort before joining so ["AAPL","TSLA"] and ["TSLA","AAPL"] share the same cache entry.
     const allSymbols = [...equitySymbols, ...optionSymbols].sort();
-    if (allSymbols.length === 0) return { prices: new Map(), available: false };
+    if (allSymbols.length === 0) return { prices: new Map(), asks: new Map(), available: false };
 
-    const prices = new Map(await fetchQuotesCached(allSymbols));
-    return { prices, available: prices.size > 0 };
+    const raw = await fetchQuotesCached(allSymbols);
+    const prices = new Map(raw.map(([sym, midPx]) => [sym, midPx] as const));
+    const asks = new Map(raw.map(([sym, , askPx]) => [sym, askPx] as const));
+    return { prices, asks, available: prices.size > 0 };
   } catch {
-    return { prices: new Map(), available: false };
+    return { prices: new Map(), asks: new Map(), available: false };
   }
 }

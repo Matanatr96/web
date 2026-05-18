@@ -75,7 +75,7 @@ export default async function OptionsPage() {
       .filter(([, v]) => v.last != null)
       .map(([k, v]) => [k, v.last!] as [string, number]),
   ]);
-  const rollRows = await buildRollOrHoldRows(positions, capitalByTicker, liveMarks);
+  const rollRows = await buildRollOrHoldRows(positions, capitalByTicker, liveMarks, quotes.asks);
   const rollTargetBySymbol = new Map(
     rollRows
       .filter((r) => r.best_strike ?? r.same_strike)

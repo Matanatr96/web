@@ -24,11 +24,19 @@ export type RollOrHoldRow = {
   is_itm: boolean | null;
   remaining_extrinsic: number | null;
   hold_monthly_return_pct: number | null;
+  gamma_warning: boolean;
   roll_expiration: string | null;
   roll_dte: number | null;
   same_strike: RollOption | null;
   best_strike: RollOption | null;
 };
+
+// Annualizing remaining extrinsic at low DTE produces nonsense rates
+// (30/2 = 15× multiplier) at exactly the moment gamma risk peaks.
+// Floor the multiplier at ~5 DTE equivalent so the Hold column stays
+// comparable to the Roll column instead of becoming a misleading spike.
+const ANN_FACTOR_CAP = 6;
+const GAMMA_WARNING_DTE = 5;
 
 function pickNextExpiration(dates: string[], currentExpiry: string): { date: string; dte: number } | null {
   const today = new Date();
@@ -71,6 +79,7 @@ export async function buildRollOrHoldRows(
   positions: OptionsPosition[],
   capitalByTicker: Map<string, number>,
   liveMarks: Map<string, number>,
+  liveAsks: Map<string, number>,
 ): Promise<RollOrHoldRow[]> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -120,10 +129,13 @@ export async function buildRollOrHoldRows(
           : null;
 
       const effectiveCapital = capital ?? 0;
+      const ann_factor =
+        dte_remaining > 0 ? Math.min(30 / dte_remaining, ANN_FACTOR_CAP) : 0;
       const hold_monthly_return_pct =
         remaining_extrinsic != null && dte_remaining > 0 && effectiveCapital > 0
-          ? (remaining_extrinsic / effectiveCapital) * (30 / dte_remaining) * 100
+          ? (remaining_extrinsic / effectiveCapital) * ann_factor * 100
           : null;
+      const gamma_warning = dte_remaining <= GAMMA_WARNING_DTE;
 
       const base: Omit<RollOrHoldRow, "roll_expiration" | "roll_dte" | "same_strike" | "best_strike"> = {
         position: pos,
@@ -134,6 +146,7 @@ export async function buildRollOrHoldRows(
         is_itm,
         remaining_extrinsic,
         hold_monthly_return_pct,
+        gamma_warning,
       };
 
       if (!capital) {
@@ -152,7 +165,12 @@ export async function buildRollOrHoldRows(
         const type = pos.strategy === "cash_secured_put" ? "put" : "call";
         const side = chain.filter((o) => o.option_type === type && o.bid > 0);
 
-        const close_cost = current_mark ?? 0;
+        // Buy-to-close fills at the ask, not mid. Fall back to a mid+10%
+        // haircut when the market is closed and ask isn't quoted; final
+        // fallback of 0 only kicks in when we have neither quote.
+        const close_ask = liveAsks.get(pos.option_symbol) ?? null;
+        const close_cost =
+          close_ask ?? (current_mark != null ? current_mark * 1.1 : 0);
 
         // Same-strike roll
         const sameOpt = side.find((o) => o.strike === pos.strike);
