@@ -1,4 +1,4 @@
-import { getExpirations, getOptionChain } from "./quotes";
+import { getExpirations, getOptionChain, getHv30 } from "./quotes";
 import type { OptionsPosition } from "./types";
 
 // Minimum monthly return a credit roll must clear to beat "let it expire and
@@ -10,10 +10,18 @@ export const HURDLE_MONTHLY_RETURN_PCT = 2.0;
 export type RollOption = {
   strike: number;
   bid: number;
+  ask: number;
+  spread_pct: number;
+  is_liquid: boolean;
   delta: number | null;
   net_credit: number;         // new_bid - close_cost (negative = net debit)
   monthly_return_pct: number | null;
 };
+
+// Spread wider than 30% of mid → treat as illiquid (suppress recommendation).
+// Wider spreads mean both leg fills are uncertain and the "credit" you see is
+// likely unfillable.
+export const LIQUID_SPREAD_PCT_THRESHOLD = 0.30;
 
 export type RollOrHoldRow = {
   position: OptionsPosition;
@@ -29,6 +37,7 @@ export type RollOrHoldRow = {
   roll_dte: number | null;
   same_strike: RollOption | null;
   best_strike: RollOption | null;
+  iv_ratio: number | null;
 };
 
 // Annualizing remaining extrinsic at low DTE produces nonsense rates
