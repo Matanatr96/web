@@ -1,0 +1,28 @@
+name: CSP Scanner
+
+# Hits /api/cron/csp-scanner every 10 min during US market hours.
+# Cron is in UTC; 13:30–20:00 UTC covers 9:30am–4:00pm ET during DST,
+# 14:30–21:00 UTC covers it outside DST. We run from 13–21 UTC and let
+# the handler's isMarketHoursET() bail out at the exact edges.
+
+on:
+  schedule:
+    - cron: "*/10 13-20 * * 1-5"
+  workflow_dispatch: # manual trigger from the Actions tab
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Hit scanner endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$BASE_URL" ]; then
+            echo "Missing CRON_SECRET or PROD_BASE_URL repo secret"
+            exit 1
+          fi
+          curl -fsS -X GET \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/cron/csp-scanner"
