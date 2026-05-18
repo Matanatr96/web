@@ -62,7 +62,7 @@ export default async function RollOrHoldPage() {
     if (p.avg_cost_basis > 0) capitalByTicker.set(p.ticker, p.avg_cost_basis);
   }
 
-  const rows = await buildRollOrHoldRows(positions, capitalByTicker, quotes.prices);
+  const rows = await buildRollOrHoldRows(positions, capitalByTicker, quotes.prices, quotes.asks);
 
   return (
     <div className="flex flex-col gap-8 max-w-5xl mx-auto px-4 pb-16">
@@ -190,6 +190,7 @@ function PositionCard({ row, markAvailable }: { row: RollOrHoldRow; markAvailabl
               : undefined
           }
           netCredit={null}
+          gammaWarning={row.gamma_warning && hold_monthly_return_pct != null && is_itm !== true}
         />
         <ComparisonCol
           label="Roll same strike"
@@ -226,6 +227,7 @@ function ComparisonCol({
   detail,
   netCredit,
   markAvailable,
+  gammaWarning,
 }: {
   label: string;
   sublabel: string;
@@ -234,6 +236,7 @@ function ComparisonCol({
   detail?: string;
   netCredit?: number | null;
   markAvailable?: boolean;
+  gammaWarning?: boolean;
 }) {
   const isHighlighted = badge === "best";
 
@@ -273,6 +276,12 @@ function ComparisonCol({
           <span className="text-2xl font-bold text-stone-300 dark:text-stone-600">—</span>
         )}
       </div>
+
+      {gammaWarning && (
+        <p className="text-[11px] font-medium text-amber-700 dark:text-amber-400">
+          gamma risk — rate misleading
+        </p>
+      )}
 
       {netCredit != null && (
         <p className={`text-xs tabular-nums ${netCredit >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
