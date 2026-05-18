@@ -72,6 +72,7 @@ function pickNextExpiration(dates: string[], currentExpiry: string): { date: str
 
 function buildRollOption(
   bid: number,
+  ask: number,
   delta: number | null,
   strike: number,
   close_cost: number,
@@ -81,7 +82,10 @@ function buildRollOption(
   const net_credit = bid - close_cost;
   const monthly_return_pct =
     capital > 0 && roll_dte > 0 ? (net_credit / capital) * (30 / roll_dte) * 100 : null;
-  return { strike, bid, delta, net_credit, monthly_return_pct };
+  const mid = (bid + ask) / 2;
+  const spread_pct = mid > 0 ? (ask - bid) / mid : 1;
+  const is_liquid = spread_pct < LIQUID_SPREAD_PCT_THRESHOLD;
+  return { strike, bid, ask, spread_pct, is_liquid, delta, net_credit, monthly_return_pct };
 }
 
 export async function buildRollOrHoldRows(
@@ -156,6 +160,7 @@ export async function buildRollOrHoldRows(
         remaining_extrinsic,
         hold_monthly_return_pct,
         gamma_warning,
+        iv_ratio: null,
       };
 
       if (!capital) {
@@ -184,7 +189,7 @@ export async function buildRollOrHoldRows(
         // Same-strike roll
         const sameOpt = side.find((o) => o.strike === pos.strike);
         const same_strike: RollOption | null = sameOpt
-          ? buildRollOption(sameOpt.bid, sameOpt.delta, sameOpt.strike, close_cost, capital, next.dte)
+          ? buildRollOption(sameOpt.bid, sameOpt.ask, sameOpt.delta, sameOpt.strike, close_cost, capital, next.dte)
           : null;
 
         // Best-delta roll (Δ-25 target)
@@ -210,10 +215,28 @@ export async function buildRollOrHoldRows(
         }
 
         const best_strike: RollOption | null = bestOpt
-          ? buildRollOption(bestOpt.bid, bestOpt.delta, bestOpt.strike, close_cost, capital, next.dte)
+          ? buildRollOption(bestOpt.bid, bestOpt.ask, bestOpt.delta, bestOpt.strike, close_cost, capital, next.dte)
           : null;
 
-        return { ...base, roll_expiration: next.date, roll_dte: next.dte, same_strike, best_strike };
+        // IV regime: compare ATM mid_iv on the roll expiration to HV30 of the
+        // underlying. >1 = options are "rich" (good for sellers), <1 = cheap.
+        let iv_ratio: number | null = null;
+        if (spot != null) {
+          const atm = side.reduce<{ o: typeof side[number]; d: number } | null>((acc, o) => {
+            if (o.mid_iv == null) return acc;
+            const d = Math.abs(o.strike - spot);
+            return acc == null || d < acc.d ? { o, d } : acc;
+          }, null);
+          const atmIv = atm?.o.mid_iv ?? null;
+          if (atmIv != null && atmIv > 0) {
+            const hv30 = await getHv30(pos.underlying);
+            if (hv30 != null && hv30 > 0) {
+              iv_ratio = (atmIv * 100) / hv30;
+            }
+          }
+        }
+
+        return { ...base, iv_ratio, roll_expiration: next.date, roll_dte: next.dte, same_strike, best_strike };
       } catch {
         return { ...base, roll_expiration: null, roll_dte: null, same_strike: null, best_strike: null };
       }

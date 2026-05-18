@@ -4,13 +4,15 @@ import type { OptionsPosition } from "@/lib/types";
 vi.mock("@/lib/quotes", () => ({
   getExpirations: vi.fn(),
   getOptionChain: vi.fn(),
+  getHv30: vi.fn(),
 }));
 
 import { buildRollOrHoldRows } from "@/lib/roll-or-hold";
-import { getExpirations, getOptionChain } from "@/lib/quotes";
+import { getExpirations, getOptionChain, getHv30 } from "@/lib/quotes";
 
 const getExpirationsMock = vi.mocked(getExpirations);
 const getOptionChainMock = vi.mocked(getOptionChain);
+const getHv30Mock = vi.mocked(getHv30);
 
 function csp(overrides: Partial<OptionsPosition> = {}): OptionsPosition {
   return {
@@ -37,10 +39,12 @@ describe("buildRollOrHoldRows", () => {
     vi.setSystemTime(new Date("2026-05-17T12:00:00Z"));
     getExpirationsMock.mockReset();
     getOptionChainMock.mockReset();
+    getHv30Mock.mockReset();
+    getHv30Mock.mockResolvedValue(null); // IV regime disabled unless a test opts in
     getExpirationsMock.mockResolvedValue(["2026-06-19"]); // 33 DTE from frozen today
     getOptionChainMock.mockResolvedValue([
-      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30 },
-      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, delta: -0.25 },
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.40 },
+      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, delta: -0.25, mid_iv: 0.42 },
     ]);
   });
   afterEach(() => { vi.useRealTimers(); });
@@ -98,6 +102,53 @@ describe("buildRollOrHoldRows", () => {
     const [row] = await buildRollOrHoldRows([pos], new Map(), liveMarks, liveAsks);
     expect(row.dte_remaining).toBe(5);
     expect(row.gamma_warning).toBe(true);
+  });
+
+  it("flags illiquid strikes (>30% spread) and marks tight strikes liquid", async () => {
+    getOptionChainMock.mockResolvedValue([
+      // tight: ask 3.1, bid 3.0, mid 3.05, spread ≈ 3.3%
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.40 },
+      // wide: ask 2.0, bid 1.0, mid 1.5, spread ≈ 66.7%
+      { strike: 145, option_type: "put", bid: 1.0, ask: 2.0, delta: -0.25, mid_iv: 0.42 },
+    ]);
+    const pos = csp({ expiration_date: "2026-05-22" });
+    const liveMarks = new Map([[pos.option_symbol, 0.50]]);
+    const liveAsks = new Map([[pos.option_symbol, 0.60]]);
+
+    const [row] = await buildRollOrHoldRows([pos], new Map(), liveMarks, liveAsks);
+
+    expect(row.same_strike?.is_liquid).toBe(true);
+    expect(row.same_strike?.spread_pct).toBeCloseTo(0.1 / 3.05, 4);
+    expect(row.best_strike?.is_liquid).toBe(false);
+    expect(row.best_strike?.spread_pct).toBeGreaterThan(0.3);
+  });
+
+  it("computes iv_ratio from ATM mid_iv ÷ HV30", async () => {
+    getHv30Mock.mockResolvedValue(40); // HV30 = 40%
+    getOptionChainMock.mockResolvedValue([
+      // ATM (spot 150) — mid_iv 0.60 = 60% IV → ratio 60/40 = 1.5
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.60 },
+      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, delta: -0.25, mid_iv: 0.42 },
+    ]);
+    const pos = csp({ expiration_date: "2026-05-22" });
+    const liveMarks = new Map([
+      [pos.option_symbol, 0.50],
+      [pos.underlying, 150], // spot at strike → ATM is 150
+    ]);
+    const liveAsks = new Map([[pos.option_symbol, 0.60]]);
+
+    const [row] = await buildRollOrHoldRows([pos], new Map(), liveMarks, liveAsks);
+    expect(row.iv_ratio).toBeCloseTo(1.5, 5);
+  });
+
+  it("returns iv_ratio = null when HV30 is unavailable", async () => {
+    getHv30Mock.mockResolvedValue(null);
+    const pos = csp({ expiration_date: "2026-05-22" });
+    const liveMarks = new Map([[pos.option_symbol, 0.50], [pos.underlying, 150]]);
+    const liveAsks = new Map([[pos.option_symbol, 0.60]]);
+
+    const [row] = await buildRollOrHoldRows([pos], new Map(), liveMarks, liveAsks);
+    expect(row.iv_ratio).toBeNull();
   });
 
   it("does not flag gamma_warning for positions with > 5 DTE", async () => {

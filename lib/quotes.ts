@@ -348,6 +348,7 @@ export type OptionQuote = {
   bid: number;
   ask: number;
   delta: number | null;
+  mid_iv: number | null;
 };
 
 export async function getExpirations(symbol: string): Promise<string[]> {
@@ -362,7 +363,26 @@ export async function getOptionChain(symbol: string, expiration: string): Promis
     bid: o.bid ?? 0,
     ask: o.ask ?? 0,
     delta: o.greeks?.delta ?? null,
+    mid_iv: o.greeks?.mid_iv ?? null,
   }));
+}
+
+// Annualized 30-day historical volatility for a symbol, as a percent (e.g. 42).
+// Returns null when there isn't enough price history.
+export async function getHv30(symbol: string): Promise<number | null> {
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const start = new Date(today);
+  start.setDate(start.getDate() - 60); // ~60 calendar days → ≥31 trading closes
+  const startStr = start.toISOString().slice(0, 10);
+  const endStr = today.toISOString().slice(0, 10);
+  try {
+    const closes = await fetchPriceHistoryCached(symbol, startStr, endStr);
+    if (closes.length < 31) return null;
+    return calcHv30(closes);
+  } catch {
+    return null;
+  }
 }
 
 export async function getWheelOptions(

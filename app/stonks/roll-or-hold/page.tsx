@@ -105,23 +105,33 @@ export default async function RollOrHoldPage() {
 //   OTM   → among credit rolls (net_credit > 0) clearing the hurdle, pick the
 //           highest monthly rate. If none clear the hurdle, hold.
 function verdict(row: RollOrHoldRow): "hold" | "same" | "best" | null {
-  const { is_itm, same_strike, best_strike } = row;
+  const { is_itm, same_strike, best_strike, iv_ratio } = row;
+
+  // IV regime is too cheap to sell premium — don't recommend any roll.
+  if (iv_ratio != null && iv_ratio < 0.8) return "hold";
+
+  // Only credit-rolls on liquid strikes count as recommendable.
+  const sameOk = same_strike && same_strike.is_liquid;
+  const bestOk = best_strike && best_strike.is_liquid;
 
   if (is_itm === true) {
-    if (same_strike && same_strike.net_credit > 0) return "same";
-    if (best_strike && best_strike.net_credit > 0) return "best";
+    if (sameOk && same_strike!.net_credit > 0) return "same";
+    if (bestOk && best_strike!.net_credit > 0) return "best";
     return "hold"; // = accept assignment
   }
 
+  // Richer IV → higher hurdle (don't get suckered into selling cheap premium).
+  const hurdle = iv_ratio != null ? HURDLE_MONTHLY_RETURN_PCT * iv_ratio : HURDLE_MONTHLY_RETURN_PCT;
+
   const credits: Array<{ key: "same" | "best"; pct: number }> = [];
-  if (same_strike && same_strike.net_credit > 0 && same_strike.monthly_return_pct != null) {
-    credits.push({ key: "same", pct: same_strike.monthly_return_pct });
+  if (sameOk && same_strike!.net_credit > 0 && same_strike!.monthly_return_pct != null) {
+    credits.push({ key: "same", pct: same_strike!.monthly_return_pct });
   }
-  if (best_strike && best_strike.net_credit > 0 && best_strike.monthly_return_pct != null) {
-    credits.push({ key: "best", pct: best_strike.monthly_return_pct });
+  if (bestOk && best_strike!.net_credit > 0 && best_strike!.monthly_return_pct != null) {
+    credits.push({ key: "best", pct: best_strike!.monthly_return_pct });
   }
 
-  const above = credits.filter((c) => c.pct >= HURDLE_MONTHLY_RETURN_PCT);
+  const above = credits.filter((c) => c.pct >= hurdle);
   if (above.length > 0) return above.reduce((a, b) => (a.pct >= b.pct ? a : b)).key;
   return "hold";
 }
@@ -164,6 +174,20 @@ function PositionCard({ row, markAvailable }: { row: RollOrHoldRow; markAvailabl
             ITM · assignment risk
           </span>
         )}
+        {row.iv_ratio != null && (
+          <span
+            className={`text-[10px] font-semibold uppercase tracking-wide px-1.5 py-0.5 rounded ${
+              row.iv_ratio < 0.8
+                ? "text-red-700 dark:text-red-400 bg-red-100 dark:bg-red-900/40"
+                : row.iv_ratio > 1.2
+                  ? "text-green-700 dark:text-green-400 bg-green-100 dark:bg-green-900/40"
+                  : "text-stone-600 dark:text-stone-400 bg-stone-100 dark:bg-stone-800"
+            }`}
+            title="ATM mid-IV ÷ HV30. <0.8 = options cheap (don't sell), >1.2 = options rich"
+          >
+            IV/HV {row.iv_ratio.toFixed(2)}×
+          </span>
+        )}
         {markAvailable && current_mark != null && (
           <span className="text-xs text-stone-400 tabular-nums ml-auto">
             mark {fmtUSD(current_mark)} · collected {fmtUSD(position.premium_collected ?? 0)}
@@ -194,25 +218,33 @@ function PositionCard({ row, markAvailable }: { row: RollOrHoldRow; markAvailabl
         />
         <ComparisonCol
           label="Roll same strike"
-          sublabel={roll_expiration ? `→ ${fmtDate(roll_expiration)} (${roll_dte}d)` : "no data"}
+          sublabel={
+            row.same_strike && !row.same_strike.is_liquid
+              ? `illiquid · ${(row.same_strike.spread_pct * 100).toFixed(0)}% spread`
+              : roll_expiration ? `→ ${fmtDate(roll_expiration)} (${roll_dte}d)` : "no data"
+          }
           badge={win === "same" ? "best" : undefined}
           monthlyReturn={row.same_strike?.monthly_return_pct ?? null}
           detail={row.same_strike ? `bid ${fmtUSD(row.same_strike.bid)} · $${row.same_strike.strike} strike` : undefined}
           netCredit={row.same_strike?.net_credit ?? null}
           markAvailable={markAvailable}
+          illiquid={row.same_strike != null && !row.same_strike.is_liquid}
         />
         <ComparisonCol
           label="Roll Δ-25 strike"
           sublabel={
-            row.best_strike
-              ? `$${row.best_strike.strike} ${row.best_strike.delta != null ? `Δ${row.best_strike.delta.toFixed(2)}` : ""}`
-              : roll_expiration ? `→ ${fmtDate(roll_expiration)}` : "no data"
+            row.best_strike && !row.best_strike.is_liquid
+              ? `illiquid · ${(row.best_strike.spread_pct * 100).toFixed(0)}% spread`
+              : row.best_strike
+                ? `$${row.best_strike.strike} ${row.best_strike.delta != null ? `Δ${row.best_strike.delta.toFixed(2)}` : ""}`
+                : roll_expiration ? `→ ${fmtDate(roll_expiration)}` : "no data"
           }
           badge={win === "best" ? "best" : undefined}
           monthlyReturn={row.best_strike?.monthly_return_pct ?? null}
           detail={row.best_strike ? `bid ${fmtUSD(row.best_strike.bid)} · $${row.best_strike.strike} strike` : undefined}
           netCredit={row.best_strike?.net_credit ?? null}
           markAvailable={markAvailable}
+          illiquid={row.best_strike != null && !row.best_strike.is_liquid}
         />
       </div>
     </div>
@@ -228,6 +260,7 @@ function ComparisonCol({
   netCredit,
   markAvailable,
   gammaWarning,
+  illiquid,
 }: {
   label: string;
   sublabel: string;
@@ -237,8 +270,17 @@ function ComparisonCol({
   netCredit?: number | null;
   markAvailable?: boolean;
   gammaWarning?: boolean;
+  illiquid?: boolean;
 }) {
-  const isHighlighted = badge === "best";
+  const isHighlighted = badge === "best" && !illiquid;
+
+  // Illiquid columns are dimmed so the eye skips them — the modeled rate is
+  // mathematically correct but executionally fictional.
+  const rateClass = illiquid
+    ? "text-stone-400 dark:text-stone-500"
+    : monthlyReturn != null && monthlyReturn >= 0
+      ? "text-green-600 dark:text-green-400"
+      : "text-red-600 dark:text-red-400";
 
   return (
     <div
@@ -259,17 +301,19 @@ function ComparisonCol({
         )}
       </div>
 
-      <p className="text-[11px] text-stone-400 dark:text-stone-500 leading-none">{sublabel}</p>
+      <p
+        className={`text-[11px] leading-none ${
+          illiquid
+            ? "text-stone-500 dark:text-stone-400 font-medium"
+            : "text-stone-400 dark:text-stone-500"
+        }`}
+      >
+        {sublabel}
+      </p>
 
       <div className="mt-1">
         {monthlyReturn != null ? (
-          <span
-            className={`text-2xl font-bold tabular-nums ${
-              monthlyReturn >= 0
-                ? "text-green-600 dark:text-green-400"
-                : "text-red-600 dark:text-red-400"
-            }`}
-          >
+          <span className={`text-2xl font-bold tabular-nums ${rateClass}`}>
             {fmtPct(monthlyReturn)}/mo
           </span>
         ) : (
@@ -284,7 +328,7 @@ function ComparisonCol({
       )}
 
       {netCredit != null && (
-        <p className={`text-xs tabular-nums ${netCredit >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
+        <p className={`text-xs tabular-nums ${illiquid ? "text-stone-400 dark:text-stone-500" : netCredit >= 0 ? "text-green-600 dark:text-green-400" : "text-red-600 dark:text-red-400"}`}>
           {netCredit >= 0 ? "+" : ""}{fmtUSD(netCredit)}/share net {netCredit >= 0 ? "credit" : "debit"}
           {!markAvailable && <span className="text-stone-400"> (excl. close cost)</span>}
         </p>
