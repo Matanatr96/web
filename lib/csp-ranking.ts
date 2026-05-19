@@ -28,6 +28,7 @@ export type RankFactor = {
   weight: number;
   score: number;       // 0..1
   display: string;     // user-facing one-liner
+  available: boolean;  // false = input data missing; excluded from base + renormalized
 };
 
 export type RankModifier = {
@@ -71,18 +72,21 @@ export type RankResult = {
   reason: string;
 };
 
-// Tier-S keeps 74% of additive weight; Tier-A additive factors share 26%.
+// Tier-S = premium-relative-to-risk + safety; Tier-A = supporting signals.
+// `ivgap` is the cleanest edge signal so it leads. `yield` alone is collinear
+// with IV at fixed delta/DTE, so it gets less weight than ivgap. `rv_cone` is
+// partially redundant with ivgap (both reward elevated vol), so it's small.
 const WEIGHTS: Record<RankFactorKey, number> = {
-  yield: 0.30,
-  ivgap: 0.22,
-  cushion: 0.22,
+  yield: 0.22,
+  ivgap: 0.28,
+  cushion: 0.24,
   oi_skew: 0.08,
   technical: 0.08,
-  rv_cone: 0.10,
+  rv_cone: 0.06,
 };
 
 // Reference points for normalization (fixed, not min-max).
-const YIELD_REF_PCT = 15;
+const YIELD_REF_PCT = 20;
 const IVGAP_REF_RATIO = 1.5;
 const CUSHION_REF_MOVES = 1.5;
 
@@ -120,6 +124,7 @@ export function scoreRecommendation(input: RankInputs): RankResult {
   // --- 2. RV/IV gap ---
   let ivRvRatio: number | null = null;
   let ivgapScore = 0;
+  let ivgapAvailable = false;
   let ivgapDisplay = "IV vs RV unavailable";
   if (
     input.iv_pct != null && input.iv_pct > 0 &&
@@ -127,45 +132,59 @@ export function scoreRecommendation(input: RankInputs): RankResult {
   ) {
     ivRvRatio = input.iv_pct / input.rv20_pct;
     ivgapScore = clamp01((ivRvRatio - 1) / (IVGAP_REF_RATIO - 1));
+    ivgapAvailable = true;
     ivgapDisplay = `IV ${input.iv_pct.toFixed(0)}% vs RV ${input.rv20_pct.toFixed(0)}% (${ivRvRatio.toFixed(2)}×)`;
   }
 
   // --- 3. ATR-normalized cushion ---
   let cushionExpectedMoves: number | null = null;
   let cushionScore = 0;
+  let cushionAvailable = false;
   let cushionDisplay = "ATR cushion unavailable";
   if (input.atr20 != null && input.atr20 > 0 && input.dte > 0) {
     const expectedMove = input.atr20 * Math.sqrt(input.dte);
     const cushionDollars = input.underlying_price - input.strike;
     cushionExpectedMoves = expectedMove > 0 ? cushionDollars / expectedMove : 0;
     cushionScore = clamp01(cushionExpectedMoves / CUSHION_REF_MOVES);
+    cushionAvailable = true;
     cushionDisplay = `${cushionExpectedMoves.toFixed(1)}× expected move cushion`;
   }
 
   // --- 4. Put/call OI skew at strike (Tier-A) ---
+  // null = no chain/too thin → exclude from base + renormalize.
+  // 0 with a display = real signal of "balanced OI" → keep at weight.
+  const oiSkewAvailable = input.oi_skew_score != null;
   const oiSkewScore = input.oi_skew_score ?? 0;
   const oiSkewDisplay = input.oi_skew_display ?? "OI skew unavailable";
 
   // --- 5. Strike on technical level (Tier-A) ---
+  const technicalAvailable = input.technical_score != null;
   const technicalScore = input.technical_score ?? 0;
   const technicalDisplay = input.technical_display ?? "no nearby level";
 
   // --- 6. RV cone position (Tier-A) ---
+  const rvConeAvailable = input.rv_cone_percentile != null;
   const rvConeScore = input.rv_cone_percentile ?? 0;
   const rvConeDisplay = input.rv_cone_percentile != null
     ? `RV at ${Math.round(input.rv_cone_percentile * 100)}th pct of 1y range`
     : "RV cone unavailable";
 
   const factors: RankFactor[] = [
-    { key: "yield",     weight: WEIGHTS.yield,     score: yieldScore,     display: `${input.annualized_yield_pct.toFixed(1)}% ann. yield` },
-    { key: "ivgap",     weight: WEIGHTS.ivgap,     score: ivgapScore,     display: ivgapDisplay },
-    { key: "cushion",   weight: WEIGHTS.cushion,   score: cushionScore,   display: cushionDisplay },
-    { key: "oi_skew",   weight: WEIGHTS.oi_skew,   score: oiSkewScore,    display: oiSkewDisplay },
-    { key: "technical", weight: WEIGHTS.technical, score: technicalScore, display: technicalDisplay },
-    { key: "rv_cone",   weight: WEIGHTS.rv_cone,   score: rvConeScore,    display: rvConeDisplay },
+    { key: "yield",     weight: WEIGHTS.yield,     score: yieldScore,     display: `${input.annualized_yield_pct.toFixed(1)}% ann. yield`, available: true },
+    { key: "ivgap",     weight: WEIGHTS.ivgap,     score: ivgapScore,     display: ivgapDisplay,                                            available: ivgapAvailable },
+    { key: "cushion",   weight: WEIGHTS.cushion,   score: cushionScore,   display: cushionDisplay,                                          available: cushionAvailable },
+    { key: "oi_skew",   weight: WEIGHTS.oi_skew,   score: oiSkewScore,    display: oiSkewDisplay,                                           available: oiSkewAvailable },
+    { key: "technical", weight: WEIGHTS.technical, score: technicalScore, display: technicalDisplay,                                        available: technicalAvailable },
+    { key: "rv_cone",   weight: WEIGHTS.rv_cone,   score: rvConeScore,    display: rvConeDisplay,                                           available: rvConeAvailable },
   ];
 
-  const base = factors.reduce((acc, f) => acc + f.weight * f.score, 0);
+  // Renormalize over available factors so a ticker with sparse Tier-A data
+  // isn't structurally penalized vs one with full data.
+  const available = factors.filter((f) => f.available);
+  const totalAvailableWeight = available.reduce((s, f) => s + f.weight, 0);
+  const base = totalAvailableWeight > 0
+    ? available.reduce((acc, f) => acc + f.weight * f.score, 0) / totalAvailableWeight
+    : 0;
 
   // --- Term-structure penalty (Tier-S hard modifier) ---
   let termSlopePct: number | null = null;
@@ -216,21 +235,27 @@ export function scoreRecommendation(input: RankInputs): RankResult {
   const finalScore = base * termPenalty * modifierMult * 100;
 
   // --- Reason string: top two drivers + caveats ---
-  const sorted = [...factors].sort(
-    (a, b) => b.score * b.weight - a.score * a.weight,
-  );
+  // Drivers are picked by weighted contribution so a small-weight factor with a
+  // perfect score doesn't crowd out a heavy-weight factor with a moderate score.
+  const sorted = [...factors]
+    .filter((f) => f.available)
+    .sort((a, b) => b.score * b.weight - a.score * a.weight);
   const drivers = sorted
-    .filter((f) => f.score > 0.05)
+    .filter((f) => f.score * f.weight >= 0.02)
     .slice(0, 2)
     .map((f) => f.display);
 
   const caveats: string[] = [];
-  // Flag the weakest available signal among the Tier-S three if it's hurting badly.
+  // Flag the weakest available Tier-S signal if it's hurting badly,
+  // and separately flag if a Tier-S signal is missing entirely.
   const tierS = factors.filter((f) => f.key === "yield" || f.key === "ivgap" || f.key === "cushion");
-  const weakestTierS = [...tierS].sort((a, b) => a.score - b.score)[0];
-  if (weakestTierS.score < 0.25 && weakestTierS.score > 0) {
-    caveats.push(`weak ${weakestTierS.key}`);
+  const tierSAvailable = tierS.filter((f) => f.available);
+  const tierSMissing = tierS.filter((f) => !f.available);
+  if (tierSAvailable.length > 0) {
+    const weakest = [...tierSAvailable].sort((a, b) => a.score - b.score)[0];
+    if (weakest.score < 0.25) caveats.push(`weak ${weakest.key}`);
   }
+  for (const m of tierSMissing) caveats.push(`${m.key} unavailable`);
   if (termPenaltyReason) caveats.push(termPenaltyReason);
   for (const m of modifiers) caveats.push(m.display);
 
