@@ -1,9 +1,8 @@
-name: CSP Scanner
+name: Idle Scan
 
-# Hits /api/cron/csp-scanner every 30 min during US market hours.
-# Cron is in UTC; 13:30–20:00 UTC covers 9:30am–4:00pm ET during DST,
-# 14:30–21:00 UTC covers it outside DST. We run from 13–21 UTC and let
-# the handler's isMarketHoursET() bail out at the exact edges.
+# Hits /api/cron/idle-scan every 30 min during US market hours.
+# Cron is in UTC; 13–20 UTC covers 9:30am–4:00pm ET across DST transitions.
+# The handler's isMarketHoursET() trims the exact edges.
 
 on:
   schedule:
@@ -25,4 +24,4 @@ jobs:
           fi
           curl -fsS -X GET \
             -H "Authorization: Bearer $CRON_SECRET" \
-            "$BASE_URL/api/cron/csp-scanner"
+            "$BASE_URL/api/cron/idle-scan"
