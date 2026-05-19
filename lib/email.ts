@@ -57,7 +57,7 @@ export function renderAlertHtml(buyingPower: number, recs: CspRecommendation[]):
       </tbody>
     </table>
     <p style="margin:16px 0 0 0;color:#a8a29e;font-size:12px">
-      Ranked by composite score (yield + IV-vs-realized-vol gap + ATR-normalized cushion, with backwardation penalty). Reason under each row shows the top drivers. Liquidity-filtered (spread ≤ 30% of mid). Sent because your buying power exceeded the strike collateral for these contracts.
+      Ranked by composite score: yield, IV-vs-realized-vol gap, ATR-normalized cushion, put-OI dominance at strike, proximity to a technical level, and RV cone position. Modifiers: term-structure backwardation, ticker concentration vs option BP, and overlap with shares already held. Reason under each row shows the top drivers and any active caveats. Names already ≥${"25"}% of BP or with no bid-side depth are filtered out before ranking.
     </p>
   </div>`;
 }
