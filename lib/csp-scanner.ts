@@ -3,10 +3,11 @@
 // For each ticker on the watchlist, finds the most attractive cash-secured put
 // in the 0.10–0.20 delta band that fits the user's option buying power, with a
 // liquidity filter mirroring the rest of the codebase. Cross-ticker ranking is
-// a Tier-S composite of annualized yield, IV richness vs realized vol, and
-// ATR-normalized OTM cushion, with a term-structure backwardation penalty.
-// See `lib/csp-ranking.ts`. The cron route filters this list against the
-// `sent_alerts` dedup table before emailing.
+// a Tier-S + Tier-A composite (see `lib/csp-ranking.ts`) plus book-state-aware
+// modifiers (concentration vs option BP, assignment overlap with held shares).
+// Bid-side depth is a hard pre-filter applied while picking the per-ticker best.
+// The cron route filters this list against the `sent_alerts` dedup table before
+// emailing.
 
 import { getServiceClient } from "@/lib/supabase";
 import { getAccountBalances } from "@/lib/balances";
@@ -19,9 +20,14 @@ import {
 } from "@/lib/quotes";
 import {
   scoreRecommendation,
-  fetchRvAndAtr,
+  fetchHistoricalSignals,
   fetchBackAtmIvPct,
+  calcTechnicalLevel,
+  calcOiSkew,
+  passesDepthFilter,
+  CONCENTRATION_HARD_REJECT_PCT,
 } from "@/lib/csp-ranking";
+import { fetchBookState } from "@/lib/book-state";
 import type { WatchlistItem } from "@/lib/types";
 
 // v1: hardcoded. Admin override is v2.
@@ -46,17 +52,23 @@ export type CspRecommendation = {
   ask: number;
   delta: number;            // absolute value
   collateral: number;       // strike * 100
-  premium_per_contract: number; // bid * 100
-  annualized_yield_pct: number; // (bid / strike) * (365 / dte) * 100
+  premium_per_contract: number;
+  annualized_yield_pct: number;
   otm_pct: number;
-  iv_pct: number | null;    // candidate option mid IV, %
+  iv_pct: number | null;
   // Ranking outputs — populated after cross-ticker scoring.
-  rank_score: number;       // 0..100, higher = better
+  rank_score: number;
   rank_reason: string;
   rv20_pct: number | null;
   iv_rv_ratio: number | null;
   cushion_expected_moves: number | null;
   term_slope_pct: number | null;
+  // Tier-A telemetry
+  oi_skew_score: number | null;
+  technical_score: number | null;
+  rv_cone_percentile: number | null;
+  concentration_pct: number | null;
+  existing_long_shares: number;
 };
 
 function pickExpiration(dates: string[]): string | null {
@@ -85,16 +97,24 @@ function dteOf(expiration: string): number {
   );
 }
 
+// Per-ticker best put: within the delta band, applies spread + depth filters,
+// then picks the highest annualized-yield contract that fits buying power. The
+// richer cross-ticker scoring is done downstream — within-ticker selection
+// stays simple to keep the search tractable.
 function bestPutInBand(
   chain: OptionQuote[],
   underlyingPrice: number,
   expiration: string,
   buyingPower: number,
-): CspRecommendation | null {
+): Pick<CspRecommendation,
+  "underlying_price" | "expiration" | "dte" | "strike" | "bid" | "ask"
+  | "delta" | "collateral" | "premium_per_contract" | "annualized_yield_pct"
+  | "otm_pct" | "iv_pct"
+> | null {
   const dte = dteOf(expiration);
   if (dte <= 0) return null;
 
-  const candidates: CspRecommendation[] = [];
+  const candidates: Array<NonNullable<ReturnType<typeof bestPutInBand>>> = [];
   for (const opt of chain) {
     if (opt.option_type !== "put") continue;
     if (opt.delta == null) continue;
@@ -107,6 +127,7 @@ function bestPutInBand(
     const mid = (bid + ask) / 2;
     const spreadPct = mid > 0 ? (ask - bid) / mid : 1;
     if (spreadPct > MAX_SPREAD_PCT) continue;
+    if (!passesDepthFilter(opt.bid_size, opt.ask_size)) continue;
 
     const collateral = opt.strike * 100;
     if (collateral > buyingPower) continue;
@@ -114,7 +135,6 @@ function bestPutInBand(
     const annualized_yield_pct = (bid / opt.strike) * (365 / dte) * 100;
 
     candidates.push({
-      ticker: "",
       underlying_price: underlyingPrice,
       expiration,
       dte,
@@ -127,12 +147,6 @@ function bestPutInBand(
       annualized_yield_pct,
       otm_pct: ((underlyingPrice - opt.strike) / underlyingPrice) * 100,
       iv_pct: opt.mid_iv != null ? opt.mid_iv * 100 : null,
-      rank_score: 0,
-      rank_reason: "",
-      rv20_pct: null,
-      iv_rv_ratio: null,
-      cushion_expected_moves: null,
-      term_slope_pct: null,
     });
   }
 
@@ -160,10 +174,10 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
   const buyingPower = balances?.option_buying_power ?? 0;
   if (buyingPower <= 0) return { buying_power: 0, recommendations: [] };
 
+  const bookState = await fetchBookState();
   const tickers = items.map((i) => i.ticker);
   const quotes = await getWatchlistQuotes(tickers);
 
-  // Fetch chain + back-month IV + price-history-derived RV/ATR in parallel per ticker.
   const perTicker = await Promise.all(
     tickers.map(async (ticker): Promise<CspRecommendation | null> => {
       const quote: StockQuote | undefined = quotes.get(ticker);
@@ -172,32 +186,62 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
         const expirations = await getExpirations(ticker);
         const expiration = pickExpiration(expirations);
         if (!expiration) return null;
-        const [chain, rvAtr, backIvPct] = await Promise.all([
+
+        const [chain, hist, backIvPct] = await Promise.all([
           getOptionChain(ticker, expiration),
-          fetchRvAndAtr(ticker),
+          fetchHistoricalSignals(ticker),
           fetchBackAtmIvPct(ticker, expirations, expiration, quote.last),
         ]);
+
         const best = bestPutInBand(chain, quote.last, expiration, buyingPower);
         if (!best) return null;
+
+        const existingCsp = bookState.openCspCollateral.get(ticker) ?? 0;
+        const concentrationPct =
+          ((existingCsp + best.collateral) / buyingPower) * 100;
+        // Hard reject before scoring — keeps the alert list focused on names
+        // the user actually has room to add to.
+        if (concentrationPct >= CONCENTRATION_HARD_REJECT_PCT) return null;
+
+        const existingLongShares = bookState.longShares.get(ticker) ?? 0;
+        const oiSkew = calcOiSkew(chain, best.strike);
+        const technical = calcTechnicalLevel(hist.closes, best.strike, quote.last);
+
         const ranked = scoreRecommendation({
+          ticker,
           annualized_yield_pct: best.annualized_yield_pct,
           underlying_price: best.underlying_price,
           strike: best.strike,
           dte: best.dte,
+          collateral: best.collateral,
           iv_pct: best.iv_pct,
-          rv20_pct: rvAtr.rv20_pct,
-          atr20: rvAtr.atr20,
+          rv20_pct: hist.rv20_pct,
+          atr20: hist.atr20,
           back_atm_iv_pct: backIvPct,
+          oi_skew_score: oiSkew.score,
+          oi_skew_display: oiSkew.display,
+          technical_score: technical.score,
+          technical_display: technical.display,
+          rv_cone_percentile: hist.rv_cone_percentile,
+          buying_power: buyingPower,
+          existing_csp_collateral: existingCsp,
+          existing_long_shares: existingLongShares,
         });
+
         return {
           ...best,
           ticker,
-          rv20_pct: rvAtr.rv20_pct,
+          rv20_pct: hist.rv20_pct,
           iv_rv_ratio: ranked.iv_rv_ratio,
           cushion_expected_moves: ranked.cushion_expected_moves,
           term_slope_pct: ranked.term_slope_pct,
           rank_score: ranked.score,
           rank_reason: ranked.reason,
+          oi_skew_score: oiSkew.score,
+          technical_score: technical.score,
+          rv_cone_percentile: hist.rv_cone_percentile,
+          concentration_pct: concentrationPct,
+          existing_long_shares: existingLongShares,
         };
       } catch {
         return null;

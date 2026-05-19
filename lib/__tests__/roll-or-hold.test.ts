@@ -43,8 +43,8 @@ describe("buildRollOrHoldRows", () => {
     getHv30Mock.mockResolvedValue(null); // IV regime disabled unless a test opts in
     getExpirationsMock.mockResolvedValue(["2026-06-19"]); // 33 DTE from frozen today
     getOptionChainMock.mockResolvedValue([
-      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.40 },
-      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, delta: -0.25, mid_iv: 0.42 },
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.30, mid_iv: 0.40 },
+      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.25, mid_iv: 0.42 },
     ]);
   });
   afterEach(() => { vi.useRealTimers(); });
@@ -107,9 +107,9 @@ describe("buildRollOrHoldRows", () => {
   it("flags illiquid strikes (>30% spread) and marks tight strikes liquid", async () => {
     getOptionChainMock.mockResolvedValue([
       // tight: ask 3.1, bid 3.0, mid 3.05, spread ≈ 3.3%
-      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.40 },
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.30, mid_iv: 0.40 },
       // wide: ask 2.0, bid 1.0, mid 1.5, spread ≈ 66.7%
-      { strike: 145, option_type: "put", bid: 1.0, ask: 2.0, delta: -0.25, mid_iv: 0.42 },
+      { strike: 145, option_type: "put", bid: 1.0, ask: 2.0, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.25, mid_iv: 0.42 },
     ]);
     const pos = csp({ expiration_date: "2026-05-22" });
     const liveMarks = new Map([[pos.option_symbol, 0.50]]);
@@ -127,8 +127,8 @@ describe("buildRollOrHoldRows", () => {
     getHv30Mock.mockResolvedValue(40); // HV30 = 40%
     getOptionChainMock.mockResolvedValue([
       // ATM (spot 150) — mid_iv 0.60 = 60% IV → ratio 60/40 = 1.5
-      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, delta: -0.30, mid_iv: 0.60 },
-      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, delta: -0.25, mid_iv: 0.42 },
+      { strike: 150, option_type: "put", bid: 3.0, ask: 3.1, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.30, mid_iv: 0.60 },
+      { strike: 145, option_type: "put", bid: 1.8, ask: 1.9, bid_size: 10, ask_size: 10, open_interest: 100, delta: -0.25, mid_iv: 0.42 },
     ]);
     const pos = csp({ expiration_date: "2026-05-22" });
     const liveMarks = new Map([

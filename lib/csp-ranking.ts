@@ -1,61 +1,110 @@
-// Ranks CSP candidates across tickers using four Tier-S signals:
-//   1. Annualized yield (the target)
-//   2. RV/IV gap — IV richness vs trailing 20d realized vol
-//   3. Cushion in expected-move units — OTM buffer normalized by ATR·√DTE
-//   4. IV term-structure slope — hard modifier; backwardation penalizes
+// Composite ranking for CSP candidates.
 //
-// Each candidate gets a composite score in [0,1] and a human-readable reason
-// surfacing the top two contributing factors plus any active penalty.
+// Tier-S (74% of additive weight): annualized yield, IV-vs-realized-vol gap,
+// ATR-normalized OTM cushion. Plus a hard term-structure backwardation penalty.
+//
+// Tier-A (26% additive + book-state modifiers): put/call OI skew at the strike,
+// strike sitting on a technical level (50d/200d MA or 60d low), RV cone position
+// in trailing 1y. Modifiers: ticker concentration vs option BP, and assignment
+// overlap with an existing long position. Bid-side depth is a hard pre-filter
+// in `passesDepthFilter` — applied at candidate-selection time, not score time.
+//
+// Each candidate's final score is in [0, 100]: base composite × all modifiers × 100.
+// `reason` surfaces the top two contributing factors plus active caveats.
 
 import { fetchDatedHistoryCached, getOptionChain, type OptionQuote } from "@/lib/quotes";
+import type { BookState } from "@/lib/book-state";
 
-export type RankFactorKey = "yield" | "ivgap" | "cushion";
+export type RankFactorKey =
+  | "yield"
+  | "ivgap"
+  | "cushion"
+  | "oi_skew"
+  | "technical"
+  | "rv_cone";
 
 export type RankFactor = {
   key: RankFactorKey;
   weight: number;
-  score: number; // 0..1
+  score: number;       // 0..1
+  display: string;     // user-facing one-liner
+};
+
+export type RankModifier = {
+  key: "concentration" | "assignment_overlap";
+  multiplier: number;  // <1 = penalty
   display: string;
 };
 
 export type RankInputs = {
+  ticker: string;
   annualized_yield_pct: number;
   underlying_price: number;
   strike: number;
   dte: number;
-  iv_pct: number | null;        // candidate option IV, %
-  rv20_pct: number | null;      // 20d annualized realized vol, %
-  atr20: number | null;         // 20d close-to-close ATR, dollars
-  back_atm_iv_pct: number | null; // ATM IV ~60d out, %
+  collateral: number;          // strike * 100
+  iv_pct: number | null;
+  rv20_pct: number | null;
+  atr20: number | null;
+  back_atm_iv_pct: number | null;
+  // Tier-A extras
+  oi_skew_score: number | null;        // 0..1, computed from chain
+  oi_skew_display: string | null;
+  technical_score: number | null;      // 0..1
+  technical_display: string | null;
+  rv_cone_percentile: number | null;   // 0..1 (1 = RV at all-time high in 1y)
+  // Book state
+  buying_power: number;
+  existing_csp_collateral: number;     // $ already in open CSPs on this ticker
+  existing_long_shares: number;        // shares held in this ticker
 };
 
 export type RankResult = {
-  score: number;                  // 0..100 after penalty
-  factors: RankFactor[];          // additive factors (top contributors)
+  score: number;                  // 0..100, post-modifier
+  factors: RankFactor[];
+  modifiers: RankModifier[];
   iv_rv_ratio: number | null;
   cushion_expected_moves: number | null;
-  term_slope_pct: number | null;  // (front - back) / back * 100
-  penalty_multiplier: number;     // 1 = none, <1 = backwardation
+  term_slope_pct: number | null;
+  penalty_multiplier: number;     // backwardation only (term-structure)
+  modifier_multiplier: number;    // product of all RankModifier multipliers
   reason: string;
 };
 
-// Weights sum to 1.0. Yield is the target, the other two are correctional.
+// Tier-S keeps 74% of additive weight; Tier-A additive factors share 26%.
 const WEIGHTS: Record<RankFactorKey, number> = {
-  yield: 0.40,
-  ivgap: 0.30,
-  cushion: 0.30,
+  yield: 0.30,
+  ivgap: 0.22,
+  cushion: 0.22,
+  oi_skew: 0.08,
+  technical: 0.08,
+  rv_cone: 0.10,
 };
 
-// Reference points for normalization. Fixed (not min-max across batch) so a
-// "good" score is good in absolute terms even with only 3 candidates.
-const YIELD_REF_PCT = 15;       // 15% annualized = full score
-const IVGAP_REF_RATIO = 1.5;    // IV is 50% above RV = full score
-const CUSHION_REF_MOVES = 1.5;  // strike sits 1.5× expected move below spot = full
+// Reference points for normalization (fixed, not min-max).
+const YIELD_REF_PCT = 15;
+const IVGAP_REF_RATIO = 1.5;
+const CUSHION_REF_MOVES = 1.5;
 
-const TERM_BACKWARD_STRONG_PCT = 10; // front >10% above back → strong penalty
+// Term-structure penalty thresholds.
+const TERM_BACKWARD_STRONG_PCT = 10;
 const TERM_BACKWARD_MILD_PCT = 5;
 const PENALTY_STRONG = 0.70;
 const PENALTY_MILD = 0.85;
+
+// Concentration thresholds (% of option buying power on one ticker after fill).
+export const CONCENTRATION_HARD_REJECT_PCT = 25;
+const CONCENTRATION_SOFT_PCT = 15;
+const CONCENTRATION_PENALTY = 0.60;
+
+// Assignment-overlap: if user already has ≥1 round lot in this name, getting
+// assigned doubles down on a directional bet they already hold.
+const OVERLAP_SHARES_THRESHOLD = 100;
+const OVERLAP_PENALTY = 0.75;
+
+// Bid-side depth pre-filter: thin bid relative to ask = the printed mid is fantasy.
+export const DEPTH_RATIO_FILTER = 0.10;
+export const DEPTH_ASK_MIN = 5;
 
 function clamp01(x: number): number {
   if (!Number.isFinite(x)) return 0;
@@ -65,10 +114,10 @@ function clamp01(x: number): number {
 }
 
 export function scoreRecommendation(input: RankInputs): RankResult {
-  // 1. Yield factor — capped reference.
+  // --- 1. Yield ---
   const yieldScore = clamp01(input.annualized_yield_pct / YIELD_REF_PCT);
 
-  // 2. RV/IV gap — only meaningful when both numbers exist.
+  // --- 2. RV/IV gap ---
   let ivRvRatio: number | null = null;
   let ivgapScore = 0;
   let ivgapDisplay = "IV vs RV unavailable";
@@ -77,12 +126,11 @@ export function scoreRecommendation(input: RankInputs): RankResult {
     input.rv20_pct != null && input.rv20_pct > 0
   ) {
     ivRvRatio = input.iv_pct / input.rv20_pct;
-    // Reward ratio above 1.0; map [1.0 .. IVGAP_REF_RATIO] → [0..1].
     ivgapScore = clamp01((ivRvRatio - 1) / (IVGAP_REF_RATIO - 1));
     ivgapDisplay = `IV ${input.iv_pct.toFixed(0)}% vs RV ${input.rv20_pct.toFixed(0)}% (${ivRvRatio.toFixed(2)}×)`;
   }
 
-  // 3. ATR-normalized cushion — strike's distance below spot in expected-move units.
+  // --- 3. ATR-normalized cushion ---
   let cushionExpectedMoves: number | null = null;
   let cushionScore = 0;
   let cushionDisplay = "ATR cushion unavailable";
@@ -94,40 +142,80 @@ export function scoreRecommendation(input: RankInputs): RankResult {
     cushionDisplay = `${cushionExpectedMoves.toFixed(1)}× expected move cushion`;
   }
 
+  // --- 4. Put/call OI skew at strike (Tier-A) ---
+  const oiSkewScore = input.oi_skew_score ?? 0;
+  const oiSkewDisplay = input.oi_skew_display ?? "OI skew unavailable";
+
+  // --- 5. Strike on technical level (Tier-A) ---
+  const technicalScore = input.technical_score ?? 0;
+  const technicalDisplay = input.technical_display ?? "no nearby level";
+
+  // --- 6. RV cone position (Tier-A) ---
+  const rvConeScore = input.rv_cone_percentile ?? 0;
+  const rvConeDisplay = input.rv_cone_percentile != null
+    ? `RV at ${Math.round(input.rv_cone_percentile * 100)}th pct of 1y range`
+    : "RV cone unavailable";
+
   const factors: RankFactor[] = [
-    {
-      key: "yield",
-      weight: WEIGHTS.yield,
-      score: yieldScore,
-      display: `${input.annualized_yield_pct.toFixed(1)}% ann. yield`,
-    },
-    { key: "ivgap", weight: WEIGHTS.ivgap, score: ivgapScore, display: ivgapDisplay },
-    { key: "cushion", weight: WEIGHTS.cushion, score: cushionScore, display: cushionDisplay },
+    { key: "yield",     weight: WEIGHTS.yield,     score: yieldScore,     display: `${input.annualized_yield_pct.toFixed(1)}% ann. yield` },
+    { key: "ivgap",     weight: WEIGHTS.ivgap,     score: ivgapScore,     display: ivgapDisplay },
+    { key: "cushion",   weight: WEIGHTS.cushion,   score: cushionScore,   display: cushionDisplay },
+    { key: "oi_skew",   weight: WEIGHTS.oi_skew,   score: oiSkewScore,    display: oiSkewDisplay },
+    { key: "technical", weight: WEIGHTS.technical, score: technicalScore, display: technicalDisplay },
+    { key: "rv_cone",   weight: WEIGHTS.rv_cone,   score: rvConeScore,    display: rvConeDisplay },
   ];
 
   const base = factors.reduce((acc, f) => acc + f.weight * f.score, 0);
 
-  // 4. Term-structure penalty — backwardation = market pricing a near-term event.
+  // --- Term-structure penalty (Tier-S hard modifier) ---
   let termSlopePct: number | null = null;
-  let penalty = 1.0;
-  let penaltyReason: string | null = null;
+  let termPenalty = 1.0;
+  let termPenaltyReason: string | null = null;
   if (
     input.iv_pct != null && input.iv_pct > 0 &&
     input.back_atm_iv_pct != null && input.back_atm_iv_pct > 0
   ) {
     termSlopePct = ((input.iv_pct - input.back_atm_iv_pct) / input.back_atm_iv_pct) * 100;
     if (termSlopePct >= TERM_BACKWARD_STRONG_PCT) {
-      penalty = PENALTY_STRONG;
-      penaltyReason = `strong backwardation (front IV +${termSlopePct.toFixed(0)}% vs 60d)`;
+      termPenalty = PENALTY_STRONG;
+      termPenaltyReason = `strong backwardation (front IV +${termSlopePct.toFixed(0)}% vs 60d)`;
     } else if (termSlopePct >= TERM_BACKWARD_MILD_PCT) {
-      penalty = PENALTY_MILD;
-      penaltyReason = `mild backwardation (front IV +${termSlopePct.toFixed(0)}% vs 60d)`;
+      termPenalty = PENALTY_MILD;
+      termPenaltyReason = `mild backwardation (front IV +${termSlopePct.toFixed(0)}% vs 60d)`;
     }
   }
 
-  const finalScore = base * penalty * 100;
+  // --- Tier-A modifiers ---
+  const modifiers: RankModifier[] = [];
 
-  // Reason: top 2 contributing factors (by weighted score), plus caveats.
+  // Concentration: existing CSP collateral + this rec, vs option BP.
+  if (input.buying_power > 0) {
+    const concentrationPct =
+      ((input.existing_csp_collateral + input.collateral) / input.buying_power) * 100;
+    if (concentrationPct >= CONCENTRATION_SOFT_PCT &&
+        concentrationPct < CONCENTRATION_HARD_REJECT_PCT) {
+      modifiers.push({
+        key: "concentration",
+        multiplier: CONCENTRATION_PENALTY,
+        display: `concentration ${concentrationPct.toFixed(0)}% of BP`,
+      });
+    }
+    // Hard reject (>=25%) is handled by the scanner before scoring runs.
+  }
+
+  // Assignment overlap: already holding a round lot of this name.
+  if (input.existing_long_shares >= OVERLAP_SHARES_THRESHOLD) {
+    modifiers.push({
+      key: "assignment_overlap",
+      multiplier: OVERLAP_PENALTY,
+      display: `already long ${input.existing_long_shares} sh — assignment doubles bet`,
+    });
+  }
+
+  const modifierMult = modifiers.reduce((acc, m) => acc * m.multiplier, 1);
+  const finalScore = base * termPenalty * modifierMult * 100;
+
+  // --- Reason string: top two drivers + caveats ---
   const sorted = [...factors].sort(
     (a, b) => b.score * b.weight - a.score * a.weight,
   );
@@ -135,16 +223,20 @@ export function scoreRecommendation(input: RankInputs): RankResult {
     .filter((f) => f.score > 0.05)
     .slice(0, 2)
     .map((f) => f.display);
-  const weakFactor = sorted[sorted.length - 1];
+
   const caveats: string[] = [];
-  if (weakFactor && weakFactor.score < 0.35 && weakFactor.score > 0) {
-    caveats.push(`weak ${weakFactor.key}`);
+  // Flag the weakest available signal among the Tier-S three if it's hurting badly.
+  const tierS = factors.filter((f) => f.key === "yield" || f.key === "ivgap" || f.key === "cushion");
+  const weakestTierS = [...tierS].sort((a, b) => a.score - b.score)[0];
+  if (weakestTierS.score < 0.25 && weakestTierS.score > 0) {
+    caveats.push(`weak ${weakestTierS.key}`);
   }
-  if (penaltyReason) caveats.push(penaltyReason);
+  if (termPenaltyReason) caveats.push(termPenaltyReason);
+  for (const m of modifiers) caveats.push(m.display);
 
   let reason: string;
   if (drivers.length === 0) {
-    reason = penaltyReason ? `Penalized: ${penaltyReason}` : "No standout factors";
+    reason = caveats.length > 0 ? `Penalized: ${caveats.join("; ")}` : "No standout factors";
   } else {
     reason = drivers.join(" · ");
     if (caveats.length > 0) reason += ` · ⚠ ${caveats.join("; ")}`;
@@ -153,17 +245,18 @@ export function scoreRecommendation(input: RankInputs): RankResult {
   return {
     score: finalScore,
     factors,
+    modifiers,
     iv_rv_ratio: ivRvRatio,
     cushion_expected_moves: cushionExpectedMoves,
     term_slope_pct: termSlopePct,
-    penalty_multiplier: penalty,
+    penalty_multiplier: termPenalty,
+    modifier_multiplier: modifierMult,
     reason,
   };
 }
 
-// --- Data fetchers -------------------------------------------------------
+// --- Tier-S data fetchers (existing) -------------------------------------
 
-// 20d annualized historical volatility from closing prices, as a percent.
 export function calcRv20Pct(closes: number[]): number | null {
   if (closes.length < 21) return null;
   const recent = closes.slice(-21);
@@ -175,8 +268,6 @@ export function calcRv20Pct(closes: number[]): number | null {
   return Math.sqrt(variance * 252) * 100;
 }
 
-// Close-to-close ATR proxy in dollars. True ATR uses HLC; this is the
-// best we can do from daily closes alone and is highly correlated.
 export function calcAtr20(closes: number[]): number | null {
   if (closes.length < 21) return null;
   const recent = closes.slice(-21);
@@ -185,26 +276,154 @@ export function calcAtr20(closes: number[]): number | null {
   return trs.reduce((s, t) => s + t, 0) / trs.length;
 }
 
-export async function fetchRvAndAtr(
-  symbol: string,
-): Promise<{ rv20_pct: number | null; atr20: number | null }> {
+// --- Tier-A: technical level proximity ----------------------------------
+
+function simpleMa(closes: number[], n: number): number | null {
+  if (closes.length < n) return null;
+  const slice = closes.slice(-n);
+  return slice.reduce((s, c) => s + c, 0) / n;
+}
+
+// Bonus for the strike sitting near a 50d MA, 200d MA, or 60d low.
+// Returns [score 0..1, display string]. Within 3% of any level = 1.0, 5% = 0.5,
+// further = 0. We pick the *closest* level so the reason names a specific anchor.
+export function calcTechnicalLevel(
+  closes: number[],
+  strike: number,
+  spot: number,
+): { score: number; display: string | null } {
+  if (closes.length < 50 || spot <= 0) return { score: 0, display: null };
+  const ma50 = simpleMa(closes, 50);
+  const ma200 = simpleMa(closes, 200);
+  const low60 = closes.length >= 60
+    ? Math.min(...closes.slice(-60))
+    : null;
+
+  const levels: Array<{ name: string; value: number }> = [];
+  if (ma50 != null) levels.push({ name: "50d MA", value: ma50 });
+  if (ma200 != null) levels.push({ name: "200d MA", value: ma200 });
+  if (low60 != null) levels.push({ name: "60d low", value: low60 });
+  if (levels.length === 0) return { score: 0, display: null };
+
+  let bestScore = 0;
+  let bestName: string | null = null;
+  for (const lvl of levels) {
+    const pctAway = Math.abs(strike - lvl.value) / spot;
+    let s = 0;
+    if (pctAway <= 0.03) s = 1;
+    else if (pctAway <= 0.05) s = 0.5;
+    if (s > bestScore) {
+      bestScore = s;
+      bestName = `${lvl.name} ${(pctAway * 100).toFixed(1)}% away`;
+    }
+  }
+  return { score: bestScore, display: bestName };
+}
+
+// --- Tier-A: RV cone position --------------------------------------------
+
+// Rolling 20d annualized RV at each step where there are ≥21 prior closes.
+function rollingRv20Series(closes: number[]): number[] {
+  if (closes.length < 22) return [];
+  const out: number[] = [];
+  for (let i = 21; i <= closes.length; i++) {
+    const v = calcRv20Pct(closes.slice(0, i));
+    if (v != null) out.push(v);
+  }
+  return out;
+}
+
+// Percentile rank of the most recent RV20 within the trailing-year cone (0..1).
+// Higher = current realized vol is elevated relative to the past year, which the
+// Tier-A theory says is a mean-reversion setup that often coincides with IV
+// pricing in fear that won't be sustained.
+export function calcRvConePercentile(closes: number[]): number | null {
+  const series = rollingRv20Series(closes);
+  if (series.length < 30) return null; // need at least a month of points
+  const current = series[series.length - 1];
+  const sorted = [...series].sort((a, b) => a - b);
+  let rank = 0;
+  for (const v of sorted) {
+    if (v <= current) rank++;
+  }
+  return rank / sorted.length;
+}
+
+// --- Tier-A: OI skew at strike -------------------------------------------
+
+// Put-dominance ratio in a ±N-strike band around the candidate strike. Heavy
+// put OI clustered around the strike is consistent with a dealer-defended
+// floor: assignment risk is structurally lower than naive delta suggests.
+export function calcOiSkew(
+  chain: OptionQuote[],
+  strike: number,
+  bandStrikes = 2,
+): { score: number; display: string | null } {
+  const strikes = [...new Set(chain.map((o) => o.strike))].sort((a, b) => a - b);
+  if (strikes.length === 0) return { score: 0, display: null };
+  const idx = strikes.findIndex((s) => s >= strike);
+  if (idx < 0) return { score: 0, display: null };
+  const lo = strikes[Math.max(0, idx - bandStrikes)];
+  const hi = strikes[Math.min(strikes.length - 1, idx + bandStrikes)];
+
+  let putOi = 0;
+  let callOi = 0;
+  for (const o of chain) {
+    if (o.strike < lo || o.strike > hi) continue;
+    if (o.option_type === "put") putOi += o.open_interest;
+    else if (o.option_type === "call") callOi += o.open_interest;
+  }
+  const total = putOi + callOi;
+  if (total < 100) return { score: 0, display: "OI too thin" };
+
+  const putShare = putOi / total;
+  // Map 50%→0, 80%+→1, linear in between.
+  const score = Math.max(0, Math.min(1, (putShare - 0.5) / 0.3));
+  const display = `${(putShare * 100).toFixed(0)}% put-OI dominance (±${bandStrikes} strikes)`;
+  return { score, display };
+}
+
+// --- Bid-side depth pre-filter -------------------------------------------
+
+// True = candidate is liquid enough for the printed mid to be realistic.
+// We only filter when the ask side actually has size (avoiding false rejects
+// when a feed returns 0 for both).
+export function passesDepthFilter(bidSize: number, askSize: number): boolean {
+  if (askSize < DEPTH_ASK_MIN) return true;
+  if (bidSize <= 0) return false;
+  return bidSize / askSize >= DEPTH_RATIO_FILTER;
+}
+
+// --- Combined fetchers (used by the scanner) -----------------------------
+
+// Pull ~380 calendar days of history once per ticker, then derive RV20, ATR20,
+// MAs, and the cone series from the same series.
+export async function fetchHistoricalSignals(symbol: string): Promise<{
+  closes: number[];
+  rv20_pct: number | null;
+  atr20: number | null;
+  rv_cone_percentile: number | null;
+}> {
   const today = new Date();
   today.setHours(0, 0, 0, 0);
   const start = new Date(today);
-  start.setDate(start.getDate() - 45); // ~45 calendar days → ≥21 closes
+  start.setDate(start.getDate() - 380);
   const startStr = start.toISOString().slice(0, 10);
   const endStr = today.toISOString().slice(0, 10);
   try {
     const dated = await fetchDatedHistoryCached(symbol, startStr, endStr);
     const closes = dated.map((d) => d.close);
-    return { rv20_pct: calcRv20Pct(closes), atr20: calcAtr20(closes) };
+    return {
+      closes,
+      rv20_pct: calcRv20Pct(closes),
+      atr20: calcAtr20(closes),
+      rv_cone_percentile: calcRvConePercentile(closes),
+    };
   } catch {
-    return { rv20_pct: null, atr20: null };
+    return { closes: [], rv20_pct: null, atr20: null, rv_cone_percentile: null };
   }
 }
 
-// Pick the expiration nearest to ~60d after the front expiration we already
-// chose, used as the "back month" for term-structure slope.
 export function pickBackExpiration(
   expirations: string[],
   frontExpiration: string,
@@ -228,8 +447,6 @@ export function pickBackExpiration(
   return candidates[0].date;
 }
 
-// ATM mid_iv (%) from a chain, picking the strike closest to spot. Uses puts
-// to stay consistent with the CSP side; falls back to calls if needed.
 export function atmIvPctFromChain(chain: OptionQuote[], spot: number): number | null {
   const withIv = chain.filter((o) => o.mid_iv != null && o.mid_iv > 0);
   if (withIv.length === 0) return null;
@@ -254,3 +471,4 @@ export async function fetchBackAtmIvPct(
     return null;
   }
 }
+

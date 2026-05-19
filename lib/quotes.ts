@@ -133,6 +133,9 @@ type TradierOption = {
   strike: number;
   bid: number | null;
   ask: number | null;
+  bidsize?: number | null;
+  asksize?: number | null;
+  open_interest?: number | null;
   expiration_date: string;
   greeks?: { delta: number | null; mid_iv: number | null } | null;
 };
@@ -347,6 +350,9 @@ export type OptionQuote = {
   option_type: string;
   bid: number;
   ask: number;
+  bid_size: number;
+  ask_size: number;
+  open_interest: number;
   delta: number | null;
   mid_iv: number | null;
 };
@@ -362,6 +368,9 @@ export async function getOptionChain(symbol: string, expiration: string): Promis
     option_type: o.option_type,
     bid: o.bid ?? 0,
     ask: o.ask ?? 0,
+    bid_size: o.bidsize ?? 0,
+    ask_size: o.asksize ?? 0,
+    open_interest: o.open_interest ?? 0,
     delta: o.greeks?.delta ?? null,
     mid_iv: o.greeks?.mid_iv ?? null,
   }));
