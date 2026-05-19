@@ -32,7 +32,9 @@ export type RankFactor = {
 };
 
 export type RankModifier = {
-  key: "concentration" | "assignment_overlap";
+  // String rather than a closed union: the CC path adds its own modifier keys
+  // (call_away_near_basis, ex_div_in_window). Keep the runtime contract loose.
+  key: string;
   multiplier: number;  // <1 = penalty
   display: string;
 };
@@ -76,7 +78,7 @@ export type RankResult = {
 // `ivgap` is the cleanest edge signal so it leads. `yield` alone is collinear
 // with IV at fixed delta/DTE, so it gets less weight than ivgap. `rv_cone` is
 // partially redundant with ivgap (both reward elevated vol), so it's small.
-const WEIGHTS: Record<RankFactorKey, number> = {
+export const WEIGHTS: Record<RankFactorKey, number> = {
   yield: 0.22,
   ivgap: 0.28,
   cushion: 0.24,
@@ -86,15 +88,15 @@ const WEIGHTS: Record<RankFactorKey, number> = {
 };
 
 // Reference points for normalization (fixed, not min-max).
-const YIELD_REF_PCT = 20;
-const IVGAP_REF_RATIO = 1.5;
-const CUSHION_REF_MOVES = 1.5;
+export const YIELD_REF_PCT = 20;
+export const IVGAP_REF_RATIO = 1.5;
+export const CUSHION_REF_MOVES = 1.5;
 
 // Term-structure penalty thresholds.
-const TERM_BACKWARD_STRONG_PCT = 10;
-const TERM_BACKWARD_MILD_PCT = 5;
-const PENALTY_STRONG = 0.70;
-const PENALTY_MILD = 0.85;
+export const TERM_BACKWARD_STRONG_PCT = 10;
+export const TERM_BACKWARD_MILD_PCT = 5;
+export const PENALTY_STRONG = 0.70;
+export const PENALTY_MILD = 0.85;
 
 // Concentration thresholds (% of option buying power on one ticker after fill).
 export const CONCENTRATION_HARD_REJECT_PCT = 25;
@@ -110,7 +112,7 @@ const OVERLAP_PENALTY = 0.75;
 export const DEPTH_RATIO_FILTER = 0.10;
 export const DEPTH_ASK_MIN = 5;
 
-function clamp01(x: number): number {
+export function clamp01(x: number): number {
   if (!Number.isFinite(x)) return 0;
   if (x < 0) return 0;
   if (x > 1) return 1;
@@ -309,25 +311,32 @@ function simpleMa(closes: number[], n: number): number | null {
   return slice.reduce((s, c) => s + c, 0) / n;
 }
 
-// Bonus for the strike sitting near a 50d MA, 200d MA, or 60d low.
+// Bonus for the strike sitting near a relevant technical level.
+// - direction="support" (CSP): 50d MA, 200d MA, 60d low — a strike that lands
+//   on a defended floor has less assignment risk than naive delta implies.
+// - direction="resistance" (CC): 50d MA, 200d MA, 60d high — a strike at a
+//   ceiling has less call-away risk than naive delta implies.
 // Returns [score 0..1, display string]. Within 3% of any level = 1.0, 5% = 0.5,
 // further = 0. We pick the *closest* level so the reason names a specific anchor.
 export function calcTechnicalLevel(
   closes: number[],
   strike: number,
   spot: number,
+  direction: "support" | "resistance" = "support",
 ): { score: number; display: string | null } {
   if (closes.length < 50 || spot <= 0) return { score: 0, display: null };
   const ma50 = simpleMa(closes, 50);
   const ma200 = simpleMa(closes, 200);
-  const low60 = closes.length >= 60
-    ? Math.min(...closes.slice(-60))
+  const extreme60 = closes.length >= 60
+    ? (direction === "support"
+        ? { name: "60d low", value: Math.min(...closes.slice(-60)) }
+        : { name: "60d high", value: Math.max(...closes.slice(-60)) })
     : null;
 
   const levels: Array<{ name: string; value: number }> = [];
   if (ma50 != null) levels.push({ name: "50d MA", value: ma50 });
   if (ma200 != null) levels.push({ name: "200d MA", value: ma200 });
-  if (low60 != null) levels.push({ name: "60d low", value: low60 });
+  if (extreme60 != null) levels.push(extreme60);
   if (levels.length === 0) return { score: 0, display: null };
 
   let bestScore = 0;
@@ -376,12 +385,15 @@ export function calcRvConePercentile(closes: number[]): number | null {
 
 // --- Tier-A: OI skew at strike -------------------------------------------
 
-// Put-dominance ratio in a ±N-strike band around the candidate strike. Heavy
-// put OI clustered around the strike is consistent with a dealer-defended
-// floor: assignment risk is structurally lower than naive delta suggests.
+// Same-side OI dominance in a ±N-strike band around the candidate strike.
+// - side="put" (CSP): heavy put OI is a dealer-defended floor.
+// - side="call" (CC): heavy call OI is a dealer-defended ceiling / gamma pin.
+// In both cases the printed delta understates how much friction there is at
+// that strike.
 export function calcOiSkew(
   chain: OptionQuote[],
   strike: number,
+  side: "put" | "call" = "put",
   bandStrikes = 2,
 ): { score: number; display: string | null } {
   const strikes = [...new Set(chain.map((o) => o.strike))].sort((a, b) => a - b);
@@ -401,10 +413,12 @@ export function calcOiSkew(
   const total = putOi + callOi;
   if (total < 100) return { score: 0, display: "OI too thin" };
 
-  const putShare = putOi / total;
+  const sameSideOi = side === "put" ? putOi : callOi;
+  const share = sameSideOi / total;
   // Map 50%→0, 80%+→1, linear in between.
-  const score = Math.max(0, Math.min(1, (putShare - 0.5) / 0.3));
-  const display = `${(putShare * 100).toFixed(0)}% put-OI dominance (±${bandStrikes} strikes)`;
+  const score = Math.max(0, Math.min(1, (share - 0.5) / 0.3));
+  const label = side === "put" ? "put-OI" : "call-OI";
+  const display = `${(share * 100).toFixed(0)}% ${label} dominance (±${bandStrikes} strikes)`;
   return { score, display };
 }
 
@@ -479,6 +493,73 @@ export function atmIvPctFromChain(chain: OptionQuote[], spot: number): number | 
   const pool = puts.length > 0 ? puts : withIv;
   pool.sort((a, b) => Math.abs(a.strike - spot) - Math.abs(b.strike - spot));
   return pool[0].mid_iv! * 100;
+}
+
+// Shared finalizer used by both CSP and CC scoring: takes an already-computed
+// factor set + modifier list and produces a normalized 0..100 score plus the
+// reason string. The caller owns interpretation (which factors and modifiers
+// make sense for its side); this only handles the common math + presentation.
+export function finalizeRankScore(args: {
+  factors: RankFactor[];
+  modifiers: RankModifier[];
+  termPenalty: number;
+  termPenaltyReason: string | null;
+  ivRvRatio: number | null;
+  cushionExpectedMoves: number | null;
+  termSlopePct: number | null;
+}): RankResult {
+  const { factors, modifiers, termPenalty, termPenaltyReason } = args;
+
+  const available = factors.filter((f) => f.available);
+  const totalAvailableWeight = available.reduce((s, f) => s + f.weight, 0);
+  const base = totalAvailableWeight > 0
+    ? available.reduce((acc, f) => acc + f.weight * f.score, 0) / totalAvailableWeight
+    : 0;
+
+  const modifierMult = modifiers.reduce((acc, m) => acc * m.multiplier, 1);
+  const finalScore = base * termPenalty * modifierMult * 100;
+
+  const sorted = [...factors]
+    .filter((f) => f.available)
+    .sort((a, b) => b.score * b.weight - a.score * a.weight);
+  const drivers = sorted
+    .filter((f) => f.score * f.weight >= 0.02)
+    .slice(0, 2)
+    .map((f) => f.display);
+
+  const caveats: string[] = [];
+  const tierS = factors.filter(
+    (f) => f.key === "yield" || f.key === "ivgap" || f.key === "cushion",
+  );
+  const tierSAvailable = tierS.filter((f) => f.available);
+  const tierSMissing = tierS.filter((f) => !f.available);
+  if (tierSAvailable.length > 0) {
+    const weakest = [...tierSAvailable].sort((a, b) => a.score - b.score)[0];
+    if (weakest.score < 0.25) caveats.push(`weak ${weakest.key}`);
+  }
+  for (const m of tierSMissing) caveats.push(`${m.key} unavailable`);
+  if (termPenaltyReason) caveats.push(termPenaltyReason);
+  for (const m of modifiers) caveats.push(m.display);
+
+  let reason: string;
+  if (drivers.length === 0) {
+    reason = caveats.length > 0 ? `Penalized: ${caveats.join("; ")}` : "No standout factors";
+  } else {
+    reason = drivers.join(" · ");
+    if (caveats.length > 0) reason += ` · ⚠ ${caveats.join("; ")}`;
+  }
+
+  return {
+    score: finalScore,
+    factors,
+    modifiers,
+    iv_rv_ratio: args.ivRvRatio,
+    cushion_expected_moves: args.cushionExpectedMoves,
+    term_slope_pct: args.termSlopePct,
+    penalty_multiplier: termPenalty,
+    modifier_multiplier: modifierMult,
+    reason,
+  };
 }
 
 export async function fetchBackAtmIvPct(

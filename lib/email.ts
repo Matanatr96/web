@@ -1,5 +1,6 @@
 import { Resend } from "resend";
 import type { CspRecommendation } from "@/lib/csp-scanner";
+import type { CcRecommendation } from "@/lib/cc-scanner";
 
 function getResend(): Resend | null {
   const key = process.env.RESEND_API_KEY;
@@ -84,6 +85,85 @@ export async function sendAlertEmail(
     to,
     subject: renderAlertSubject(recs),
     html: renderAlertHtml(buyingPower, recs),
+  });
+  if (error) {
+    console.error("[email] resend error", error);
+    return null;
+  }
+  return data ? { id: data.id } : null;
+}
+
+// --- Covered-call email ---
+
+function ccRow(rec: CcRecommendation, rank: number): string {
+  const sharesValue = rec.underlying_price * 100;
+  return `
+    <tr>
+      <td style="padding:8px 12px;border-bottom:none;color:#a8a29e;font-weight:600;width:24px">#${rank}</td>
+      <td style="padding:8px 12px;border-bottom:none;font-weight:600">${rec.ticker}</td>
+      <td style="padding:8px 12px;border-bottom:none">$${rec.strike}C ${rec.expiration}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">${fmtMoney(rec.premium_per_contract)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right;color:#16a34a;font-weight:600">${fmtPct(rec.annualized_yield_pct, 0)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">Δ${rec.delta.toFixed(2)} · ${rec.dte}d</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">${fmtMoney(sharesValue)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right;font-weight:600">${rec.rank_score.toFixed(0)}</td>
+    </tr>
+    <tr>
+      <td colspan="8" style="padding:0 12px 10px 44px;border-bottom:1px solid #eee;color:#78716c;font-size:12px;font-style:italic">${rec.rank_reason || "—"}</td>
+    </tr>`;
+}
+
+export function renderCcAlertHtml(recs: CcRecommendation[]): string {
+  return `
+  <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:640px;color:#1c1917">
+    <h2 style="margin:0 0 4px 0">Idle shares scan</h2>
+    <p style="margin:0 0 16px 0;color:#78716c;font-size:14px">
+      ${recs.length} covered call${recs.length === 1 ? "" : "s"} in the 0.15–0.30 delta band on shares you already own
+    </p>
+    <table style="width:100%;border-collapse:collapse;font-size:14px;border:1px solid #eee">
+      <thead>
+        <tr style="background:#fafaf9">
+          <th style="padding:8px 12px;text-align:left;font-weight:600">#</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600">Ticker</th>
+          <th style="padding:8px 12px;text-align:left;font-weight:600">Contract</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Premium</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Ann. yield</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Δ · DTE</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Shares value</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Score</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${recs.map((r, i) => ccRow(r, i + 1)).join("")}
+      </tbody>
+    </table>
+    <p style="margin:16px 0 0 0;color:#a8a29e;font-size:12px">
+      Ranked by composite score: yield, IV-vs-realized-vol gap, ATR-normalized OTM cushion, call-OI dominance at strike, proximity to a resistance level, and RV cone position. Modifiers: term-structure backwardation, strike near cost basis, and ex-dividend date inside DTE. Strikes below cost basis and contracts with no bid-side depth are filtered out before ranking.
+    </p>
+  </div>`;
+}
+
+export function renderCcAlertSubject(recs: CcRecommendation[]): string {
+  if (recs.length === 0) return "Idle shares scan";
+  const top = recs[0];
+  return `Idle shares: ${recs.length} CC${recs.length === 1 ? "" : "s"} · top ${top.ticker} score ${top.rank_score.toFixed(0)} (${fmtPct(top.annualized_yield_pct, 0)} ann.)`;
+}
+
+export async function sendCcAlertEmail(
+  to: string,
+  recs: CcRecommendation[],
+): Promise<{ id: string } | null> {
+  const client = getResend();
+  if (!client) {
+    console.warn("[email] RESEND_API_KEY not set — skipping send");
+    return null;
+  }
+  const from = process.env.ALERT_FROM_EMAIL || "alerts@onresend.dev";
+  const { data, error } = await client.emails.send({
+    from,
+    to,
+    subject: renderCcAlertSubject(recs),
+    html: renderCcAlertHtml(recs),
   });
   if (error) {
     console.error("[email] resend error", error);
