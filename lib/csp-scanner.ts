@@ -2,8 +2,10 @@
 //
 // For each ticker on the watchlist, finds the most attractive cash-secured put
 // in the 0.10–0.20 delta band that fits the user's option buying power, with a
-// liquidity filter mirroring the rest of the codebase. Returns a ranked list
-// sorted by annualized yield. The cron route filters this list against the
+// liquidity filter mirroring the rest of the codebase. Cross-ticker ranking is
+// a Tier-S composite of annualized yield, IV richness vs realized vol, and
+// ATR-normalized OTM cushion, with a term-structure backwardation penalty.
+// See `lib/csp-ranking.ts`. The cron route filters this list against the
 // `sent_alerts` dedup table before emailing.
 
 import { getServiceClient } from "@/lib/supabase";
@@ -15,6 +17,11 @@ import {
   type OptionQuote,
   type StockQuote,
 } from "@/lib/quotes";
+import {
+  scoreRecommendation,
+  fetchRvAndAtr,
+  fetchBackAtmIvPct,
+} from "@/lib/csp-ranking";
 import type { WatchlistItem } from "@/lib/types";
 
 // v1: hardcoded. Admin override is v2.
@@ -42,6 +49,14 @@ export type CspRecommendation = {
   premium_per_contract: number; // bid * 100
   annualized_yield_pct: number; // (bid / strike) * (365 / dte) * 100
   otm_pct: number;
+  iv_pct: number | null;    // candidate option mid IV, %
+  // Ranking outputs — populated after cross-ticker scoring.
+  rank_score: number;       // 0..100, higher = better
+  rank_reason: string;
+  rv20_pct: number | null;
+  iv_rv_ratio: number | null;
+  cushion_expected_moves: number | null;
+  term_slope_pct: number | null;
 };
 
 function pickExpiration(dates: string[]): string | null {
@@ -111,6 +126,13 @@ function bestPutInBand(
       premium_per_contract: bid * 100,
       annualized_yield_pct,
       otm_pct: ((underlyingPrice - opt.strike) / underlyingPrice) * 100,
+      iv_pct: opt.mid_iv != null ? opt.mid_iv * 100 : null,
+      rank_score: 0,
+      rank_reason: "",
+      rv20_pct: null,
+      iv_rv_ratio: null,
+      cushion_expected_moves: null,
+      term_slope_pct: null,
     });
   }
 
@@ -141,7 +163,7 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
   const tickers = items.map((i) => i.ticker);
   const quotes = await getWatchlistQuotes(tickers);
 
-  // Fetch chains in parallel, one expiration per ticker.
+  // Fetch chain + back-month IV + price-history-derived RV/ATR in parallel per ticker.
   const perTicker = await Promise.all(
     tickers.map(async (ticker): Promise<CspRecommendation | null> => {
       const quote: StockQuote | undefined = quotes.get(ticker);
@@ -150,10 +172,33 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
         const expirations = await getExpirations(ticker);
         const expiration = pickExpiration(expirations);
         if (!expiration) return null;
-        const chain = await getOptionChain(ticker, expiration);
+        const [chain, rvAtr, backIvPct] = await Promise.all([
+          getOptionChain(ticker, expiration),
+          fetchRvAndAtr(ticker),
+          fetchBackAtmIvPct(ticker, expirations, expiration, quote.last),
+        ]);
         const best = bestPutInBand(chain, quote.last, expiration, buyingPower);
         if (!best) return null;
-        return { ...best, ticker };
+        const ranked = scoreRecommendation({
+          annualized_yield_pct: best.annualized_yield_pct,
+          underlying_price: best.underlying_price,
+          strike: best.strike,
+          dte: best.dte,
+          iv_pct: best.iv_pct,
+          rv20_pct: rvAtr.rv20_pct,
+          atr20: rvAtr.atr20,
+          back_atm_iv_pct: backIvPct,
+        });
+        return {
+          ...best,
+          ticker,
+          rv20_pct: rvAtr.rv20_pct,
+          iv_rv_ratio: ranked.iv_rv_ratio,
+          cushion_expected_moves: ranked.cushion_expected_moves,
+          term_slope_pct: ranked.term_slope_pct,
+          rank_score: ranked.score,
+          rank_reason: ranked.reason,
+        };
       } catch {
         return null;
       }
@@ -162,7 +207,7 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
 
   const recommendations = perTicker
     .filter((r): r is CspRecommendation => r !== null)
-    .sort((a, b) => b.annualized_yield_pct - a.annualized_yield_pct);
+    .sort((a, b) => b.rank_score - a.rank_score);
 
   return { buying_power: buyingPower, recommendations };
 }
