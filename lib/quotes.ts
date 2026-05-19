@@ -547,3 +547,52 @@ export async function getLiveQuotes(
     return { prices: new Map(), asks: new Map(), available: false };
   }
 }
+
+// Next ex-dividend date (YYYY-MM-DD) for an equity, or null if none upcoming
+// or the data isn't available. Uses Tradier's beta fundamentals endpoint, which
+// is gated by plan; on any failure we return null so the CC scanner just skips
+// the ex-div caveat rather than erroring.
+type TradierDividendsResponse = Array<{
+  results?: Array<{
+    tables?: {
+      cash_dividends?: Array<{ ex_date?: string }> | { ex_date?: string };
+    };
+  }>;
+}>;
+
+async function fetchNextExDivDateRaw(symbol: string): Promise<string | null> {
+  const key = process.env.TRADIER_API_KEY;
+  if (!key) return null;
+  try {
+    const res = await fetch(
+      `https://api.tradier.com/beta/markets/fundamentals/dividends?symbols=${encodeURIComponent(symbol)}`,
+      { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+    );
+    if (!res.ok) return null;
+    const data = (await res.json()) as TradierDividendsResponse;
+    const results = data?.[0]?.results ?? [];
+    const today = new Date().toISOString().slice(0, 10);
+    let best: string | null = null;
+    for (const r of results) {
+      const arr = toArray(r.tables?.cash_dividends);
+      for (const d of arr) {
+        if (!d.ex_date) continue;
+        if (d.ex_date < today) continue;
+        if (best === null || d.ex_date < best) best = d.ex_date;
+      }
+    }
+    return best;
+  } catch {
+    return null;
+  }
+}
+
+const fetchNextExDivDateCached = unstable_cache(
+  fetchNextExDivDateRaw,
+  ["tradier-next-exdiv"],
+  { revalidate: 86400, tags: ["watchlist-data"] }, // dividends shift rarely; daily cache
+);
+
+export async function getNextExDivDate(symbol: string): Promise<string | null> {
+  return fetchNextExDivDateCached(symbol);
+}
