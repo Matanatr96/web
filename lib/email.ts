@@ -15,15 +15,20 @@ function fmtPct(v: number, digits = 1): string {
   return `${v.toFixed(digits)}%`;
 }
 
-function row(rec: CspRecommendation): string {
+function row(rec: CspRecommendation, rank: number): string {
   return `
     <tr>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;font-weight:600">${rec.ticker}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee">$${rec.strike}P ${rec.expiration}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${fmtMoney(rec.premium_per_contract)}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right;color:#16a34a;font-weight:600">${fmtPct(rec.annualized_yield_pct, 0)}</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">Δ${rec.delta.toFixed(2)} · ${rec.dte}d</td>
-      <td style="padding:8px 12px;border-bottom:1px solid #eee;text-align:right">${fmtMoney(rec.collateral)}</td>
+      <td style="padding:8px 12px;border-bottom:none;color:#a8a29e;font-weight:600;width:24px">#${rank}</td>
+      <td style="padding:8px 12px;border-bottom:none;font-weight:600">${rec.ticker}</td>
+      <td style="padding:8px 12px;border-bottom:none">$${rec.strike}P ${rec.expiration}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">${fmtMoney(rec.premium_per_contract)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right;color:#16a34a;font-weight:600">${fmtPct(rec.annualized_yield_pct, 0)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">Δ${rec.delta.toFixed(2)} · ${rec.dte}d</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right">${fmtMoney(rec.collateral)}</td>
+      <td style="padding:8px 12px;border-bottom:none;text-align:right;font-weight:600">${rec.rank_score.toFixed(0)}</td>
+    </tr>
+    <tr>
+      <td colspan="8" style="padding:0 12px 10px 44px;border-bottom:1px solid #eee;color:#78716c;font-size:12px;font-style:italic">${rec.rank_reason || "—"}</td>
     </tr>`;
 }
 
@@ -37,20 +42,22 @@ export function renderAlertHtml(buyingPower: number, recs: CspRecommendation[]):
     <table style="width:100%;border-collapse:collapse;font-size:14px;border:1px solid #eee">
       <thead>
         <tr style="background:#fafaf9">
+          <th style="padding:8px 12px;text-align:left;font-weight:600">#</th>
           <th style="padding:8px 12px;text-align:left;font-weight:600">Ticker</th>
           <th style="padding:8px 12px;text-align:left;font-weight:600">Contract</th>
           <th style="padding:8px 12px;text-align:right;font-weight:600">Premium</th>
           <th style="padding:8px 12px;text-align:right;font-weight:600">Ann. yield</th>
           <th style="padding:8px 12px;text-align:right;font-weight:600">Δ · DTE</th>
           <th style="padding:8px 12px;text-align:right;font-weight:600">Collateral</th>
+          <th style="padding:8px 12px;text-align:right;font-weight:600">Score</th>
         </tr>
       </thead>
       <tbody>
-        ${recs.map(row).join("")}
+        ${recs.map((r, i) => row(r, i + 1)).join("")}
       </tbody>
     </table>
     <p style="margin:16px 0 0 0;color:#a8a29e;font-size:12px">
-      Ranked by annualized yield. Liquidity-filtered (spread ≤ 30% of mid). Sent because your buying power exceeded the strike collateral for these contracts.
+      Ranked by composite score (yield + IV-vs-realized-vol gap + ATR-normalized cushion, with backwardation penalty). Reason under each row shows the top drivers. Liquidity-filtered (spread ≤ 30% of mid). Sent because your buying power exceeded the strike collateral for these contracts.
     </p>
   </div>`;
 }
@@ -58,7 +65,7 @@ export function renderAlertHtml(buyingPower: number, recs: CspRecommendation[]):
 export function renderAlertSubject(recs: CspRecommendation[]): string {
   if (recs.length === 0) return "Idle capital scan";
   const top = recs[0];
-  return `Idle capital: ${recs.length} CSP${recs.length === 1 ? "" : "s"} · top ${top.ticker} ${fmtPct(top.annualized_yield_pct, 0)} ann.`;
+  return `Idle capital: ${recs.length} CSP${recs.length === 1 ? "" : "s"} · top ${top.ticker} score ${top.rank_score.toFixed(0)} (${fmtPct(top.annualized_yield_pct, 0)} ann.)`;
 }
 
 export async function sendAlertEmail(
