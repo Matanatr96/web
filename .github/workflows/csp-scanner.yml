@@ -1,13 +1,13 @@
 name: CSP Scanner
 
-# Hits /api/cron/csp-scanner every 10 min during US market hours.
+# Hits /api/cron/csp-scanner every 30 min during US market hours.
 # Cron is in UTC; 13:30–20:00 UTC covers 9:30am–4:00pm ET during DST,
 # 14:30–21:00 UTC covers it outside DST. We run from 13–21 UTC and let
 # the handler's isMarketHoursET() bail out at the exact edges.
 
 on:
   schedule:
-    - cron: "*/10 13-20 * * 1-5"
+    - cron: "*/30 13-20 * * 1-5"
   workflow_dispatch: # manual trigger from the Actions tab
 
 jobs:
