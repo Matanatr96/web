@@ -57,6 +57,32 @@ export function computeSelfAverage(
   return { count, total: round2(total), avg: round2(total / count) };
 }
 
+/**
+ * Compute totals for every diner that appears on a receipt. Returns one entry
+ * per diner, sorted by amount descending.
+ */
+export function perDinerTotals(receipt: ReceiptRow): { name: string; total: number }[] {
+  const itemTotals = new Map<string, number>();
+  let everyone = 0;
+  for (const it of receipt.items) {
+    const line = it.price * it.qty;
+    everyone += line;
+    for (const a of it.assignments) {
+      const name = a.diner?.name;
+      if (!name) continue;
+      itemTotals.set(name, (itemTotals.get(name) ?? 0) + line * Number(a.share));
+    }
+  }
+  if (everyone <= 0) return [];
+  const taxTip = Number(receipt.tax) + Number(receipt.tip);
+  const rows: { name: string; total: number }[] = [];
+  for (const [name, mine] of itemTotals) {
+    rows.push({ name, total: round2(mine + taxTip * (mine / everyone)) });
+  }
+  rows.sort((a, b) => b.total - a.total);
+  return rows;
+}
+
 function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }

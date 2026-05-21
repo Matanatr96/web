@@ -4,13 +4,23 @@ import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { Diner, ParsedReceipt, WizardItem } from "@/lib/receipts";
 import { splitReceipt } from "@/lib/receipts";
+import LinkReceiptDialog from "@/components/link-receipt-dialog";
 
 type Restaurant = { id: number; name: string; city: string };
 type Step = "upload" | "review" | "diners" | "assign" | "tip" | "summary";
 
-export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: Restaurant[]; isAdmin: boolean }) {
+export default function ReceiptWizard({
+  restaurants,
+  isAdmin,
+  googleMapsApiKey,
+}: {
+  restaurants: Restaurant[];
+  isAdmin: boolean;
+  googleMapsApiKey?: string;
+}) {
   const [step, setStep] = useState<Step>("upload");
   const [parseModel, setParseModel] = useState<string | null>(null);
+  const [parsedMerchant, setParsedMerchant] = useState<string | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [parsing, setParsing] = useState(false);
 
@@ -28,6 +38,7 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
   const [saving, setSaving] = useState(false);
   const [savedId, setSavedId] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [linkDialogOpen, setLinkDialogOpen] = useState(false);
 
   useEffect(() => {
     fetch("/api/diners")
@@ -55,6 +66,7 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
       if (!resp.ok) throw new Error(json.error ?? "parse failed");
       const parsed = json.parsed as ParsedReceipt;
       setParseModel(json.model ?? null);
+      setParsedMerchant(parsed.merchant ?? null);
       const wizardItems: WizardItem[] = parsed.items.map((it) => ({
         ...it,
         diner_ids: [],
@@ -156,6 +168,7 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
           tip: round2(tip),
           total,
           parse_model: parseModel,
+          parsed_merchant: parsedMerchant,
           items: items
             .filter((it) => it.name.trim() && it.price > 0)
             .map((it) => ({
@@ -485,10 +498,25 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
 
   // summary
   if (savedId) {
+    const canLink = isAdmin && !restaurantId && googleMapsApiKey;
     return (
       <Card>
         <h2 className="text-lg font-semibold mb-2">Saved ✓</h2>
         <p className="text-sm text-stone-500 mb-4">Receipt #{savedId} recorded.</p>
+        {canLink && (
+          <div className="mb-4">
+            <button
+              type="button"
+              onClick={() => setLinkDialogOpen(true)}
+              className="w-full px-4 py-2 rounded bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-sm font-medium hover:opacity-90"
+            >
+              📍 Find on Google Maps
+            </button>
+            <p className="text-xs text-stone-500 mt-2">
+              Link this receipt to a restaurant so you can rate it and see it in your history.
+            </p>
+          </div>
+        )}
         <div className="flex flex-wrap gap-3 text-sm">
           {restaurantId && (
             <Link
@@ -498,10 +526,24 @@ export default function ReceiptWizard({ restaurants, isAdmin }: { restaurants: R
               View restaurant →
             </Link>
           )}
+          {isAdmin && (
+            <Link href="/admin/receipts" className="underline">
+              Receipt history →
+            </Link>
+          )}
           <Link href="/restaurants/receipt" className="underline">
             Split another
           </Link>
         </div>
+        {canLink && (
+          <LinkReceiptDialog
+            receiptId={savedId}
+            initialName={parsedMerchant ?? undefined}
+            apiKey={googleMapsApiKey!}
+            open={linkDialogOpen}
+            onClose={() => setLinkDialogOpen(false)}
+          />
+        )}
       </Card>
     );
   }
