@@ -26,7 +26,11 @@ export default async function ReceiptPage() {
       <p className="text-sm text-stone-500 mb-6">
         Snap a picture, assign items, see who owes what.
       </p>
-      <ReceiptWizard restaurants={restaurants} isAdmin={admin} />
+      <ReceiptWizard
+        restaurants={restaurants}
+        isAdmin={admin}
+        googleMapsApiKey={process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY}
+      />
     </div>
   );
 }

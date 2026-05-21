@@ -48,6 +48,14 @@ export default async function AdminPage() {
           <span className="font-semibold">Watchlist</span>
           <span className="text-sm text-stone-500">Wheel strategy tickers</span>
         </Link>
+
+        <Link
+          href="/admin/receipts"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Receipts</span>
+          <span className="text-sm text-stone-500">Saved splits &amp; orphan linker</span>
+        </Link>
       </div>
     </div>
   );

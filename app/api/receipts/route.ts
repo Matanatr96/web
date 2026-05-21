@@ -12,6 +12,7 @@ type SaveBody = {
   tip: number;
   total: number;
   parse_model: string | null;
+  parsed_merchant: string | null;
   items: {
     name: string;
     price: number;
@@ -39,6 +40,7 @@ export async function POST(req: Request) {
         tip: body.tip,
         total: body.total,
         parse_model: body.parse_model,
+        parsed_merchant: body.parsed_merchant?.trim() || null,
       })
       .select("id")
       .single();
