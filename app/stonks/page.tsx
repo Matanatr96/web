@@ -118,10 +118,21 @@ export default async function OptionsPage() {
     ? (totalMonthlyPremiumEquiv / totalCapitalForPct) * 100
     : null;
 
-  // All tickers that appear in positions or have equity activity, sorted alphabetically.
+  const openOptionTickers = new Set(
+    positions.filter((p) => p.status === "open").map((p) => p.underlying),
+  );
+
+  // Tickers with open options first, then open shares, then everything else. Alpha within each tier.
   const allTickers = Array.from(
     new Set([...positions.map((p) => p.underlying), ...pnl.map((p) => p.ticker)]),
-  ).sort();
+  ).sort((a, b) => {
+    const tier = (t: string) =>
+      openOptionTickers.has(t) ? 0
+      : (pnlByTicker.get(t)?.shares_open ?? 0) > 0 ? 1
+      : 2;
+    const td = tier(a) - tier(b);
+    return td !== 0 ? td : a.localeCompare(b);
+  });
 
   // Net Premium = realized premium across closed/expired/assigned positions.
   // Open positions are excluded — their net_premium is unrealized (and for
