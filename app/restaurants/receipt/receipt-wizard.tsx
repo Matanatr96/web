@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import type { Diner, ParsedReceipt, WizardItem } from "@/lib/receipts";
 import { splitReceipt } from "@/lib/receipts";
@@ -39,6 +39,7 @@ export default function ReceiptWizard({
   const [savedId, setSavedId] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
+  const [expandedDiners, setExpandedDiners] = useState<Set<number>>(new Set());
 
   useEffect(() => {
     fetch("/api/diners")
@@ -562,15 +563,69 @@ export default function ReceiptWizard({
           </tr>
         </thead>
         <tbody>
-          {split.per_diner.map((p) => (
-            <tr key={p.diner_id} className="border-t border-stone-200 dark:border-stone-800">
-              <td className="py-1.5 font-medium">{p.name}</td>
-              <td className="py-1.5 text-right tabular-nums">${p.items_total.toFixed(2)}</td>
-              <td className="py-1.5 text-right tabular-nums text-stone-500">${p.tax_share.toFixed(2)}</td>
-              <td className="py-1.5 text-right tabular-nums text-stone-500">${p.tip_share.toFixed(2)}</td>
-              <td className="py-1.5 text-right tabular-nums font-semibold">${p.total.toFixed(2)}</td>
-            </tr>
-          ))}
+          {split.per_diner.map((p) => {
+            const isOpen = expandedDiners.has(p.diner_id);
+            const dinerItems = items
+              .filter((it) => it.diner_ids.includes(p.diner_id) && it.name.trim() && it.price > 0)
+              .map((it) => ({
+                name: it.name,
+                share: (it.price * it.qty) / it.diner_ids.length,
+                splitCount: it.diner_ids.length,
+              }));
+            return (
+              <Fragment key={p.diner_id}>
+                <tr
+                  className="border-t border-stone-200 dark:border-stone-800 cursor-pointer hover:bg-stone-50 dark:hover:bg-stone-800/50"
+                  onClick={() =>
+                    setExpandedDiners((prev) => {
+                      const next = new Set(prev);
+                      if (next.has(p.diner_id)) next.delete(p.diner_id);
+                      else next.add(p.diner_id);
+                      return next;
+                    })
+                  }
+                >
+                  <td className="py-1.5 font-medium">
+                    <span className="inline-block w-3 text-stone-400 tabular-nums">
+                      {isOpen ? "▾" : "▸"}
+                    </span>{" "}
+                    {p.name}
+                  </td>
+                  <td className="py-1.5 text-right tabular-nums">${p.items_total.toFixed(2)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-stone-500">${p.tax_share.toFixed(2)}</td>
+                  <td className="py-1.5 text-right tabular-nums text-stone-500">${p.tip_share.toFixed(2)}</td>
+                  <td className="py-1.5 text-right tabular-nums font-semibold">${p.total.toFixed(2)}</td>
+                </tr>
+                {isOpen && (
+                  <tr className="bg-stone-50 dark:bg-stone-800/30">
+                    <td colSpan={5} className="py-2 px-3">
+                      {dinerItems.length === 0 ? (
+                        <p className="text-xs text-stone-500">No items assigned.</p>
+                      ) : (
+                        <ul className="text-xs space-y-1">
+                          {dinerItems.map((it, i) => (
+                            <li key={i} className="flex justify-between gap-3">
+                              <span className="text-stone-700 dark:text-stone-300">
+                                {it.name}
+                                <span className="text-stone-500 ml-2">
+                                  {it.splitCount === 1
+                                    ? "(just you)"
+                                    : `(split ${it.splitCount} ways)`}
+                                </span>
+                              </span>
+                              <span className="tabular-nums text-stone-600 dark:text-stone-400">
+                                ${it.share.toFixed(2)}
+                              </span>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            );
+          })}
         </tbody>
         <tfoot>
           <tr className="border-t-2 border-stone-300 dark:border-stone-700 text-stone-500">
