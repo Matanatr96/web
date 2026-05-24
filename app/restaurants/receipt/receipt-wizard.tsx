@@ -485,7 +485,7 @@ export default function ReceiptWizard({
             <button
               key={p}
               type="button"
-              onClick={() => setTip(round2((subtotal || split.subtotal) * p))}
+              onClick={() => setTip(round2(split.subtotal * p))}
               className="px-3 py-1 text-sm rounded border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800"
             >
               {Math.round(p * 100)}%
