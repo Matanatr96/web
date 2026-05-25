@@ -43,3 +43,34 @@ gmp-place-autocomplete {
     --gmpx-color-primary: #f5f5f4;
   }
 }
+
+/* Tighten Google Maps InfoWindow header. The default 48px header row wastes
+   vertical space above content; shrink it to a small breathing gap and float
+   the close button into the top-right corner. */
+.gm-style-iw-ch {
+  padding-top: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}
+.gm-style-iw-chr {
+  position: absolute !important;
+  top: 0;
+  right: 0;
+  z-index: 1;
+}
+/* Shrink the default 48×48 close button so it tucks neatly into the corner
+   without competing with the score badge. */
+.gm-style-iw-c .gm-ui-hover-effect {
+  width: 28px !important;
+  height: 28px !important;
+  opacity: 0.35 !important;
+  transition: opacity 120ms ease;
+}
+.gm-style-iw-c .gm-ui-hover-effect:hover {
+  opacity: 0.8 !important;
+}
+.gm-style-iw-c .gm-ui-hover-effect > span {
+  width: 14px !important;
+  height: 14px !important;
+  margin: 7px !important;
+}

@@ -30,14 +30,35 @@ function pinColor(overall: number): string {
   return "#dc2626"; // red-600
 }
 
-function FitBounds({ points }: { points: Geolocated[] }) {
+function fitToPoints(map: google.maps.Map, pts: Geolocated[]) {
+  if (pts.length === 0) return;
+  const bounds = new google.maps.LatLngBounds();
+  for (const p of pts) bounds.extend({ lat: p.lat, lng: p.lng });
+  map.fitBounds(bounds, 64);
+}
+
+function FitBounds({
+  points,
+  initialPoints,
+  filterKey,
+}: {
+  points: Geolocated[];
+  initialPoints: Geolocated[];
+  filterKey: string;
+}) {
   const map = useMap();
+  const [didInitialFit, setDidInitialFit] = useState(false);
   useEffect(() => {
-    if (!map || points.length === 0) return;
-    const bounds = new google.maps.LatLngBounds();
-    for (const p of points) bounds.extend({ lat: p.lat, lng: p.lng });
-    map.fitBounds(bounds, 64);
-  }, [map, points]);
+    if (!map || didInitialFit) return;
+    fitToPoints(map, initialPoints);
+    setDidInitialFit(true);
+  }, [map, initialPoints, didInitialFit]);
+  useEffect(() => {
+    if (!map || !didInitialFit) return;
+    fitToPoints(map, points);
+    // Refit only when the user changes filters, not on every points identity change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [map, filterKey]);
   return null;
 }
 
@@ -67,6 +88,11 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
     if (minRating) filtered = filtered.filter((p) => p.overall >= parseFloat(minRating));
     return filtered;
   }, [allPoints, cityFilter, cuisineFilter, minRating]);
+  const sfPoints = useMemo(
+    () => allPoints.filter((p) => p.city === "San Francisco"),
+    [allPoints],
+  );
+  const initialFitPoints = sfPoints.length > 0 ? sfPoints : allPoints;
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const selected = points.find((p) => p.id === selectedId) ?? null;
 
@@ -139,7 +165,11 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
           gestureHandling="greedy"
           disableDefaultUI={false}
         >
-          <FitBounds points={points} />
+          <FitBounds
+            points={points}
+            initialPoints={initialFitPoints}
+            filterKey={`${cityFilter}|${cuisineFilter}|${minRating}`}
+          />
           {points.map((r) => (
             <AdvancedMarker
               key={r.id}
@@ -165,20 +195,88 @@ export default function RestaurantsMap({ restaurants, apiKey }: Props) {
               onCloseClick={() => setSelectedId(null)}
               pixelOffset={[0, -32]}
             >
-              <div className="text-stone-900 min-w-[180px]">
-                <div className="font-semibold text-sm">{selected.name}</div>
-                <div className="text-xs text-stone-600">
-                  {selected.cuisines.join(", ")} · {selected.city}
+              <div className="text-stone-900 w-[260px] pt-3">
+                <div className="flex items-start gap-2 pr-6">
+                  <div className="min-w-0 flex-1">
+                    <div className="font-semibold text-sm leading-tight truncate">
+                      {selected.name}
+                    </div>
+                    <div className="text-[11px] text-stone-500 mt-0.5 truncate">
+                      {selected.cuisines.join(", ")} · {selected.city}
+                    </div>
+                  </div>
+                  <div
+                    className="shrink-0 rounded-full border-2 border-white shadow flex items-center justify-center text-xs font-bold text-white tabular-nums"
+                    style={{
+                      width: 36,
+                      height: 36,
+                      backgroundColor: pinColor(selected.overall),
+                    }}
+                    title={`Overall ${fmt(selected.overall, 2)}`}
+                  >
+                    {selected.overall.toFixed(1)}
+                  </div>
                 </div>
-                <div className={`text-sm mt-1 ${ratingColorClass(selected.overall)}`}>
-                  Overall {fmt(selected.overall, 2)}
+                {(() => {
+                  const subs: { label: string; value: number }[] = [];
+                  if (selected.food !== null) subs.push({ label: "Food", value: selected.food });
+                  if (selected.value !== null) subs.push({ label: "Value", value: selected.value });
+                  if (selected.service !== null) subs.push({ label: "Service", value: selected.service });
+                  if (selected.ambiance !== null) subs.push({ label: "Vibe", value: selected.ambiance });
+                  if (subs.length === 0) return null;
+                  return (
+                    <div className="mt-2 flex flex-wrap gap-1">
+                      {subs.map((s) => (
+                        <span
+                          key={s.label}
+                          className="rounded bg-stone-100 px-1.5 py-0.5 text-[10px] text-stone-700 tabular-nums"
+                        >
+                          {s.label} <span className="font-semibold">{s.value.toFixed(1)}</span>
+                        </span>
+                      ))}
+                    </div>
+                  );
+                })()}
+                {selected.note && (
+                  <div className="mt-2 text-[11px] italic text-stone-600 line-clamp-2">
+                    &ldquo;{selected.note}&rdquo;
+                  </div>
+                )}
+                {selected.last_visited && (
+                  <div className="mt-1.5 text-[10px] uppercase tracking-wide text-stone-400">
+                    Last visited{" "}
+                    {new Date(selected.last_visited).toLocaleDateString("en-US", {
+                      month: "short",
+                      year: "numeric",
+                    })}
+                    {selected.visit_count > 1 && ` · ${selected.visit_count} visits`}
+                  </div>
+                )}
+                <div className="mt-2.5 flex gap-1.5">
+                  <Link
+                    href={`/restaurant/${selected.id}`}
+                    className="flex-1 text-center rounded-md bg-stone-900 px-2.5 py-1.5 text-[11px] font-semibold text-white hover:bg-stone-700 transition-colors"
+                  >
+                    View details
+                  </Link>
+                  <a
+                    href={
+                      selected.place_id
+                        ? `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(selected.name)}&query_place_id=${selected.place_id}`
+                        : `https://www.google.com/maps/search/?api=1&query=${selected.lat},${selected.lng}`
+                    }
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    aria-label="Open in Google Maps"
+                    title="Open in Google Maps"
+                    className="inline-flex items-center justify-center rounded-md bg-stone-100 px-2.5 py-1.5 text-[11px] font-semibold text-stone-700 hover:bg-stone-200 transition-colors"
+                  >
+                    <svg viewBox="0 0 24 24" fill="currentColor" className="w-3.5 h-3.5 mr-1" aria-hidden="true">
+                      <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7zm0 9.5a2.5 2.5 0 110-5 2.5 2.5 0 010 5z" />
+                    </svg>
+                    Maps
+                  </a>
                 </div>
-                <Link
-                  href={`/restaurant/${selected.id}`}
-                  className="text-xs text-blue-600 hover:underline mt-1 inline-block"
-                >
-                  Details →
-                </Link>
               </div>
             </InfoWindow>
           )}
