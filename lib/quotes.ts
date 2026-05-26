@@ -1,6 +1,22 @@
 import { unstable_cache } from "next/cache";
+import { recordApiCall } from "@/lib/scan-metrics";
 
 const PROD_BASE = "https://api.tradier.com/v1";
+
+// Tradier returns rate-limit headers on every response. We snapshot them into
+// the active scan metrics so the admin UI can show remaining budget + any 429s.
+// `endpoint` is a short tag like "quotes" or "chain" — used for the by-endpoint
+// breakdown.
+async function tradierFetch(url: string, key: string, endpoint: string): Promise<Response> {
+  const res = await fetch(url, {
+    headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
+    cache: "no-store",
+  });
+  const remainingHeader = res.headers.get("x-ratelimit-available");
+  const remaining = remainingHeader != null ? Number(remainingHeader) : null;
+  recordApiCall(endpoint, res.status, Number.isFinite(remaining) ? remaining : null);
+  return res;
+}
 
 export function isMarketOpen(): boolean {
   const now = new Date();
@@ -35,12 +51,10 @@ async function fetchQuotesRaw(symbols: string[]): Promise<[string, number, numbe
   if (!key || symbols.length === 0) return [];
 
   const joined = symbols.join(",");
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/quotes?symbols=${encodeURIComponent(joined)}&greeks=false`,
-    {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-      cache: "no-store",
-    },
+    key,
+    "quotes",
   );
 
   if (!res.ok) return [];
@@ -83,12 +97,10 @@ async function fetchStockQuotesRaw(symbols: string[]): Promise<StockQuote[]> {
   if (!key || symbols.length === 0) return [];
 
   const joined = symbols.join(",");
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/quotes?symbols=${encodeURIComponent(joined)}&greeks=false`,
-    {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-      cache: "no-store",
-    },
+    key,
+    "stock_quotes",
   );
   if (!res.ok) return [];
 
@@ -175,9 +187,10 @@ export type WheelOptions = {
 async function fetchExpirationsRaw(symbol: string): Promise<string[]> {
   const key = process.env.TRADIER_API_KEY;
   if (!key) return [];
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/options/expirations?symbol=${encodeURIComponent(symbol)}&includeAllRoots=false`,
-    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+    key,
+    "expirations",
   );
   if (!res.ok) return [];
   const data = (await res.json()) as TradierExpirationsResponse;
@@ -195,9 +208,10 @@ const fetchExpirationsCached = unstable_cache(
 async function fetchOptionChainRaw(symbol: string, expiration: string): Promise<TradierOption[]> {
   const key = process.env.TRADIER_API_KEY;
   if (!key) return [];
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/options/chains?symbol=${encodeURIComponent(symbol)}&expiration=${expiration}&greeks=true`,
-    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+    key,
+    "chain",
   );
   if (!res.ok) return [];
   const data = (await res.json()) as TradierChainResponse;
@@ -213,9 +227,10 @@ const fetchOptionChainCached = unstable_cache(
 async function fetchPriceHistoryRaw(symbol: string, start: string, end: string): Promise<number[]> {
   const key = process.env.TRADIER_API_KEY;
   if (!key) return [];
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/history?symbol=${encodeURIComponent(symbol)}&interval=daily&start=${start}&end=${end}`,
-    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+    key,
+    "history",
   );
   if (!res.ok) return [];
   const data = (await res.json()) as TradierHistoryResponse;
@@ -233,9 +248,10 @@ export type DatedClose = { date: string; close: number };
 async function fetchDatedHistoryRaw(symbol: string, start: string, end: string): Promise<DatedClose[]> {
   const key = process.env.TRADIER_API_KEY;
   if (!key) return [];
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/history?symbol=${encodeURIComponent(symbol)}&interval=daily&start=${start}&end=${end}`,
-    { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+    key,
+    "history_dated",
   );
   if (!res.ok) return [];
   const data = (await res.json()) as TradierHistoryResponse;
@@ -485,12 +501,10 @@ async function fetchOptionGreeksRaw(symbols: string[]): Promise<[string, number]
   if (!key || symbols.length === 0) return [];
 
   const joined = symbols.join(",");
-  const res = await fetch(
+  const res = await tradierFetch(
     `${PROD_BASE}/markets/quotes?symbols=${encodeURIComponent(joined)}&greeks=true`,
-    {
-      headers: { Authorization: `Bearer ${key}`, Accept: "application/json" },
-      cache: "no-store",
-    },
+    key,
+    "option_greeks",
   );
   if (!res.ok) return [];
 
@@ -564,9 +578,10 @@ async function fetchNextExDivDateRaw(symbol: string): Promise<string | null> {
   const key = process.env.TRADIER_API_KEY;
   if (!key) return null;
   try {
-    const res = await fetch(
+    const res = await tradierFetch(
       `https://api.tradier.com/beta/markets/fundamentals/dividends?symbols=${encodeURIComponent(symbol)}`,
-      { headers: { Authorization: `Bearer ${key}`, Accept: "application/json" }, cache: "no-store" },
+      key,
+      "dividends",
     );
     if (!res.ok) return null;
     const data = (await res.json()) as TradierDividendsResponse;
