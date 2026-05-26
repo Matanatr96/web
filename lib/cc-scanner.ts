@@ -103,19 +103,30 @@ type BestCall = Pick<CcRecommendation,
   | "annualized_yield_pct" | "otm_pct" | "iv_pct"
 >;
 
+export type CcPickOutcome =
+  | "ok"
+  | "no_quote"
+  | "no_expiration"
+  | "no_band_candidate"
+  | "below_basis"
+  | "error";
+
 function bestCallInBand(
   chain: OptionQuote[],
   underlyingPrice: number,
   expiration: string,
   uncoveredShares: number,
   costBasis: number | null,
-): BestCall | null {
+): { pick: BestCall | null; reason: CcPickOutcome } {
   const dte = dteOf(expiration);
-  if (dte <= 0) return null;
+  if (dte <= 0) return { pick: null, reason: "no_expiration" };
   const maxContracts = Math.floor(uncoveredShares / 100);
-  if (maxContracts < 1) return null;
+  if (maxContracts < 1) return { pick: null, reason: "no_band_candidate" };
 
   const candidates: BestCall[] = [];
+  // Track whether liquid candidates existed but all were rejected for sitting
+  // below cost basis — distinguishes that from "no liquid OTM call at all".
+  let liquidButBelowBasis = false;
   for (const opt of chain) {
     if (opt.option_type !== "call") continue;
     if (opt.delta == null) continue;
@@ -131,7 +142,10 @@ function bestCallInBand(
     if (!passesDepthFilter(opt.bid_size, opt.ask_size)) continue;
 
     // Hard filter: don't lock in a guaranteed realized loss.
-    if (costBasis != null && opt.strike < costBasis) continue;
+    if (costBasis != null && opt.strike < costBasis) {
+      liquidButBelowBasis = true;
+      continue;
+    }
 
     // Yield against the capital tied up — use spot (current value of the
     // shares being lent). This matches how CSPs use strike (collateral).
@@ -153,14 +167,37 @@ function bestCallInBand(
     });
   }
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    return {
+      pick: null,
+      reason: liquidButBelowBasis ? "below_basis" : "no_band_candidate",
+    };
+  }
   candidates.sort((a, b) => b.annualized_yield_pct - a.annualized_yield_pct);
-  return candidates[0];
+  return { pick: candidates[0], reason: "ok" };
 }
+
+export type CcDiagnostics = {
+  uncovered_tickers: number;
+  outcomes: Record<CcPickOutcome, number>;
+  per_ticker: Array<{ ticker: string; outcome: CcPickOutcome; detail?: string }>;
+};
 
 export type CcScanResult = {
   recommendations: CcRecommendation[];
+  diagnostics: CcDiagnostics;
 };
+
+function emptyCcOutcomes(): Record<CcPickOutcome, number> {
+  return {
+    ok: 0,
+    no_quote: 0,
+    no_expiration: 0,
+    no_band_candidate: 0,
+    below_basis: 0,
+    error: 0,
+  };
+}
 
 export async function scanHoldingsForCcs(): Promise<CcScanResult> {
   const bookState = await fetchBookState();
@@ -170,14 +207,21 @@ export async function scanHoldingsForCcs(): Promise<CcScanResult> {
     const pledged = bookState.openCcShares.get(t) ?? 0;
     if (shares - pledged >= 100) tickers.push(t);
   }
-  if (tickers.length === 0) return { recommendations: [] };
+  if (tickers.length === 0) {
+    return {
+      recommendations: [],
+      diagnostics: { uncovered_tickers: 0, outcomes: emptyCcOutcomes(), per_ticker: [] },
+    };
+  }
 
   const quotes = await getWatchlistQuotes(tickers);
 
-  const perTicker = await Promise.all(
-    tickers.map(async (ticker): Promise<CcRecommendation | null> => {
+  type TickerResult = { pick: CcRecommendation | null; outcome: CcPickOutcome; detail?: string };
+
+  const perTicker: TickerResult[] = await Promise.all(
+    tickers.map(async (ticker): Promise<TickerResult> => {
       const quote: StockQuote | undefined = quotes.get(ticker);
-      if (!quote?.last) return null;
+      if (!quote?.last) return { pick: null, outcome: "no_quote" };
       const longShares = bookState.longShares.get(ticker) ?? 0;
       const pledged = bookState.openCcShares.get(ticker) ?? 0;
       const uncovered = longShares - pledged;
@@ -185,7 +229,7 @@ export async function scanHoldingsForCcs(): Promise<CcScanResult> {
       try {
         const expirations = await getExpirations(ticker);
         const expiration = pickExpiration(expirations);
-        if (!expiration) return null;
+        if (!expiration) return { pick: null, outcome: "no_expiration" };
 
         const [chain, hist, backIvPct, nextExDiv] = await Promise.all([
           getOptionChain(ticker, expiration),
@@ -194,8 +238,8 @@ export async function scanHoldingsForCcs(): Promise<CcScanResult> {
           getNextExDivDate(ticker),
         ]);
 
-        const best = bestCallInBand(chain, quote.last, expiration, uncovered, costBasis);
-        if (!best) return null;
+        const { pick: best, reason } = bestCallInBand(chain, quote.last, expiration, uncovered, costBasis);
+        if (!best) return { pick: null, outcome: reason };
 
         const oiSkew = calcOiSkew(chain, best.strike, "call");
         const technical = calcTechnicalLevel(hist.closes, best.strike, quote.last, "resistance");
@@ -222,31 +266,45 @@ export async function scanHoldingsForCcs(): Promise<CcScanResult> {
         });
 
         return {
-          ...best,
-          ticker,
-          cost_basis: costBasis,
-          uncovered_shares: uncovered,
-          next_ex_div_date: nextExDiv,
-          ex_div_in_window: exDivInWindow,
-          rv20_pct: hist.rv20_pct,
-          iv_rv_ratio: ranked.iv_rv_ratio,
-          cushion_expected_moves: ranked.cushion_expected_moves,
-          term_slope_pct: ranked.term_slope_pct,
-          rank_score: ranked.score,
-          rank_reason: ranked.reason,
-          oi_skew_score: oiSkew.score,
-          technical_score: technical.score,
-          rv_cone_percentile: hist.rv_cone_percentile,
+          pick: {
+            ...best,
+            ticker,
+            cost_basis: costBasis,
+            uncovered_shares: uncovered,
+            next_ex_div_date: nextExDiv,
+            ex_div_in_window: exDivInWindow,
+            rv20_pct: hist.rv20_pct,
+            iv_rv_ratio: ranked.iv_rv_ratio,
+            cushion_expected_moves: ranked.cushion_expected_moves,
+            term_slope_pct: ranked.term_slope_pct,
+            rank_score: ranked.score,
+            rank_reason: ranked.reason,
+            oi_skew_score: oiSkew.score,
+            technical_score: technical.score,
+            rv_cone_percentile: hist.rv_cone_percentile,
+          },
+          outcome: "ok",
         };
-      } catch {
-        return null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { pick: null, outcome: "error", detail: msg };
       }
     }),
   );
 
-  const recommendations = perTicker
-    .filter((r): r is CcRecommendation => r !== null)
-    .sort((a, b) => b.rank_score - a.rank_score);
+  const outcomes = emptyCcOutcomes();
+  const per_ticker: CcDiagnostics["per_ticker"] = [];
+  const recommendations: CcRecommendation[] = [];
+  for (let i = 0; i < tickers.length; i++) {
+    const r = perTicker[i];
+    outcomes[r.outcome] += 1;
+    per_ticker.push({ ticker: tickers[i], outcome: r.outcome, detail: r.detail });
+    if (r.pick) recommendations.push(r.pick);
+  }
+  recommendations.sort((a, b) => b.rank_score - a.rank_score);
 
-  return { recommendations };
+  return {
+    recommendations,
+    diagnostics: { uncovered_tickers: tickers.length, outcomes, per_ticker },
+  };
 }

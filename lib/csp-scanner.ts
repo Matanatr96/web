@@ -101,20 +101,34 @@ function dteOf(expiration: string): number {
 // then picks the highest annualized-yield contract that fits buying power. The
 // richer cross-ticker scoring is done downstream — within-ticker selection
 // stays simple to keep the search tractable.
+type BestPut = Pick<CspRecommendation,
+  "underlying_price" | "expiration" | "dte" | "strike" | "bid" | "ask"
+  | "delta" | "collateral" | "premium_per_contract" | "annualized_yield_pct"
+  | "otm_pct" | "iv_pct"
+>;
+
+export type CspPickOutcome =
+  | "ok"
+  | "no_quote"
+  | "no_expiration"
+  | "no_band_candidate"
+  | "capital_too_low"
+  | "concentration_reject"
+  | "error";
+
 function bestPutInBand(
   chain: OptionQuote[],
   underlyingPrice: number,
   expiration: string,
   buyingPower: number,
-): Pick<CspRecommendation,
-  "underlying_price" | "expiration" | "dte" | "strike" | "bid" | "ask"
-  | "delta" | "collateral" | "premium_per_contract" | "annualized_yield_pct"
-  | "otm_pct" | "iv_pct"
-> | null {
+): { pick: BestPut | null; reason: CspPickOutcome } {
   const dte = dteOf(expiration);
-  if (dte <= 0) return null;
+  if (dte <= 0) return { pick: null, reason: "no_expiration" };
 
-  const candidates: Array<NonNullable<ReturnType<typeof bestPutInBand>>> = [];
+  const candidates: BestPut[] = [];
+  // Track whether any candidate passed liquidity but failed only the BP check —
+  // distinguishes "scanner found nothing tradeable" from "BP too low".
+  let liquidPassedButOverBp = false;
   for (const opt of chain) {
     if (opt.option_type !== "put") continue;
     if (opt.delta == null) continue;
@@ -130,7 +144,10 @@ function bestPutInBand(
     if (!passesDepthFilter(opt.bid_size, opt.ask_size)) continue;
 
     const collateral = opt.strike * 100;
-    if (collateral > buyingPower) continue;
+    if (collateral > buyingPower) {
+      liquidPassedButOverBp = true;
+      continue;
+    }
 
     const annualized_yield_pct = (bid / opt.strike) * (365 / dte) * 100;
 
@@ -150,15 +167,39 @@ function bestPutInBand(
     });
   }
 
-  if (candidates.length === 0) return null;
+  if (candidates.length === 0) {
+    return {
+      pick: null,
+      reason: liquidPassedButOverBp ? "capital_too_low" : "no_band_candidate",
+    };
+  }
   candidates.sort((a, b) => b.annualized_yield_pct - a.annualized_yield_pct);
-  return candidates[0];
+  return { pick: candidates[0], reason: "ok" };
 }
+
+export type CspDiagnostics = {
+  watchlist_size: number;
+  outcomes: Record<CspPickOutcome, number>;
+  per_ticker: Array<{ ticker: string; outcome: CspPickOutcome; detail?: string }>;
+};
 
 export type ScanResult = {
   buying_power: number;
   recommendations: CspRecommendation[];
+  diagnostics: CspDiagnostics;
 };
+
+function emptyOutcomes(): Record<CspPickOutcome, number> {
+  return {
+    ok: 0,
+    no_quote: 0,
+    no_expiration: 0,
+    no_band_candidate: 0,
+    capital_too_low: 0,
+    concentration_reject: 0,
+    error: 0,
+  };
+}
 
 export async function scanWatchlistForCsps(): Promise<ScanResult> {
   const supabase = getServiceClient();
@@ -168,24 +209,45 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
     .order("created_at", { ascending: true });
   if (error) throw new Error(`watchlist fetch: ${error.message}`);
   const items = (data ?? []) as WatchlistItem[];
-  if (items.length === 0) return { buying_power: 0, recommendations: [] };
+  if (items.length === 0) {
+    return {
+      buying_power: 0,
+      recommendations: [],
+      diagnostics: { watchlist_size: 0, outcomes: emptyOutcomes(), per_ticker: [] },
+    };
+  }
 
   const balances = await getAccountBalances();
   const buyingPower = balances?.option_buying_power ?? 0;
-  if (buyingPower <= 0) return { buying_power: 0, recommendations: [] };
+  if (buyingPower <= 0) {
+    // Every ticker would fail capital_too_low — surface that clearly.
+    const outcomes = emptyOutcomes();
+    outcomes.capital_too_low = items.length;
+    return {
+      buying_power: 0,
+      recommendations: [],
+      diagnostics: {
+        watchlist_size: items.length,
+        outcomes,
+        per_ticker: items.map((i) => ({ ticker: i.ticker, outcome: "capital_too_low" as const })),
+      },
+    };
+  }
 
   const bookState = await fetchBookState();
   const tickers = items.map((i) => i.ticker);
   const quotes = await getWatchlistQuotes(tickers);
 
-  const perTicker = await Promise.all(
-    tickers.map(async (ticker): Promise<CspRecommendation | null> => {
+  type TickerResult = { pick: CspRecommendation | null; outcome: CspPickOutcome; detail?: string };
+
+  const perTicker: TickerResult[] = await Promise.all(
+    tickers.map(async (ticker): Promise<TickerResult> => {
       const quote: StockQuote | undefined = quotes.get(ticker);
-      if (!quote?.last) return null;
+      if (!quote?.last) return { pick: null, outcome: "no_quote" };
       try {
         const expirations = await getExpirations(ticker);
         const expiration = pickExpiration(expirations);
-        if (!expiration) return null;
+        if (!expiration) return { pick: null, outcome: "no_expiration" };
 
         const [chain, hist, backIvPct] = await Promise.all([
           getOptionChain(ticker, expiration),
@@ -193,15 +255,17 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
           fetchBackAtmIvPct(ticker, expirations, expiration, quote.last),
         ]);
 
-        const best = bestPutInBand(chain, quote.last, expiration, buyingPower);
-        if (!best) return null;
+        const { pick: best, reason } = bestPutInBand(chain, quote.last, expiration, buyingPower);
+        if (!best) return { pick: null, outcome: reason };
 
         const existingCsp = bookState.openCspCollateral.get(ticker) ?? 0;
         const concentrationPct =
           ((existingCsp + best.collateral) / buyingPower) * 100;
         // Hard reject before scoring — keeps the alert list focused on names
         // the user actually has room to add to.
-        if (concentrationPct >= CONCENTRATION_HARD_REJECT_PCT) return null;
+        if (concentrationPct >= CONCENTRATION_HARD_REJECT_PCT) {
+          return { pick: null, outcome: "concentration_reject", detail: `${concentrationPct.toFixed(0)}% of BP` };
+        }
 
         const existingLongShares = bookState.longShares.get(ticker) ?? 0;
         const oiSkew = calcOiSkew(chain, best.strike);
@@ -229,29 +293,44 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
         });
 
         return {
-          ...best,
-          ticker,
-          rv20_pct: hist.rv20_pct,
-          iv_rv_ratio: ranked.iv_rv_ratio,
-          cushion_expected_moves: ranked.cushion_expected_moves,
-          term_slope_pct: ranked.term_slope_pct,
-          rank_score: ranked.score,
-          rank_reason: ranked.reason,
-          oi_skew_score: oiSkew.score,
-          technical_score: technical.score,
-          rv_cone_percentile: hist.rv_cone_percentile,
-          concentration_pct: concentrationPct,
-          existing_long_shares: existingLongShares,
+          pick: {
+            ...best,
+            ticker,
+            rv20_pct: hist.rv20_pct,
+            iv_rv_ratio: ranked.iv_rv_ratio,
+            cushion_expected_moves: ranked.cushion_expected_moves,
+            term_slope_pct: ranked.term_slope_pct,
+            rank_score: ranked.score,
+            rank_reason: ranked.reason,
+            oi_skew_score: oiSkew.score,
+            technical_score: technical.score,
+            rv_cone_percentile: hist.rv_cone_percentile,
+            concentration_pct: concentrationPct,
+            existing_long_shares: existingLongShares,
+          },
+          outcome: "ok",
         };
-      } catch {
-        return null;
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { pick: null, outcome: "error", detail: msg };
       }
     }),
   );
 
-  const recommendations = perTicker
-    .filter((r): r is CspRecommendation => r !== null)
-    .sort((a, b) => b.rank_score - a.rank_score);
+  const outcomes = emptyOutcomes();
+  const per_ticker: CspDiagnostics["per_ticker"] = [];
+  const recommendations: CspRecommendation[] = [];
+  for (let i = 0; i < tickers.length; i++) {
+    const r = perTicker[i];
+    outcomes[r.outcome] += 1;
+    per_ticker.push({ ticker: tickers[i], outcome: r.outcome, detail: r.detail });
+    if (r.pick) recommendations.push(r.pick);
+  }
+  recommendations.sort((a, b) => b.rank_score - a.rank_score);
 
-  return { buying_power: buyingPower, recommendations };
+  return {
+    buying_power: buyingPower,
+    recommendations,
+    diagnostics: { watchlist_size: items.length, outcomes, per_ticker },
+  };
 }

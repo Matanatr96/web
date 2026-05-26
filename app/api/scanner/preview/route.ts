@@ -23,6 +23,8 @@ export async function POST() {
       buying_power: cspScan.buying_power,
       csps: cspScan.recommendations,
       ccs: ccScan.recommendations,
+      csp_diagnostics: cspScan.diagnostics,
+      cc_diagnostics: ccScan.diagnostics,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

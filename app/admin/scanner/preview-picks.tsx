@@ -1,14 +1,27 @@
 "use client";
 
 import { useState, useTransition } from "react";
-import type { CspRecommendation } from "@/lib/csp-scanner";
-import type { CcRecommendation } from "@/lib/cc-scanner";
+import type { CspRecommendation, CspDiagnostics } from "@/lib/csp-scanner";
+import type { CcRecommendation, CcDiagnostics } from "@/lib/cc-scanner";
 
 type PreviewResponse = {
   ran_at: string;
   buying_power: number;
   csps: CspRecommendation[];
   ccs: CcRecommendation[];
+  csp_diagnostics: CspDiagnostics;
+  cc_diagnostics: CcDiagnostics;
+};
+
+const OUTCOME_LABELS: Record<string, string> = {
+  ok: "picked",
+  no_quote: "no quote",
+  no_expiration: "no usable expiry",
+  no_band_candidate: "no contract in delta band passing liquidity",
+  capital_too_low: "capital too low",
+  concentration_reject: "concentration over limit",
+  below_basis: "all candidates below cost basis",
+  error: "error",
 };
 
 export default function PreviewPicks() {
@@ -58,6 +71,12 @@ export default function PreviewPicks() {
             {" "}option BP ${data.buying_power.toLocaleString()}
           </div>
 
+          <DiagnosticsPanel
+            title={`CSP scan — ${data.csp_diagnostics.watchlist_size} tickers on watchlist`}
+            outcomes={data.csp_diagnostics.outcomes as Record<string, number>}
+            perTicker={data.csp_diagnostics.per_ticker as Array<{ ticker: string; outcome: string; detail?: string }>}
+          />
+
           <PicksTable
             title={`CSPs (${data.csps.length})`}
             rows={data.csps.map((r) => ({
@@ -72,6 +91,12 @@ export default function PreviewPicks() {
               score: r.rank_score,
               reason: r.rank_reason,
             }))}
+          />
+
+          <DiagnosticsPanel
+            title={`CC scan — ${data.cc_diagnostics.uncovered_tickers} tickers with 100+ uncovered shares`}
+            outcomes={data.cc_diagnostics.outcomes as Record<string, number>}
+            perTicker={data.cc_diagnostics.per_ticker as Array<{ ticker: string; outcome: string; detail?: string }>}
           />
 
           <PicksTable
@@ -112,6 +137,46 @@ function scoreColor(score: number): string {
   if (score >= 70) return "bg-emerald-100 text-emerald-800 dark:bg-emerald-900/40 dark:text-emerald-300";
   if (score >= 40) return "bg-amber-100 text-amber-800 dark:bg-amber-900/40 dark:text-amber-300";
   return "bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300";
+}
+
+function DiagnosticsPanel({
+  title,
+  outcomes,
+  perTicker,
+}: {
+  title: string;
+  outcomes: Record<string, number>;
+  perTicker: Array<{ ticker: string; outcome: string; detail?: string }>;
+}) {
+  const summary = Object.entries(outcomes)
+    .filter(([, n]) => n > 0)
+    .map(([k, n]) => `${n} ${OUTCOME_LABELS[k] ?? k}`)
+    .join(" · ");
+
+  return (
+    <div className="rounded-lg border border-stone-200 dark:border-stone-800 p-4">
+      <div className="text-sm font-medium mb-1">{title}</div>
+      <div className="text-xs text-stone-500 mb-3">{summary || "no tickers"}</div>
+      {perTicker.length > 0 && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-stone-500 hover:text-stone-700 dark:hover:text-stone-300">
+            Per-ticker outcome
+          </summary>
+          <div className="mt-2 grid grid-cols-1 sm:grid-cols-2 gap-y-1 gap-x-4">
+            {perTicker.map((p) => (
+              <div key={p.ticker} className="flex items-baseline justify-between gap-2 border-b border-stone-100 dark:border-stone-900 py-0.5">
+                <span className="font-medium">{p.ticker}</span>
+                <span className="text-stone-500 text-right">
+                  {OUTCOME_LABELS[p.outcome] ?? p.outcome}
+                  {p.detail && <span className="ml-1 text-stone-400">({p.detail})</span>}
+                </span>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
+    </div>
+  );
 }
 
 function PicksTable({ title, rows }: { title: string; rows: Row[] }) {
