@@ -1,12 +1,14 @@
 name: Idle Scan
 
-# Hits /api/cron/idle-scan every 30 min during US market hours.
+# Hits /api/cron/idle-scan every 15 min during US market hours — the endpoint
+# acts as a heartbeat. The actual scan cadence + caps are read from the
+# `scanner_config` Supabase row (editable at /admin/scanner). The handler's
+# isMarketHoursET() trims the exact edges of 9:30–16:00 ET.
 # Cron is in UTC; 13–20 UTC covers 9:30am–4:00pm ET across DST transitions.
-# The handler's isMarketHoursET() trims the exact edges.
 
 on:
   schedule:
-    - cron: "*/30 13-20 * * 1-5"
+    - cron: "*/15 13-20 * * 1-5"
   workflow_dispatch: # manual trigger from the Actions tab
 
 jobs:
