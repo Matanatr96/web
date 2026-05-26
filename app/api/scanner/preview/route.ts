@@ -15,7 +15,7 @@ export async function POST() {
 
   try {
     const [cspScan, ccScan] = await Promise.all([
-      scanWatchlistForCsps(),
+      scanWatchlistForCsps({ discover: true }),
       scanHoldingsForCcs(),
     ]);
     return NextResponse.json({
@@ -25,6 +25,7 @@ export async function POST() {
       ccs: ccScan.recommendations,
       csp_diagnostics: cspScan.diagnostics,
       cc_diagnostics: ccScan.diagnostics,
+      csp_metrics: cspScan.metrics,
     });
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);

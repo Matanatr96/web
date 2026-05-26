@@ -28,7 +28,19 @@ import {
   CONCENTRATION_HARD_REJECT_PCT,
 } from "@/lib/csp-ranking";
 import { fetchBookState } from "@/lib/book-state";
+import { findDiscoveryCandidates, type DiscoveryDiagnostics } from "@/lib/csp-discovery";
+import {
+  startScanMetrics,
+  finishScanMetrics,
+  runWithConcurrency,
+  type ScanMetrics,
+} from "@/lib/scan-metrics";
 import type { WatchlistItem } from "@/lib/types";
+
+// Cap concurrent per-ticker work to stay under Tradier's ~120 req/min ceiling.
+// Each ticker fires ~2 chain fetches + a history fetch in parallel inside the
+// loop, so concurrency=5 ≈ 15 in-flight requests at peak.
+const PER_TICKER_CONCURRENCY = 5;
 
 // v1: hardcoded. Admin override is v2.
 export const DELTA_MIN = 0.10;
@@ -69,6 +81,10 @@ export type CspRecommendation = {
   rv_cone_percentile: number | null;
   concentration_pct: number | null;
   existing_long_shares: number;
+  // "watchlist" = user-curated ticker; "discovered" = surfaced by the
+  // universe prefilter. Discovered picks are NOT emailed in v1 — they only
+  // show in the admin preview UI.
+  source: "watchlist" | "discovered";
 };
 
 function pickExpiration(dates: string[]): string | null {
@@ -180,13 +196,26 @@ function bestPutInBand(
 export type CspDiagnostics = {
   watchlist_size: number;
   outcomes: Record<CspPickOutcome, number>;
-  per_ticker: Array<{ ticker: string; outcome: CspPickOutcome; detail?: string }>;
+  per_ticker: Array<{
+    ticker: string;
+    outcome: CspPickOutcome;
+    detail?: string;
+    source: "watchlist" | "discovered";
+  }>;
+  discovery?: DiscoveryDiagnostics;
 };
 
 export type ScanResult = {
   buying_power: number;
   recommendations: CspRecommendation[];
   diagnostics: CspDiagnostics;
+  metrics: ScanMetrics | null;
+};
+
+export type ScanOptions = {
+  // Enable the universe prefilter and merge discovered tickers into the scan.
+  // Off by default so existing callers (legacy paths) are unaffected.
+  discover?: boolean;
 };
 
 function emptyOutcomes(): Record<CspPickOutcome, number> {
@@ -201,7 +230,8 @@ function emptyOutcomes(): Record<CspPickOutcome, number> {
   };
 }
 
-export async function scanWatchlistForCsps(): Promise<ScanResult> {
+export async function scanWatchlistForCsps(opts: ScanOptions = {}): Promise<ScanResult> {
+  startScanMetrics();
   const supabase = getServiceClient();
   const { data, error } = await supabase
     .from("watchlist")
@@ -209,11 +239,12 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
     .order("created_at", { ascending: true });
   if (error) throw new Error(`watchlist fetch: ${error.message}`);
   const items = (data ?? []) as WatchlistItem[];
-  if (items.length === 0) {
+  if (items.length === 0 && !opts.discover) {
     return {
       buying_power: 0,
       recommendations: [],
       diagnostics: { watchlist_size: 0, outcomes: emptyOutcomes(), per_ticker: [] },
+      metrics: finishScanMetrics(),
     };
   }
 
@@ -229,19 +260,45 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
       diagnostics: {
         watchlist_size: items.length,
         outcomes,
-        per_ticker: items.map((i) => ({ ticker: i.ticker, outcome: "capital_too_low" as const })),
+        per_ticker: items.map((i) => ({
+          ticker: i.ticker,
+          outcome: "capital_too_low" as const,
+          source: "watchlist" as const,
+        })),
       },
+      metrics: finishScanMetrics(),
     };
   }
 
   const bookState = await fetchBookState();
-  const tickers = items.map((i) => i.ticker);
-  const quotes = await getWatchlistQuotes(tickers);
+  const watchlistTickers = items.map((i) => i.ticker);
+
+  // Build the combined scan set: watchlist + (optional) discovered tickers.
+  // Discovered tickers come from the universe prefilter and are tagged so
+  // the cron route can exclude them from emails while the admin UI shows
+  // them alongside watchlist picks.
+  let discoveredTickers: string[] = [];
+  let discoveryDiag: DiscoveryDiagnostics | undefined;
+  if (opts.discover) {
+    const excluded = new Set(watchlistTickers.map((t) => t.toUpperCase()));
+    const d = await findDiscoveryCandidates({ buyingPower, excluded });
+    discoveredTickers = d.tickers;
+    discoveryDiag = d.diagnostics;
+  }
+
+  const allTickers = [...watchlistTickers, ...discoveredTickers];
+  const sourceByTicker = new Map<string, "watchlist" | "discovered">();
+  for (const t of watchlistTickers) sourceByTicker.set(t, "watchlist");
+  for (const t of discoveredTickers) sourceByTicker.set(t, "discovered");
+
+  const quotes = await getWatchlistQuotes(allTickers);
 
   type TickerResult = { pick: CspRecommendation | null; outcome: CspPickOutcome; detail?: string };
 
-  const perTicker: TickerResult[] = await Promise.all(
-    tickers.map(async (ticker): Promise<TickerResult> => {
+  const perTicker: TickerResult[] = await runWithConcurrency(
+    allTickers,
+    PER_TICKER_CONCURRENCY,
+    async (ticker): Promise<TickerResult> => {
       const quote: StockQuote | undefined = quotes.get(ticker);
       if (!quote?.last) return { pick: null, outcome: "no_quote" };
       try {
@@ -307,6 +364,7 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
             rv_cone_percentile: hist.rv_cone_percentile,
             concentration_pct: concentrationPct,
             existing_long_shares: existingLongShares,
+            source: sourceByTicker.get(ticker) ?? "watchlist",
           },
           outcome: "ok",
         };
@@ -314,16 +372,21 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
         const msg = err instanceof Error ? err.message : String(err);
         return { pick: null, outcome: "error", detail: msg };
       }
-    }),
+    },
   );
 
   const outcomes = emptyOutcomes();
   const per_ticker: CspDiagnostics["per_ticker"] = [];
   const recommendations: CspRecommendation[] = [];
-  for (let i = 0; i < tickers.length; i++) {
+  for (let i = 0; i < allTickers.length; i++) {
     const r = perTicker[i];
     outcomes[r.outcome] += 1;
-    per_ticker.push({ ticker: tickers[i], outcome: r.outcome, detail: r.detail });
+    per_ticker.push({
+      ticker: allTickers[i],
+      outcome: r.outcome,
+      detail: r.detail,
+      source: sourceByTicker.get(allTickers[i]) ?? "watchlist",
+    });
     if (r.pick) recommendations.push(r.pick);
   }
   recommendations.sort((a, b) => b.rank_score - a.rank_score);
@@ -331,6 +394,12 @@ export async function scanWatchlistForCsps(): Promise<ScanResult> {
   return {
     buying_power: buyingPower,
     recommendations,
-    diagnostics: { watchlist_size: items.length, outcomes, per_ticker },
+    diagnostics: {
+      watchlist_size: items.length,
+      outcomes,
+      per_ticker,
+      discovery: discoveryDiag,
+    },
+    metrics: finishScanMetrics(),
   };
 }

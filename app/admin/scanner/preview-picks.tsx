@@ -3,6 +3,7 @@
 import { useState, useTransition } from "react";
 import type { CspRecommendation, CspDiagnostics } from "@/lib/csp-scanner";
 import type { CcRecommendation, CcDiagnostics } from "@/lib/cc-scanner";
+import type { ScanMetrics } from "@/lib/scan-metrics";
 
 type PreviewResponse = {
   ran_at: string;
@@ -11,6 +12,7 @@ type PreviewResponse = {
   ccs: CcRecommendation[];
   csp_diagnostics: CspDiagnostics;
   cc_diagnostics: CcDiagnostics;
+  csp_metrics: ScanMetrics | null;
 };
 
 const OUTCOME_LABELS: Record<string, string> = {
@@ -90,8 +92,15 @@ export default function PreviewPicks() {
               capitalLabel: "Collateral",
               score: r.rank_score,
               reason: r.rank_reason,
+              source: r.source,
             }))}
           />
+
+          {data.csp_diagnostics.discovery && (
+            <DiscoveryStats discovery={data.csp_diagnostics.discovery} />
+          )}
+
+          {data.csp_metrics && <MetricsPanel metrics={data.csp_metrics} />}
 
           <DiagnosticsPanel
             title={`CC scan — ${data.cc_diagnostics.uncovered_tickers} tickers with 100+ uncovered shares`}
@@ -131,6 +140,7 @@ type Row = {
   capitalLabel: string;
   score: number;
   reason: string;
+  source?: "watchlist" | "discovered";
 };
 
 function scoreColor(score: number): string {
@@ -203,7 +213,14 @@ function PicksTable({ title, rows }: { title: string; rows: Row[] }) {
             <tbody>
               {rows.map((r, i) => (
                 <tr key={`${r.ticker}-${i}`} className="border-t border-stone-200 dark:border-stone-800 align-top">
-                  <td className="px-3 py-2 font-medium">{r.ticker}</td>
+                  <td className="px-3 py-2 font-medium">
+                    {r.ticker}
+                    {r.source === "discovered" && (
+                      <span className="ml-1.5 inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-indigo-100 text-indigo-700 dark:bg-indigo-900/40 dark:text-indigo-300 align-middle">
+                        discovered
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 tabular-nums">
                     {r.contract}
                     <div className="text-xs text-stone-500 italic mt-0.5 max-w-md whitespace-normal">
@@ -224,6 +241,62 @@ function PicksTable({ title, rows }: { title: string; rows: Row[] }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiscoveryStats({
+  discovery,
+}: {
+  discovery: { universe_size: number; after_stage1: number; after_stage2: number; selected: number };
+}) {
+  return (
+    <div className="rounded-lg border border-stone-200 dark:border-stone-800 p-4">
+      <div className="text-sm font-medium mb-1">Discovery funnel</div>
+      <div className="text-xs text-stone-500">
+        {discovery.universe_size} in universe → {discovery.after_stage1} affordable → {" "}
+        {discovery.after_stage2} ranked → {discovery.selected} fed to full scan
+      </div>
+    </div>
+  );
+}
+
+function MetricsPanel({
+  metrics,
+}: {
+  metrics: {
+    api_calls_total: number;
+    api_calls_by_endpoint: Record<string, number>;
+    rate_limit_hits: number;
+    rate_limit_remaining_min: number | null;
+  };
+}) {
+  const byEndpoint = Object.entries(metrics.api_calls_by_endpoint).sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="rounded-lg border border-stone-200 dark:border-stone-800 p-4">
+      <div className="text-sm font-medium mb-1">
+        API budget
+        {metrics.rate_limit_hits > 0 && (
+          <span className="ml-2 inline-block px-1.5 py-0.5 text-[10px] font-medium rounded bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-300 align-middle">
+            {metrics.rate_limit_hits} × 429
+          </span>
+        )}
+      </div>
+      <div className="text-xs text-stone-500 mb-2">
+        {metrics.api_calls_total} Tradier calls
+        {metrics.rate_limit_remaining_min != null && (
+          <> · min remaining {metrics.rate_limit_remaining_min}</>
+        )}
+      </div>
+      {byEndpoint.length > 0 && (
+        <div className="text-xs text-stone-500 flex flex-wrap gap-x-3 gap-y-1">
+          {byEndpoint.map(([k, n]) => (
+            <span key={k}>
+              <span className="text-stone-400">{k}</span> {n}
+            </span>
+          ))}
         </div>
       )}
     </div>
