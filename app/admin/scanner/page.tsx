@@ -4,6 +4,7 @@ import { isAdmin } from "@/lib/auth";
 import { getScannerConfig, getRecentRuns } from "@/lib/scanner-config";
 import ScannerSettingsForm from "./scanner-settings-form";
 import RecentRunsTable from "./recent-runs-table";
+import PreviewPicks from "./preview-picks";
 
 export const dynamic = "force-dynamic";
 
@@ -33,6 +34,10 @@ export default async function ScannerSettingsPage() {
       </div>
 
       <ScannerSettingsForm initial={config} />
+
+      <div className="mt-10">
+        <PreviewPicks />
+      </div>
 
       <div className="mt-10">
         <h2 className="text-lg font-semibold mb-3">Recent runs</h2>
