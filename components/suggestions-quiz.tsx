@@ -3,7 +3,7 @@
 import { useMemo, useState } from "react";
 import type { Restaurant } from "@/lib/types";
 
-type Step = "city" | "cuisine" | "category" | "results";
+type Step = "city" | "category" | "cuisine" | "results";
 
 const CATEGORIES = ["Food", "Drink", "Dessert"] as const;
 type Category = (typeof CATEGORIES)[number];
@@ -43,29 +43,29 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
     return Array.from(new Set(restaurants.map((r) => r.city))).sort();
   }, [restaurants]);
 
-  const cuisinesInCity = useMemo(() => {
+  const categoriesAvailable = useMemo(() => {
     if (!city) return [];
+    const set = new Set(
+      restaurants.filter((r) => r.city === city).map((r) => r.category),
+    );
+    return CATEGORIES.filter((c) => set.has(c));
+  }, [restaurants, city]);
+
+  const cuisinesInCity = useMemo(() => {
+    if (!city || !category) return [];
     return Array.from(
       new Set(
-        restaurants.filter((r) => r.city === city).flatMap((r) => r.cuisines),
+        restaurants
+          .filter((r) => r.city === city && r.category === category)
+          .flatMap((r) => r.cuisines),
       ),
     ).sort();
-  }, [restaurants, city]);
+  }, [restaurants, city, category]);
 
   const cuisineOptions = useMemo(
     () => pickRandom(cuisinesInCity, MAX_OPTIONS, cuisineShuffle),
     [cuisinesInCity, cuisineShuffle]
   );
-
-  const categoriesAvailable = useMemo(() => {
-    if (!city || !cuisine) return [];
-    const set = new Set(
-      restaurants
-        .filter((r) => r.city === city && r.cuisines.includes(cuisine))
-        .map((r) => r.category),
-    );
-    return CATEGORIES.filter((c) => set.has(c));
-  }, [restaurants, city, cuisine]);
 
   const results = useMemo(() => {
     if (!city || !cuisine || !category) return [];
@@ -88,27 +88,27 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
   }
 
   function back() {
-    if (step === "cuisine") {
-      setCuisine(null);
-      setStep("city");
-    } else if (step === "category") {
+    if (step === "category") {
       setCategory(null);
-      setStep("cuisine");
-    } else if (step === "results") {
+      setStep("city");
+    } else if (step === "cuisine") {
+      setCuisine(null);
       setStep("category");
+    } else if (step === "results") {
+      setStep("cuisine");
     }
   }
 
   function jumpTo(target: Step) {
     if (target === "city") {
+      setCategory(null);
       setCuisine(null);
-      setCategory(null);
       setStep("city");
-    } else if (target === "cuisine" && city) {
-      setCategory(null);
-      setStep("cuisine");
-    } else if (target === "category" && city && cuisine) {
+    } else if (target === "category" && city) {
+      setCuisine(null);
       setStep("category");
+    } else if (target === "cuisine" && city && category) {
+      setStep("cuisine");
     }
   }
 
@@ -130,30 +130,8 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
           onPick={(c) => {
             setCity(c);
             setCuisineShuffle(0);
-            setStep("cuisine");
-          }}
-        />
-      )}
-
-      {step === "cuisine" && (
-        <Question
-          title="What cuisine are you feeling?"
-          subtitle={
-            cuisinesInCity.length > MAX_OPTIONS
-              ? `Cuisines I've rated in ${city}.`
-              : `All cuisines I've rated in ${city}.`
-          }
-          options={cuisineOptions}
-          onPick={(c) => {
-            setCuisine(c);
             setStep("category");
           }}
-          onReshuffle={
-            cuisinesInCity.length > MAX_OPTIONS
-              ? () => setCuisineShuffle((s) => s + 1)
-              : undefined
-          }
-          onBack={back}
         />
       )}
 
@@ -167,12 +145,35 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
               options={categoriesAvailable}
               onPick={(c) => {
                 setCategory(c as Category);
-                setStep("results");
+                setCuisineShuffle(0);
+                setStep("cuisine");
               }}
               onBack={back}
             />
           )}
         </>
+      )}
+
+      {step === "cuisine" && (
+        <Question
+          title="What cuisine are you feeling?"
+          subtitle={
+            cuisinesInCity.length > MAX_OPTIONS
+              ? `${category} cuisines I've rated in ${city}.`
+              : `All ${category?.toLowerCase()} cuisines I've rated in ${city}.`
+          }
+          options={cuisineOptions}
+          onPick={(c) => {
+            setCuisine(c);
+            setStep("results");
+          }}
+          onReshuffle={
+            cuisinesInCity.length > MAX_OPTIONS
+              ? () => setCuisineShuffle((s) => s + 1)
+              : undefined
+          }
+          onBack={back}
+        />
       )}
 
       {step === "results" && (
@@ -417,8 +418,8 @@ function Stepper({
 }) {
   const steps: { key: Step; label: string }[] = [
     { key: "city", label: "City" },
-    { key: "cuisine", label: "Cuisine" },
     { key: "category", label: "Type" },
+    { key: "cuisine", label: "Cuisine" },
     { key: "results", label: "Picks" },
   ];
   const idx = steps.findIndex((s) => s.key === current);
@@ -427,8 +428,8 @@ function Stepper({
     if (key === current) return false;
     if (key === "results") return false;
     if (key === "city") return true;
-    if (key === "cuisine") return completed.city;
-    if (key === "category") return completed.city && completed.cuisine;
+    if (key === "category") return completed.city;
+    if (key === "cuisine") return completed.city && completed.category;
     return false;
   }
 
