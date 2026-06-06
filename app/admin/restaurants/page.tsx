@@ -3,11 +3,8 @@ import { redirect } from "next/navigation";
 import { isAdmin } from "@/lib/auth";
 import { getSupabase } from "@/lib/supabase";
 import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
-import { fmt } from "@/lib/utils";
-import { deleteRestaurant } from "../actions";
-import DeleteButton from "../delete-button";
 import CuisineManager from "../add-cuisine-form";
-import LogVisitButton from "@/components/log-visit-modal";
+import RestaurantsTable from "./restaurants-table";
 
 export const dynamic = "force-dynamic";
 
@@ -60,65 +57,7 @@ export default async function RestaurantsAdminPage() {
       </section>
 
       <h2 className="text-lg font-semibold tracking-tight mt-10 mb-3">Restaurants</h2>
-      <div className="overflow-x-auto rounded-md border border-stone-200 dark:border-stone-800">
-        <table className="w-full text-sm">
-          <thead className="bg-stone-50 dark:bg-stone-900 text-left text-xs uppercase tracking-wide text-stone-500">
-            <tr>
-              <th className="px-3 py-2">Place</th>
-              <th className="px-3 py-2">City</th>
-              <th className="px-3 py-2">Cuisine</th>
-              <th className="px-3 py-2 text-right">Overall</th>
-              <th className="px-3 py-2 text-right">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
-            {restaurants.map((r) => {
-              const deleteAction = deleteRestaurant.bind(null, r.id);
-              return (
-                <tr
-                  key={r.id}
-                  className="border-t border-stone-200 dark:border-stone-800"
-                >
-                  <td className="px-3 py-2 font-medium">{r.name}</td>
-                  <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                    {r.city}
-                  </td>
-                  <td className="px-3 py-2 text-stone-600 dark:text-stone-400">
-                    {r.cuisines.join(", ")}
-                  </td>
-                  <td className="px-3 py-2 text-right tabular-nums">
-                    {fmt(r.overall, 2)}
-                  </td>
-                  <td className="px-3 py-2 text-right">
-                    <div className="flex items-center justify-end gap-2">
-                      <LogVisitButton
-                        restaurantId={r.id}
-                        restaurantName={r.name}
-                        currentRatings={{
-                          food: r.food,
-                          value: r.value,
-                          service: r.service,
-                          ambiance: r.ambiance,
-                          vegan_options: r.vegan_options,
-                        }}
-                      />
-                      <Link
-                        href={`/admin/${r.id}/edit`}
-                        className="text-sm hover:underline"
-                      >
-                        Edit
-                      </Link>
-                      <form action={deleteAction}>
-                        <DeleteButton name={r.name} />
-                      </form>
-                    </div>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
+      <RestaurantsTable restaurants={restaurants} />
     </div>
   );
 }
