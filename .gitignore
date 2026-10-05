@@ -1,0 +1,13 @@
+.venv/
+/data
+/models
+/output
+*.mp4
+*.mkv
+*.webm
+__pycache__/
+.pytest_cache/
+*.egg-info/
+.env/
+.env
+/.speech-env

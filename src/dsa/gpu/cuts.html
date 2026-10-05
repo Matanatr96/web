@@ -1,0 +1,87 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>TV cuts review</title>
+<style>
+  :root { --bg:#111; --panel:#1b1b1b; --fg:#ddd; --dim:#888; --ok:#3c9; --bad:#f55; --cur:#2a3f5a; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:13px system-ui, sans-serif; display:flex; height:100vh; }
+  #list { width:58%; overflow:auto; padding:8px; }
+  #player { flex:1; padding:8px; display:flex; flex-direction:column; gap:8px; }
+  video { width:100%; background:#000; }
+  .tabs button { background:#333; color:var(--fg); border:1px solid #555; padding:4px 10px; cursor:pointer; }
+  .tabs button.on { background:#557; }
+  .shot { display:flex; gap:8px; align-items:center; padding:4px; border-radius:4px; cursor:pointer; }
+  .shot.cur { background:var(--cur); }
+  .shot img { width:150px; }
+  .meta { width:150px; }
+  .meta .t { font-weight:600; }
+  .meta .r { color:var(--dim); font-size:12px; }
+  .v { width:52px; font-weight:700; }
+  .right .v { color:var(--ok); } .wrong .v { color:var(--bad); }
+  kbd { background:#333; padding:0 4px; border-radius:3px; }
+  #help { color:var(--dim); line-height:1.6; }
+</style></head>
+<body>
+<div id="list"><div class="tabs" id="tabs"></div><div id="summary" style="color:var(--dim);margin:6px 0"></div><div id="rows"></div></div>
+<div id="player">
+  <video id="vid" controls muted preload="auto"></video>
+  <div id="now"></div>
+  <div id="help">
+    Click a shot (or <kbd>J</kbd>/<kbd>K</kbd>) to play it. <kbd>Space</kbd> replay.
+    <kbd>1</kbd> the call is right, <kbd>3</kbd> the call is wrong, <kbd>0</kbd> clear. Marks save as you go.<br>
+    Kept = the main camera's whole-court view in all 3 checked frames; discarded = in none. A shot where only some<br>
+    passed was checked every 5 frames and split where the view changed (one frame shown per piece).<br>
+    Green court lines on a frame: passed. Red: court not found, or not the main camera.
+  </div>
+</div>
+<script>
+let M, marks = {}, tab = 'discard', rows = [], sel = 0;
+const V = document.getElementById('vid');
+const fmt = s => `${Math.floor(s / 60)}:${String(Math.floor(s % 60)).padStart(2, '0')}`;
+async function load() {
+  const d = await (await fetch('/api/shots')).json();
+  M = d.manifest; marks = d.marks || {};
+  V.src = '/video.mp4';
+  render();
+}
+function render() {
+  const names = {discard: 'Discarded', keep: 'Kept'};
+  document.getElementById('tabs').innerHTML = Object.keys(names).map(k => {
+    const s = M.shots.filter(x => x.label === k);
+    const min = s.reduce((a, x) => a + x.end_frame - x.start_frame, 0) / M.fps / 60;
+    return `<button class="${k === tab ? 'on' : ''}" data-k="${k}">${names[k]} (${s.length}, ${min.toFixed(1)} min)</button>`;
+  }).join(' ');
+  document.querySelectorAll('#tabs button').forEach(b => b.onclick = () => { tab = b.dataset.k; sel = 0; render(); });
+  rows = M.shots.filter(x => x.label === tab);
+  const judged = rows.filter(x => marks[x.shot + (x.piece !== undefined ? '.' + x.piece : '')]).length, wrong = rows.filter(x => marks[x.shot + (x.piece !== undefined ? '.' + x.piece : '')] === 'wrong').length;
+  document.getElementById('summary').textContent = `${judged} / ${rows.length} marked, ${wrong} wrong`;
+  document.getElementById('rows').innerHTML = rows.map((x, i) => {
+    const a = x.start_frame / M.fps, b = x.end_frame / M.fps;
+    const imgs = (x.thumbs || x.samples.map((_, j) => `${String(x.shot).padStart(4, '0')}_${j}`)).map(t => `<img src="/thumbs/${t}.jpg">`).join('');
+    const m = marks[x.shot + (x.piece !== undefined ? '.' + x.piece : '')];
+    return `<div class="shot ${i === sel ? 'cur' : ''} ${m || ''}" data-i="${i}"><div class="v">${m === 'right' ? '✓ right' : m === 'wrong' ? '✗ wrong' : ''}</div>` +
+      `<div class="meta"><div class="t">#${x.shot} ${fmt(a)}–${fmt(b)}</div><div class="r">${(b - a).toFixed(1)} s<br>${x.reason}</div></div>${imgs}</div>`;
+  }).join('');
+  document.querySelectorAll('.shot').forEach(d => d.onclick = () => { sel = +d.dataset.i; play(); render(); });
+  const cur = document.querySelector('.shot.cur'); if (cur) cur.scrollIntoView({block: 'nearest'});
+}
+let stopAt = null;
+function play() {
+  const x = rows[sel]; if (!x) return;
+  V.currentTime = x.start_frame / M.fps; stopAt = x.end_frame / M.fps; V.play();
+  document.getElementById('now').textContent = `Shot #${x.shot}: ${fmt(x.start_frame / M.fps)}–${fmt(stopAt)} — ${x.reason}`;
+}
+V.ontimeupdate = () => { if (stopAt !== null && V.currentTime >= stopAt) { V.pause(); stopAt = null; } };
+async function save() { await fetch('/api/marks', {method: 'POST', body: JSON.stringify(marks)}); }
+document.addEventListener('keydown', e => {
+  const k = e.key;
+  if (k === 'j' || k === 'k') { sel = Math.max(0, Math.min(rows.length - 1, sel + (k === 'j' ? 1 : -1))); play(); render(); }
+  else if (k === ' ') { play(); }
+  else if (k === '1' || k === '3' || k === '0') {
+    const x = rows[sel]; if (!x) return;
+    if (k === '0') delete marks[x.shot + (x.piece !== undefined ? '.' + x.piece : '')]; else marks[x.shot + (x.piece !== undefined ? '.' + x.piece : '')] = k === '1' ? 'right' : 'wrong';
+    save(); if (k !== '0' && sel < rows.length - 1) { sel++; play(); } render();
+  } else return;
+  e.preventDefault();
+});
+load();
+</script>
+</body></html>
