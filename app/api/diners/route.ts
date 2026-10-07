@@ -47,3 +47,17 @@ export async function POST(req: Request) {
   if (error) return NextResponse.json({ error: error.message }, { status: 500 });
   return NextResponse.json({ diner: data });
 }
+
+/**
+ * Deletes an unused, non-self diner row by `id`.
+ */
+export async function DELETE(req: Request) {
+  const { id } = (await req.json()) as { id?: number };
+  if (typeof id !== "number" || !Number.isFinite(id)) {
+    return NextResponse.json({ error: "id required" }, { status: 400 });
+  }
+  const db = getServiceClient();
+  const { error } = await db.from("diners").delete().eq("id", id).eq("is_self", false);
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  return NextResponse.json({ deleted: id });
+}
