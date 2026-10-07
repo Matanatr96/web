@@ -4,7 +4,7 @@ import { notFound } from "next/navigation";
 import { getSupabase } from "@/lib/supabase";
 import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
 import { fmt, ratingColorClass, slugify } from "@/lib/utils";
-import { computeSelfAverage, type ReceiptRow } from "@/lib/restaurant-receipts";
+import { computeSelfAverage, perDinerTotals, type ReceiptRow } from "@/lib/restaurant-receipts";
 import type { RestaurantVisit } from "@/lib/types";
 import { isAdmin } from "@/lib/auth";
 import LogVisitButton from "@/components/log-visit-modal";
@@ -217,18 +217,24 @@ export default async function RestaurantDetail({ params }: Props) {
           <ul className="divide-y divide-stone-100 dark:divide-stone-800">
             {receipts.map((rc) => {
               const date = rc.visited_on ?? rc.created_at.slice(0, 10);
-              const diners = uniqueDinerNames(rc);
+              const diners = perDinerTotals(rc);
+              const names = diners.length > 0 ? diners.map((d) => `${d.name} ($${d.total.toFixed(2)})`) : uniqueDinerNames(rc);
               return (
-                <li key={rc.id} className="py-2 flex items-baseline justify-between text-sm">
-                  <div>
-                    <span className="font-medium tabular-nums">{date}</span>
-                    {diners.length > 0 && (
-                      <span className="text-stone-500"> · {diners.join(", ")}</span>
-                    )}
-                  </div>
-                  <span className="tabular-nums text-stone-700 dark:text-stone-300">
-                    ${Number(rc.total).toFixed(2)}
-                  </span>
+                <li key={rc.id} className="py-2">
+                  <Link
+                    href={`/restaurants/receipt/${rc.id}`}
+                    className="flex items-baseline justify-between text-sm hover:opacity-80 group"
+                  >
+                    <div>
+                      <span className="font-medium tabular-nums group-hover:underline">{date}</span>
+                      {names.length > 0 && (
+                        <span className="text-stone-500 text-xs"> · {names.join(", ")}</span>
+                      )}
+                    </div>
+                    <span className="tabular-nums text-stone-700 dark:text-stone-300 font-medium">
+                      ${Number(rc.total).toFixed(2)} →
+                    </span>
+                  </Link>
                 </li>
               );
             })}

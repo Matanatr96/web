@@ -2,13 +2,35 @@
 
 import { Fragment, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import type { Diner, ParsedReceipt, WizardItem } from "@/lib/receipts";
-import { splitReceipt } from "@/lib/receipts";
+import type { Diner, ParsedReceipt, ShareableDinerLineItem, WizardItem } from "@/lib/receipts";
+import { formatReceiptSplitText, splitReceipt } from "@/lib/receipts";
 import LinkReceiptDialog from "@/components/link-receipt-dialog";
 
 type Restaurant = { id: number; name: string; city: string };
 type Step = "upload" | "review" | "diners" | "assign" | "tip" | "summary";
 
+const DRAFT_STORAGE_KEY = "receipt-wizard-draft-v1";
+
+type WizardDraft = {
+  step: Step;
+  parseModel: string | null;
+  parsedMerchant: string | null;
+  restaurantId: number | null;
+  items: WizardItem[];
+  subtotal: number;
+  tax: number;
+  tip: number;
+  tipFromReceipt: boolean;
+  selectedDinerIds: number[];
+  savedId: number | null;
+};
+
+/**
+ * Interactive 6-step receipt scanner and itemized bill-splitting wizard.
+ * Persists in-progress state to localStorage so mobile camera reloads never
+ * lose a parsed receipt, and keeps the split breakdown visible after saving
+ * for easy copying/sharing.
+ */
 export default function ReceiptWizard({
   restaurants,
   isAdmin,
@@ -40,6 +62,77 @@ export default function ReceiptWizard({
   const [saveError, setSaveError] = useState<string | null>(null);
   const [linkDialogOpen, setLinkDialogOpen] = useState(false);
   const [expandedDiners, setExpandedDiners] = useState<Set<number>>(new Set());
+  const [hydrated, setHydrated] = useState(false);
+  const [copyStatus, setCopyStatus] = useState<"idle" | "copied" | "link-copied">("idle");
+
+  // Restore any in-progress receipt draft on mount (protects against mobile browser reload).
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(DRAFT_STORAGE_KEY);
+      if (raw) {
+        const draft = JSON.parse(raw) as Partial<WizardDraft>;
+        if (Array.isArray(draft.items) && draft.items.length > 0) {
+          setItems(draft.items);
+          if (draft.step) setStep(draft.step);
+          if (draft.parseModel !== undefined) setParseModel(draft.parseModel);
+          if (draft.parsedMerchant !== undefined) setParsedMerchant(draft.parsedMerchant);
+          if (draft.restaurantId !== undefined) setRestaurantId(draft.restaurantId);
+          if (typeof draft.subtotal === "number") setSubtotal(draft.subtotal);
+          if (typeof draft.tax === "number") setTax(draft.tax);
+          if (typeof draft.tip === "number") setTip(draft.tip);
+          if (typeof draft.tipFromReceipt === "boolean") setTipFromReceipt(draft.tipFromReceipt);
+          if (Array.isArray(draft.selectedDinerIds) && draft.selectedDinerIds.length > 0) {
+            setSelectedDinerIds(draft.selectedDinerIds);
+          }
+          if (typeof draft.savedId === "number") setSavedId(draft.savedId);
+        }
+      }
+    } catch {
+      // Ignore storage read errors.
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  // Persist active draft to localStorage whenever wizard state changes.
+  useEffect(() => {
+    if (!hydrated) return;
+    try {
+      if (items.length === 0 && step === "upload" && savedId === null) {
+        window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+        return;
+      }
+      const draft: WizardDraft = {
+        step,
+        parseModel,
+        parsedMerchant,
+        restaurantId,
+        items,
+        subtotal,
+        tax,
+        tip,
+        tipFromReceipt,
+        selectedDinerIds,
+        savedId,
+      };
+      window.localStorage.setItem(DRAFT_STORAGE_KEY, JSON.stringify(draft));
+    } catch {
+      // Ignore quota/storage errors.
+    }
+  }, [
+    hydrated,
+    step,
+    parseModel,
+    parsedMerchant,
+    restaurantId,
+    items,
+    subtotal,
+    tax,
+    tip,
+    tipFromReceipt,
+    selectedDinerIds,
+    savedId,
+  ]);
 
   useEffect(() => {
     fetch("/api/diners")
@@ -48,14 +141,43 @@ export default function ReceiptWizard({
         const list = (d.diners ?? []) as Diner[];
         setDiners(list);
         const self = list.find((x) => x.is_self);
-        if (self) setSelectedDinerIds([self.id]);
+        if (self) {
+          setSelectedDinerIds((prev) =>
+            prev.includes(self.id) ? prev : [self.id, ...prev],
+          );
+        }
       })
       .catch(() => {});
   }, []);
 
+  function resetWizard() {
+    setStep("upload");
+    setParseModel(null);
+    setParsedMerchant(null);
+    setParseError(null);
+    setRestaurantId(null);
+    setItems([]);
+    setSubtotal(0);
+    setTax(0);
+    setTip(0);
+    setTipFromReceipt(false);
+    setSavedId(null);
+    setSaveError(null);
+    setExpandedDiners(new Set());
+    setCopyStatus("idle");
+    const self = diners.find((x) => x.is_self);
+    setSelectedDinerIds(self ? [self.id] : []);
+    try {
+      window.localStorage.removeItem(DRAFT_STORAGE_KEY);
+    } catch {
+      // Ignore storage errors.
+    }
+  }
+
   async function handleFile(file: File) {
     setParsing(true);
     setParseError(null);
+    setSavedId(null);
     try {
       const base64 = await compressImage(file, 1200, 0.75);
       const resp = await fetch("/api/receipts/parse", {
@@ -99,6 +221,81 @@ export default function ReceiptWizard({
     () => splitReceipt(items, selectedDiners, tax, tip),
     [items, selectedDiners, tax, tip],
   );
+
+  const dinerItemsMap = useMemo(() => {
+    const map = new Map<number, ShareableDinerLineItem[]>();
+    for (const p of split.per_diner) {
+      const list = items
+        .filter((it) => it.diner_ids.includes(p.diner_id) && it.name.trim() && it.price > 0)
+        .map((it) => ({
+          name: it.name,
+          share: round2((it.price * it.qty) / it.diner_ids.length),
+          splitCount: it.diner_ids.length,
+        }));
+      map.set(p.diner_id, list);
+    }
+    return map;
+  }, [items, split.per_diner]);
+
+  const selectedRestaurantName = useMemo(
+    () => restaurants.find((r) => r.id === restaurantId)?.name ?? parsedMerchant,
+    [restaurants, restaurantId, parsedMerchant],
+  );
+
+  function buildShareText(receiptId: number | null = savedId): string {
+    const shareUrl =
+      receiptId != null && typeof window !== "undefined"
+        ? `${window.location.origin}/restaurants/receipt/${receiptId}`
+        : null;
+    return formatReceiptSplitText({
+      title: selectedRestaurantName,
+      date: new Date().toISOString().slice(0, 10),
+      perDiner: split.per_diner,
+      dinerItems: dinerItemsMap,
+      subtotal: split.subtotal,
+      tax,
+      tip,
+      url: shareUrl,
+    });
+  }
+
+  async function handleCopySplit() {
+    const text = buildShareText(savedId);
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopyStatus("copied");
+      setTimeout(() => setCopyStatus("idle"), 2500);
+    } catch {
+      // Ignore clipboard failure
+    }
+  }
+
+  async function handleShareLink() {
+    const url =
+      savedId != null && typeof window !== "undefined"
+        ? `${window.location.origin}/restaurants/receipt/${savedId}`
+        : null;
+    const text = buildShareText(savedId);
+    if (typeof navigator !== "undefined" && typeof navigator.share === "function") {
+      try {
+        await navigator.share({
+          title: selectedRestaurantName ? `${selectedRestaurantName} — Receipt Split` : "Receipt Split",
+          text,
+          ...(url ? { url } : {}),
+        });
+        return;
+      } catch {
+        // User cancelled or share failed; fall back to copying.
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(url ?? text);
+      setCopyStatus(url ? "link-copied" : "copied");
+      setTimeout(() => setCopyStatus("idle"), 2500);
+    } catch {
+      // Ignore clipboard failure
+    }
+  }
 
   async function addDiner() {
     const name = newDinerName.trim();
@@ -154,6 +351,7 @@ export default function ReceiptWizard({
   }
 
   async function save() {
+    if (savedId != null) return;
     setSaving(true);
     setSaveError(null);
     try {
@@ -214,10 +412,11 @@ export default function ReceiptWizard({
           <p className="mt-4 text-sm text-stone-500">Parsing receipt… (may take 10–20s)</p>
         )}
         {parseError && <p className="mt-4 text-sm text-red-600">{parseError}</p>}
-        <div className="mt-6 text-sm">
+        <div className="mt-6 flex items-center justify-between text-sm">
           <button
             type="button"
             onClick={() => {
+              setSavedId(null);
               setItems([{ name: "", price: 0, qty: 1, diner_ids: [] }]);
               setStep("review");
             }}
@@ -225,6 +424,15 @@ export default function ReceiptWizard({
           >
             Skip — enter items manually
           </button>
+          {items.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setStep(savedId ? "summary" : "review")}
+              className="text-stone-700 dark:text-stone-300 font-medium underline"
+            >
+              Resume active receipt ({items.length} items) →
+            </button>
+          )}
         </div>
       </Card>
     );
@@ -233,7 +441,7 @@ export default function ReceiptWizard({
   if (step === "review") {
     return (
       <Card>
-        <StepHeader n={2} title="Review items" onBack={() => setStep("upload")} />
+        <StepHeader n={2} title="Review items" onBack={() => setStep("upload")} onReset={resetWizard} />
         <p className="text-sm text-stone-500 mb-3">
           Edit anything the parser got wrong.
         </p>
@@ -336,7 +544,7 @@ export default function ReceiptWizard({
   if (step === "diners") {
     return (
       <Card>
-        <StepHeader n={3} title="Who was at the meal?" onBack={() => setStep("review")} />
+        <StepHeader n={3} title="Who was at the meal?" onBack={() => setStep("review")} onReset={resetWizard} />
         <p className="text-sm text-stone-500 mb-3">
           Tap names to select. Anush is always there.
         </p>
@@ -396,7 +604,7 @@ export default function ReceiptWizard({
   if (step === "assign") {
     return (
       <Card>
-        <StepHeader n={4} title="Who got what?" onBack={() => setStep("diners")} />
+        <StepHeader n={4} title="Who got what?" onBack={() => setStep("diners")} onReset={resetWizard} />
         <p className="text-sm text-stone-500 mb-2">
           Tap diners on each item. Multiple selections split that item evenly.
         </p>
@@ -462,7 +670,7 @@ export default function ReceiptWizard({
   if (step === "tip") {
     return (
       <Card>
-        <StepHeader n={5} title="Tip" onBack={() => setStep("assign")} />
+        <StepHeader n={5} title="Tip" onBack={() => setStep("assign")} onReset={resetWizard} />
         {tipFromReceipt ? (
           <p className="text-sm text-stone-500 mb-3">
             Tip detected on receipt: ${tip.toFixed(2)}. Adjust if needed.
@@ -497,61 +705,22 @@ export default function ReceiptWizard({
     );
   }
 
-  // summary
-  if (savedId) {
-    const canLink = isAdmin && !restaurantId && googleMapsApiKey;
-    return (
-      <Card>
-        <h2 className="text-lg font-semibold mb-2">Saved ✓</h2>
-        <p className="text-sm text-stone-500 mb-4">Receipt #{savedId} recorded.</p>
-        {canLink && (
-          <div className="mb-4">
-            <button
-              type="button"
-              onClick={() => setLinkDialogOpen(true)}
-              className="w-full px-4 py-2 rounded bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-sm font-medium hover:opacity-90"
-            >
-              📍 Find on Google Maps
-            </button>
-            <p className="text-xs text-stone-500 mt-2">
-              Link this receipt to a restaurant so you can rate it and see it in your history.
-            </p>
-          </div>
-        )}
-        <div className="flex flex-wrap gap-3 text-sm">
-          {restaurantId && (
-            <Link
-              href={`/restaurant/${restaurantId}`}
-              className="underline hover:text-stone-900 dark:hover:text-stone-100"
-            >
-              View restaurant →
-            </Link>
-          )}
-          {isAdmin && (
-            <Link href="/admin/receipts" className="underline">
-              Receipt history →
-            </Link>
-          )}
-          <Link href="/restaurants/receipt" className="underline">
-            Split another
-          </Link>
-        </div>
-        {canLink && (
-          <LinkReceiptDialog
-            receiptId={savedId}
-            initialName={parsedMerchant ?? undefined}
-            apiKey={googleMapsApiKey!}
-            open={linkDialogOpen}
-            onClose={() => setLinkDialogOpen(false)}
-          />
-        )}
-      </Card>
-    );
-  }
+  // Step 6: summary ("Who owes what") — kept visible before and after saving!
+  const canLink = savedId != null && isAdmin && !restaurantId && Boolean(googleMapsApiKey);
 
   return (
     <Card>
-      <StepHeader n={6} title="Who owes what" onBack={() => setStep("tip")} />
+      <StepHeader
+        n={6}
+        title="Who owes what"
+        onBack={() => setStep("tip")}
+        onReset={resetWizard}
+      />
+      {selectedRestaurantName && (
+        <p className="text-xs text-stone-500 mb-2">
+          Merchant: <span className="font-medium text-stone-700 dark:text-stone-300">{selectedRestaurantName}</span>
+        </p>
+      )}
       <table className="w-full text-sm">
         <thead>
           <tr className="text-left text-stone-500">
@@ -565,13 +734,7 @@ export default function ReceiptWizard({
         <tbody>
           {split.per_diner.map((p) => {
             const isOpen = expandedDiners.has(p.diner_id);
-            const dinerItems = items
-              .filter((it) => it.diner_ids.includes(p.diner_id) && it.name.trim() && it.price > 0)
-              .map((it) => ({
-                name: it.name,
-                share: (it.price * it.qty) / it.diner_ids.length,
-                splitCount: it.diner_ids.length,
-              }));
+            const dinerItems = dinerItemsMap.get(p.diner_id) ?? [];
             return (
               <Fragment key={p.diner_id}>
                 <tr
@@ -609,7 +772,7 @@ export default function ReceiptWizard({
                                 {it.name}
                                 <span className="text-stone-500 ml-2">
                                   {it.splitCount === 1
-                                    ? "(just you)"
+                                    ? "(solo)"
                                     : `(split ${it.splitCount} ways)`}
                                 </span>
                               </span>
@@ -639,15 +802,100 @@ export default function ReceiptWizard({
           </tr>
         </tfoot>
       </table>
-      <button
-        type="button"
-        onClick={save}
-        disabled={saving}
-        className="mt-5 w-full px-4 py-2 rounded bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 font-medium disabled:opacity-50"
-      >
-        {saving ? "Saving…" : "Save receipt"}
-      </button>
-      {saveError && <p className="text-sm text-red-600 mt-2">{saveError}</p>}
+
+      <div className="mt-4 flex flex-wrap gap-2">
+        <button
+          type="button"
+          onClick={handleCopySplit}
+          className="flex-1 px-3 py-2 text-sm rounded border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 font-medium"
+        >
+          {copyStatus === "copied" ? "Copied breakdown ✓" : "📋 Copy split for chat"}
+        </button>
+        <button
+          type="button"
+          onClick={handleShareLink}
+          className="flex-1 px-3 py-2 text-sm rounded border border-stone-300 dark:border-stone-700 hover:bg-stone-100 dark:hover:bg-stone-800 font-medium"
+        >
+          {copyStatus === "link-copied"
+            ? "Copied link ✓"
+            : savedId != null
+              ? "🔗 Share receipt link"
+              : "📤 Share breakdown"}
+        </button>
+      </div>
+
+      {savedId == null ? (
+        <>
+          <button
+            type="button"
+            onClick={save}
+            disabled={saving}
+            className="mt-3 w-full px-4 py-2 rounded bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 font-medium disabled:opacity-50"
+          >
+            {saving ? "Saving…" : "Save receipt & create share link"}
+          </button>
+          {saveError && <p className="text-sm text-red-600 mt-2">{saveError}</p>}
+        </>
+      ) : (
+        <div className="mt-4 rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/60 dark:bg-emerald-950/30 p-4 space-y-3">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <p className="text-sm font-medium text-emerald-900 dark:text-emerald-200">
+              Saved ✓ — Receipt #{savedId}
+            </p>
+            <Link
+              href={`/restaurants/receipt/${savedId}`}
+              className="text-xs font-medium underline text-emerald-800 dark:text-emerald-300 hover:opacity-80"
+            >
+              Open shareable receipt page →
+            </Link>
+          </div>
+          {canLink && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setLinkDialogOpen(true)}
+                className="w-full px-4 py-2 rounded bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900 text-sm font-medium hover:opacity-90"
+              >
+                📍 Find on Google Maps
+              </button>
+              <p className="text-xs text-stone-500 mt-1.5">
+                Link this receipt to a restaurant so you can rate it and see it in your history.
+              </p>
+            </div>
+          )}
+          <div className="flex flex-wrap gap-3 text-xs text-stone-600 dark:text-stone-400 pt-1">
+            {restaurantId && (
+              <Link
+                href={`/restaurant/${restaurantId}`}
+                className="underline hover:text-stone-900 dark:hover:text-stone-100"
+              >
+                View restaurant →
+              </Link>
+            )}
+            {isAdmin && (
+              <Link href="/admin/receipts" className="underline hover:text-stone-900 dark:hover:text-stone-100">
+                Receipt history →
+              </Link>
+            )}
+            <button
+              type="button"
+              onClick={resetWizard}
+              className="underline hover:text-stone-900 dark:hover:text-stone-100"
+            >
+              Split another receipt
+            </button>
+          </div>
+          {canLink && (
+            <LinkReceiptDialog
+              receiptId={savedId}
+              initialName={parsedMerchant ?? undefined}
+              apiKey={googleMapsApiKey!}
+              open={linkDialogOpen}
+              onClose={() => setLinkDialogOpen(false)}
+            />
+          )}
+        </div>
+      )}
     </Card>
   );
 }
@@ -660,21 +908,42 @@ function Card({ children }: { children: React.ReactNode }) {
   );
 }
 
-function StepHeader({ n, title, onBack }: { n: number; title: string; onBack?: () => void }) {
+function StepHeader({
+  n,
+  title,
+  onBack,
+  onReset,
+}: {
+  n: number;
+  title: string;
+  onBack?: () => void;
+  onReset?: () => void;
+}) {
   return (
     <div className="flex items-center justify-between mb-3">
       <h2 className="text-lg font-semibold">
         <span className="text-stone-400 tabular-nums">{n}.</span> {title}
       </h2>
-      {onBack && (
-        <button
-          type="button"
-          onClick={onBack}
-          className="text-sm text-stone-500 hover:underline"
-        >
-          ← Back
-        </button>
-      )}
+      <div className="flex items-center gap-3">
+        {onReset && (
+          <button
+            type="button"
+            onClick={onReset}
+            className="text-xs text-stone-400 hover:text-stone-700 dark:hover:text-stone-200 hover:underline"
+          >
+            Start over
+          </button>
+        )}
+        {onBack && (
+          <button
+            type="button"
+            onClick={onBack}
+            className="text-sm text-stone-500 hover:underline"
+          >
+            ← Back
+          </button>
+        )}
+      </div>
     </div>
   );
 }

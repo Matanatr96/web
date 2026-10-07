@@ -106,6 +106,12 @@ export default async function ReceiptsHistoryPage() {
                 )}
 
                 <div className="mt-3 flex items-center gap-2 flex-wrap">
+                  <Link
+                    href={`/restaurants/receipt/${rc.id}`}
+                    className="text-xs px-2.5 py-1 rounded-md border border-stone-300 dark:border-stone-700 hover:bg-stone-50 dark:hover:bg-stone-800 text-stone-700 dark:text-stone-300"
+                  >
+                    View / share split →
+                  </Link>
                   {!linked && apiKey && (
                     <ReceiptRowActions
                       receiptId={rc.id}
