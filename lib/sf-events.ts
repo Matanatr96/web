@@ -453,6 +453,67 @@ export function parsePacificDateTimeToIso(raw: string | undefined | null): strin
   return Number.isNaN(parsed.getTime()) ? null : parsed.toISOString();
 }
 
+/** Default Google Calendar account for one-click event creation. */
+export const DEFAULT_GCAL_EMAIL = "matanatr96@gmail.com";
+
+function toGCalUtcStamp(date: Date): string {
+  return date
+    .toISOString()
+    .replace(/[-:]/g, "")
+    .replace(/\.\d{3}Z$/, "Z");
+}
+
+/**
+ * Builds a Google Calendar event creation URL (`action=TEMPLATE`) pre-populated
+ * with the SF event's title, start/end timestamps (defaulting to 2 hours when `endsAt`
+ * is absent), SF venue/neighborhood location, description + source link, and hardcoded
+ * to open in Anush's Google Calendar (`matanatr96@gmail.com` via `authuser` and `src`).
+ *
+ * @param event - The `SfEvent` to add to Google Calendar.
+ * @param calendarEmail - Target Google account / calendar ID (defaults to `matanatr96@gmail.com`).
+ * @returns Complete `https://calendar.google.com/calendar/render?...` URL.
+ */
+export function buildGoogleCalendarUrl(
+  event: SfEvent,
+  calendarEmail: string = DEFAULT_GCAL_EMAIL,
+): string {
+  const startDate = new Date(event.startsAt);
+  const validStart = Number.isNaN(startDate.getTime()) ? new Date() : startDate;
+
+  let endDate = event.endsAt ? new Date(event.endsAt) : null;
+  if (!endDate || Number.isNaN(endDate.getTime()) || endDate.getTime() <= validStart.getTime()) {
+    endDate = new Date(validStart.getTime() + 2 * 3600 * 1000);
+  }
+
+  const dates = `${toGCalUtcStamp(validStart)}/${toGCalUtcStamp(endDate)}`;
+
+  const locationParts = [
+    event.venue,
+    event.neighborhood,
+    "San Francisco, CA",
+  ].filter(Boolean);
+  const location = locationParts.join(", ");
+
+  const detailLines = [
+    event.description,
+    event.priceText ? `Price: ${event.priceText}` : null,
+    `Event details: ${event.sourceUrl}`,
+  ].filter(Boolean);
+
+  const params = new URLSearchParams({
+    action: "TEMPLATE",
+    text: event.title,
+    dates,
+    location,
+    details: detailLines.join("\n\n"),
+    ctz: "America/Los_Angeles",
+    authuser: calendarEmail,
+    src: calendarEmail,
+  });
+
+  return `https://calendar.google.com/calendar/render?${params.toString()}`;
+}
+
 /**
  * Parses Funcheap SF calendar/category HTML into normalized `SfEvent` items,
  * filtering out non-SF East Bay / South Bay / Peninsula listings.
