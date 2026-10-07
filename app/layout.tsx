@@ -7,6 +7,11 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Anush Mattapalli",
   description: "Software engineer, food enthusiast, and photographer based in SF.",
+  appleWebApp: {
+    capable: true,
+    title: "SF Radar",
+    statusBarStyle: "default",
+  },
 };
 
 export default async function RootLayout({
@@ -25,6 +30,12 @@ export default async function RootLayout({
               Anush Mattapalli
             </Link>
             <nav className="flex items-center gap-6 text-sm text-stone-500">
+              <Link
+                href="/sf"
+                className="hover:text-stone-900 dark:hover:text-stone-100 transition"
+              >
+                SF
+              </Link>
               <Link
                 href="/restaurants"
                 className="hover:text-stone-900 dark:hover:text-stone-100 transition"
