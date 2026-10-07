@@ -184,3 +184,74 @@ describe("matchCuisineFromGoogleType", () => {
     );
   });
 });
+
+describe("filterAdminRestaurants", () => {
+  it("filters by city, cuisine, category, status, and sorts results", async () => {
+    const { filterAdminRestaurants } = await import("@/lib/restaurants-query");
+    const rows = [
+      mapRestaurantRow({
+        ...baseRow,
+        id: 1,
+        name: "Bistro A",
+        city: "SF",
+        category: "Food",
+        overall: 9.2,
+        food: 9,
+        lat: 37.77,
+        lng: -122.41,
+        visit_count: 2,
+        restaurant_cuisines: [{ cuisine_name: "French" }],
+      }),
+      mapRestaurantRow({
+        ...baseRow,
+        id: 2,
+        name: "Stub Cafe",
+        city: "NYC",
+        category: "Drink",
+        overall: 0,
+        food: null,
+        lat: null,
+        lng: null,
+        visit_count: 1,
+        restaurant_cuisines: [],
+      }),
+      mapRestaurantRow({
+        ...baseRow,
+        id: 3,
+        name: "Sushi Spot",
+        city: "SF",
+        category: "Food",
+        overall: 8.8,
+        food: 9,
+        lat: 37.78,
+        lng: -122.42,
+        visit_count: 1,
+        restaurant_cuisines: [{ cuisine_name: "Sushi" }],
+      }),
+    ];
+
+    expect(filterAdminRestaurants(rows, { city: "SF" }).map((r) => r.name)).toEqual([
+      "Bistro A",
+      "Sushi Spot",
+    ]);
+    expect(filterAdminRestaurants(rows, { cuisine: "Sushi" }).map((r) => r.name)).toEqual([
+      "Sushi Spot",
+    ]);
+    expect(filterAdminRestaurants(rows, { category: "Drink" }).map((r) => r.name)).toEqual([
+      "Stub Cafe",
+    ]);
+    expect(filterAdminRestaurants(rows, { status: "unrated" }).map((r) => r.name)).toEqual([
+      "Stub Cafe",
+    ]);
+    expect(filterAdminRestaurants(rows, { status: "missing_coords" }).map((r) => r.name)).toEqual([
+      "Stub Cafe",
+    ]);
+    expect(filterAdminRestaurants(rows, { status: "missing_cuisine" }).map((r) => r.name)).toEqual([
+      "Stub Cafe",
+    ]);
+    expect(
+      filterAdminRestaurants(rows, { sortKey: "name", sortDir: "asc" }).map((r) => r.name),
+    ).toEqual(["Bistro A", "Stub Cafe", "Sushi Spot"]);
+  });
+});
+
