@@ -3,6 +3,7 @@ import { getSupabase } from "@/lib/supabase";
 import { isAdmin } from "@/lib/auth";
 import { computeWeeklyStats } from "@/lib/fantasy";
 import type { FantasyBanter, FantasyLeague, FantasyMatchup, FantasyOwner, FantasyPlayerScore, WeeklySummary } from "@/lib/types";
+import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 import SeasonPicker from "@/components/season-picker";
 import OracleWeekView from "./OracleWeekView";
 
@@ -10,6 +11,10 @@ export const dynamic = "force-dynamic";
 
 type SearchParams = { season?: string; week?: string };
 
+/**
+ * Renders the Oracle of Regret page with weekly high/low scores, bench mistakes,
+ * Signal group chat banter, and LLM-generated weekly recaps/haikus.
+ */
 export default async function OraclePage({
   searchParams,
 }: {
@@ -82,7 +87,10 @@ export default async function OraclePage({
             Weekly summaries, bench mistakes, and haikus of shame.
           </p>
         </div>
-        <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/oracle" />
+        <div className="flex flex-wrap items-center gap-2">
+          <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/oracle" />
+          {admin && <RefreshMatchupsButton />}
+        </div>
       </div>
 
       {/* Week picker */}

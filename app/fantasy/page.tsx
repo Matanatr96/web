@@ -1,12 +1,20 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
+import { isAdmin } from "@/lib/auth";
 import type { BracketEntry, FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
 import { regularSeasonOnly, ownerColorMap } from "@/lib/fantasy";
+import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Renders the main Fantasy Football hub page with navigation to all KFL analytics
+ * pages, historical champions, all-time regular-season win leaders, and an admin
+ * Sleeper sync trigger.
+ */
 export default async function FantasyPage() {
   const db = getSupabase();
+  const admin = await isAdmin();
 
   const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
     await Promise.all([
@@ -54,11 +62,14 @@ export default async function FantasyPage() {
 
   return (
     <div className="max-w-5xl mx-auto">
-      <div className="mb-8">
-        <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Fantasy Football</h1>
-        <p className="mt-1 text-sm text-stone-500">
-          KFL — standings, records, and trades from Sleeper.
-        </p>
+      <div className="flex items-start justify-between flex-wrap gap-3 mb-8">
+        <div>
+          <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Fantasy Football</h1>
+          <p className="mt-1 text-sm text-stone-500">
+            KFL — standings, records, and trades from Sleeper.
+          </p>
+        </div>
+        {admin && <RefreshMatchupsButton />}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4 max-w-3xl mb-12">
@@ -68,6 +79,14 @@ export default async function FantasyPage() {
         >
           <span className="font-semibold">Matchups</span>
           <span className="text-sm text-stone-500">Standings, weekly averages, and playoffs</span>
+        </Link>
+
+        <Link
+          href="/fantasy/oracle"
+          className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
+        >
+          <span className="font-semibold">Oracle of Regret</span>
+          <span className="text-sm text-stone-500">Weekly recaps, bench mistakes, and haikus</span>
         </Link>
 
         <Link

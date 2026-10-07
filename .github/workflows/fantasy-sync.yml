@@ -1,0 +1,29 @@
+name: Fantasy Sync
+
+# Syncs Sleeper fantasy football scores, player stats, owners, and trades
+# into Supabase via /api/fantasy/sync.
+# Runs automatically on Tuesday mornings (post-MNF), Wednesday mornings
+# (post-waivers), and Friday mornings (post-TNF / stat corrections), plus
+# supports manual workflow_dispatch runs.
+
+on:
+  schedule:
+    - cron: "0 12 * * 2,3,5"
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Trigger fantasy sync endpoint
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+        run: |
+          if [ -z "$CRON_SECRET" ] || [ -z "$BASE_URL" ]; then
+            echo "Missing CRON_SECRET or PROD_BASE_URL repo secret"
+            exit 1
+          fi
+          curl -fsS -X POST \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            "$BASE_URL/api/fantasy/sync"
