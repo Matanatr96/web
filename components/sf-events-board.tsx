@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
+  buildGoogleCalendarUrl,
   formatTagLabel,
   rankSfEvents,
   SF_CATEGORY_META,
@@ -655,9 +656,9 @@ export function SfEventsBoard({
                   )}
                 </div>
 
-                {/* Bottom Action Bar: 👍 Interested / 🗓️ Busy / 👎 Pass */}
-                <div className="mt-4 pt-3 border-t border-stone-100 dark:border-stone-800/80 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-1.5">
+                {/* Bottom Action Bar: 👍 Interested / 🗓️ Busy / 👎 Pass + 📅 Add to GCal */}
+                <div className="mt-4 pt-3 border-t border-stone-100 dark:border-stone-800/80 flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => handleVote(event, "up")}
@@ -698,14 +699,31 @@ export function SfEventsBoard({
                     </button>
                   </div>
 
-                  <a
-                    href={event.sourceUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs font-medium text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition"
-                  >
-                    Details →
-                  </a>
+                  <div className="flex items-center gap-2">
+                    <a
+                      href={buildGoogleCalendarUrl(event)}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      onClick={() => {
+                        if (userSignal !== "up") {
+                          void handleVote(event, "up");
+                        }
+                      }}
+                      title="Add to Anush's Google Calendar (matanatr96@gmail.com) and mark Interested"
+                      className="inline-flex items-center gap-1 rounded-lg border border-stone-200 dark:border-stone-800 px-2.5 py-1.5 text-xs font-medium text-stone-700 dark:text-stone-300 hover:bg-stone-100 dark:hover:bg-stone-800 hover:border-stone-400 transition"
+                    >
+                      📅 <span>+ GCal</span>
+                    </a>
+
+                    <a
+                      href={event.sourceUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-xs font-medium text-stone-500 hover:text-stone-900 dark:hover:text-stone-100 transition"
+                    >
+                      Details →
+                    </a>
+                  </div>
                 </div>
               </article>
             );

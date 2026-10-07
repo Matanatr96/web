@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   buildDedupeKey,
+  buildGoogleCalendarUrl,
   buildTasteProfile,
   classifyAndTagEvent,
   decodeHtmlEntities,
   dedupeSfEvents,
+  DEFAULT_GCAL_EMAIL,
   inferSfNeighborhood,
   parse19hzHtml,
   parseFuncheapHtml,
@@ -327,5 +329,38 @@ describe("sf-events taste profile & ranking engine", () => {
     expect(ranked[0].event.id).toBe("outdoor-sat");
     expect(ranked[1].event.id).toBe("outdoor-busy");
     expect(ranked[1].userSignal).toBe("busy");
+  });
+
+  it("builds a Google Calendar template URL hardcoded to matanatr96@gmail.com", () => {
+    const ev = makeEvent({
+      id: "gcal-1",
+      title: "Sunset Dunes Beach Dance",
+      description: "Outdoor DJ set at Ocean Beach.",
+      startsAt: "2026-10-09T19:00:00-07:00",
+      endsAt: null,
+      venue: "Sunset Dunes",
+      neighborhood: "Sunset",
+      priceText: "FREE",
+      sourceUrl: "https://sf.funcheap.com/sunset-dunes/",
+    });
+
+    const urlStr = buildGoogleCalendarUrl(ev);
+    const parsed = new URL(urlStr);
+
+    expect(parsed.origin + parsed.pathname).toBe(
+      "https://calendar.google.com/calendar/render",
+    );
+    expect(parsed.searchParams.get("action")).toBe("TEMPLATE");
+    expect(parsed.searchParams.get("text")).toBe("Sunset Dunes Beach Dance");
+    expect(parsed.searchParams.get("dates")).toBe("20261010T020000Z/20261010T040000Z");
+    expect(parsed.searchParams.get("location")).toBe(
+      "Sunset Dunes, Sunset, San Francisco, CA",
+    );
+    expect(parsed.searchParams.get("ctz")).toBe("America/Los_Angeles");
+    expect(parsed.searchParams.get("authuser")).toBe(DEFAULT_GCAL_EMAIL);
+    expect(parsed.searchParams.get("src")).toBe(DEFAULT_GCAL_EMAIL);
+    expect(parsed.searchParams.get("details")).toContain(
+      "https://sf.funcheap.com/sunset-dunes/",
+    );
   });
 });
