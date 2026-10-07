@@ -251,3 +251,14 @@ describe("buildTradeLeaderboard", () => {
     expect(rows.every((r) => r.trade_count === 0)).toBe(true);
   });
 });
+
+describe("nfl-week", async () => {
+  const { nflWeekEnd, timestampToNflWeek } = await import("./nfl-week");
+
+  it("maps 2026 regular-season timestamps to the right NFL week", () => {
+    // 2026-10-07 (Wednesday at end of Week 4)
+    const week4Ts = new Date("2026-10-07T12:00:00Z").getTime();
+    expect(timestampToNflWeek(week4Ts)).toEqual({ season: 2026, week: 4 });
+    expect(nflWeekEnd(2026, 4)?.toISOString()).toBe("2026-10-08T00:00:00.000Z");
+  });
+});
