@@ -86,3 +86,71 @@ export function matchCuisineFromGoogleType(
   }
   return best;
 }
+
+export type AdminStatusFilter = "" | "unrated" | "rated" | "missing_coords" | "missing_cuisine";
+export type AdminSortKey = "name" | "city" | "cuisines" | "category" | "overall" | "last_visited";
+export type SortDir = "asc" | "desc";
+
+export type AdminRestaurantFilterParams = {
+  query?: string;
+  city?: string;
+  cuisine?: string;
+  category?: string;
+  status?: AdminStatusFilter;
+  sortKey?: AdminSortKey;
+  sortDir?: SortDir;
+};
+
+/**
+ * Filter and sort restaurants for the `/admin/restaurants` management table.
+ *
+ * @param restaurants - Full list of restaurant records.
+ * @param params - Search query, city/cuisine/category/status filters, and sort column/direction.
+ * @returns Filtered and sorted array of restaurants.
+ */
+export function filterAdminRestaurants(
+  restaurants: Restaurant[],
+  params: AdminRestaurantFilterParams,
+): Restaurant[] {
+  const q = (params.query ?? "").trim().toLowerCase();
+  const city = params.city ?? "";
+  const cuisine = params.cuisine ?? "";
+  const category = params.category ?? "";
+  const status = params.status ?? "";
+  const sortKey = params.sortKey ?? "overall";
+  const sortDir = params.sortDir ?? "desc";
+
+  const list = restaurants.filter((r) => {
+    if (q) {
+      const haystack = [r.name, r.city, r.category, ...r.cuisines]
+        .filter(Boolean)
+        .join(" ")
+        .toLowerCase();
+      if (!haystack.includes(q)) return false;
+    }
+    if (city && r.city !== city) return false;
+    if (cuisine && !r.cuisines.includes(cuisine)) return false;
+    if (category && r.category !== category) return false;
+    if (status === "unrated" && r.food !== null) return false;
+    if (status === "rated" && r.food === null) return false;
+    if (status === "missing_coords" && r.lat !== null && r.lng !== null) return false;
+    if (status === "missing_cuisine" && r.cuisines.length > 0) return false;
+    return true;
+  });
+
+  const dir = sortDir === "asc" ? 1 : -1;
+  list.sort((a, b) => {
+    const av = sortKey === "cuisines" ? (a.cuisines[0] ?? "") : a[sortKey];
+    const bv = sortKey === "cuisines" ? (b.cuisines[0] ?? "") : b[sortKey];
+    if (av === null && bv === null) return 0;
+    if (av === null) return 1;
+    if (bv === null) return -1;
+    if (typeof av === "number" && typeof bv === "number") {
+      return (av - bv) * dir;
+    }
+    return String(av).localeCompare(String(bv)) * dir;
+  });
+
+  return list;
+}
+
