@@ -16,7 +16,7 @@ function opt(overrides: Partial<OptionsTrade>): OptionsTrade {
     id: 1, tradier_id: 1, source: "prod", underlying: "AAPL",
     option_symbol: "AAPL260619P00150000", option_type: "put",
     strategy: "cash_secured_put", side: "sell_to_open", strike: 150,
-    expiration_date: "2026-06-19", quantity: 1, avg_fill_price: 2,
+    expiration_date: "2099-06-19", quantity: 1, avg_fill_price: 2,
     status: "filled", order_date: "2026-04-01T00:00:00Z",
     transaction_date: null, created_at: "", updated_at: "", ...overrides,
   };
