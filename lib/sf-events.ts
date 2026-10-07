@@ -165,7 +165,10 @@ export function decodeHtmlEntities(input: string): string {
  */
 export function stripHtml(html: string): string {
   if (!html) return "";
-  return decodeHtmlEntities(html.replace(/<[^>]+>/g, " "));
+  const withoutScripts = html
+    .replace(/<script[\s\S]*?<\/script>/gi, " ")
+    .replace(/<style[\s\S]*?<\/style>/gi, " ");
+  return decodeHtmlEntities(withoutScripts.replace(/<[^>]+>/g, " "));
 }
 
 /**
@@ -600,9 +603,15 @@ export function parseFuncheapHtml(
       innerHtml.match(/<img[^>]+src="(https?:\/\/[^"]+)"/i);
     const imageUrl = imgMatch ? imgMatch[1].trim() : null;
 
-    // Extract paragraph description
-    const pMatch = innerHtml.match(/<p[^>]*>([\s\S]*?)<\/p>/i);
-    const rawDesc = pMatch ? stripHtml(pMatch[1]) : "";
+    // Extract first non-empty paragraph description (skipping ad <script> wrapper paragraphs)
+    let rawDesc = "";
+    for (const pMatch of innerHtml.matchAll(/<p[^>]*>([\s\S]*?)<\/p>/gi)) {
+      const candidate = stripHtml(pMatch[1]);
+      if (candidate && !/^googletag\.cmd\.push/i.test(candidate)) {
+        rawDesc = candidate;
+        break;
+      }
+    }
     const description = rawDesc ? rawDesc.slice(0, 280) : null;
 
     const neighborhood = inferSfNeighborhood(
