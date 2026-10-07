@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { getServiceClient } from "@/lib/supabase";
-import { isAdmin } from "@/lib/auth";
 
 const SLEEPER = "https://api.sleeper.app/v1";
 const MAX_WEEK = 18;
@@ -148,21 +147,8 @@ async function getPlayersMap(): Promise<PlayerMap> {
   }
 }
 
-async function isAuthorized(req: Request): Promise<boolean> {
-  if (await isAdmin()) return true;
-  const expected = process.env.CRON_SECRET;
-  if (!expected) return false;
-  const authHeader = req.headers.get("authorization");
-  const url = new URL(req.url);
-  const querySecret = url.searchParams.get("secret");
-  return authHeader === `Bearer ${expected}` || querySecret === expected;
-}
-
 async function handleSync(req: Request) {
   try {
-    if (!(await isAuthorized(req))) {
-      return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
-    }
 
     const url = new URL(req.url);
     const syncAllSeasons = url.searchParams.get("all") === "1";

@@ -130,7 +130,7 @@ export default async function FantasyMatchupsPage({
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/matchups" />
-          {admin && <RefreshMatchupsButton />}
+          <RefreshMatchupsButton />
         </div>
       </div>
 

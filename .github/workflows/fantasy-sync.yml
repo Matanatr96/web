@@ -18,12 +18,12 @@ jobs:
       - name: Trigger fantasy sync endpoint
         env:
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
-          BASE_URL: ${{ secrets.PROD_BASE_URL }}
+          BASE_URL: ${{ secrets.PROD_BASE_URL || 'https://www.thelastmattapalli.com' }}
         run: |
-          if [ -z "$CRON_SECRET" ] || [ -z "$BASE_URL" ]; then
-            echo "Missing CRON_SECRET or PROD_BASE_URL repo secret"
-            exit 1
+          if [ -n "$CRON_SECRET" ]; then
+            curl -fsSL -X POST \
+              -H "Authorization: Bearer $CRON_SECRET" \
+              "$BASE_URL/api/fantasy/sync"
+          else
+            curl -fsSL -X POST "$BASE_URL/api/fantasy/sync"
           fi
-          curl -fsS -X POST \
-            -H "Authorization: Bearer $CRON_SECRET" \
-            "$BASE_URL/api/fantasy/sync"

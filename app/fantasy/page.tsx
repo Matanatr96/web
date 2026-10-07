@@ -1,6 +1,5 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import { isAdmin } from "@/lib/auth";
 import type { BracketEntry, FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
 import { regularSeasonOnly, ownerColorMap } from "@/lib/fantasy";
 import RefreshMatchupsButton from "@/components/refresh-matchups-button";
@@ -9,12 +8,11 @@ export const dynamic = "force-dynamic";
 
 /**
  * Renders the main Fantasy Football hub page with navigation to all KFL analytics
- * pages, historical champions, all-time regular-season win leaders, and an admin
+ * pages, historical champions, all-time regular-season win leaders, and a
  * Sleeper sync trigger.
  */
 export default async function FantasyPage() {
   const db = getSupabase();
-  const admin = await isAdmin();
 
   const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
     await Promise.all([
@@ -69,7 +67,7 @@ export default async function FantasyPage() {
             KFL — standings, records, and trades from Sleeper.
           </p>
         </div>
-        {admin && <RefreshMatchupsButton />}
+        <RefreshMatchupsButton />
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4 max-w-3xl mb-12">
