@@ -864,10 +864,10 @@ export function pickSlotInRound(pickNumber: number, teamCount = 12): number {
  *
  * - For rookie drafts (`isStartupDraft === false`, `<= 5` rounds):
  *   - Round 1: `0.95 * exp(-0.035 * (slot - 1))` (`95%` at `1.01` down to `65%` at `1.12`)
- *   - Round 2: `0.50 * exp(-0.035 * (slot - 1))` (`50%` at `2.01` down to `34%` at `2.12`)
- *   - Round 3+: `0.20 * exp(-0.035 * (slot - 1))` (`20%` at `3.01` down to `14%` at `3.12`)
+ *   - Round 2: `0.425 * exp(-0.035 * (slot - 1))` (`42.5%` at `2.01` down to `29%` at `2.12`)
+ *   - Round 3+: `0.05 * exp(-0.035 * (slot - 1))` (`5%` at `3.01` down to `3.4%` at `3.12`)
  * - For multi-round startup drafts (`isStartupDraft === true`, `> 5` rounds):
- *   - Smooth decay across rounds and slots floored at `10%` of starter replacement.
+ *   - Smooth decay across rounds and slots floored at `5%` of starter replacement.
  *
  * @param round - 1-indexed draft round.
  * @param slot - 1-indexed slot within the round (`1..teamCount`).
@@ -880,9 +880,9 @@ export function slotExpectationFactor(
   isStartupDraft = false,
 ): number {
   if (isStartupDraft) {
-    return Math.max(0.1, Math.exp(-0.14 * (round - 1)) * Math.exp(-0.012 * (slot - 1)));
+    return Math.max(0.05, Math.exp(-0.16 * (round - 1)) * Math.exp(-0.012 * (slot - 1)));
   }
-  const roundBase = round === 1 ? 0.95 : round === 2 ? 0.5 : 0.2;
+  const roundBase = round === 1 ? 0.95 : round === 2 ? 0.425 : 0.05;
   const slotDecay = Math.exp(-0.035 * (slot - 1));
   return roundBase * slotDecay;
 }
@@ -919,7 +919,7 @@ export function pickImpactWeight(
  * Compute slot-adjusted VOR draft grades for each owner in a season.
  *
  * Each pick is benchmarked against the expected points for its round and slot
- * (`positional_starter_replacement_pts × slotExpectationFactor`), and aggregated
+ * (`positional_starter_replacement_pts × slotExpectationFactor`), and weighted
  * with asymmetric downside damping (`pickImpactWeight`) so 3rd-round longshots
  * don't heavily penalize managers when they miss while still rewarding late-round steals.
  *
@@ -978,7 +978,7 @@ export function computeDraftGrades(
     replacementLevel.set(pos, sorted[n] ?? sorted[sorted.length - 1] ?? 0);
   }
 
-  // Grade each pick against its round-and-slot expected baseline.
+  // Grade each pick against its round-and-slot expected baseline and apply asymmetric impact weight.
   type InternalPick = DraftPickGrade & { owner_id: string };
   const pickGrades: InternalPick[] = [];
   for (const pick of seasonPicks) {
@@ -989,6 +989,8 @@ export function computeDraftGrades(
     const slot = pickSlotInRound(pick.pick_number, teamCount);
     const replacement_pts =
       baseReplacementPts * slotExpectationFactor(pick.round, slot, isStartupDraft);
+    const rawVor = season_pts - replacement_pts;
+    const vor = rawVor * pickImpactWeight(pick.round, rawVor, isStartupDraft);
     pickGrades.push({
       owner_id: pick.owner_id,
       player_id: pick.player_id,
@@ -998,11 +1000,11 @@ export function computeDraftGrades(
       pick_number: pick.pick_number,
       season_pts,
       replacement_pts,
-      vor: season_pts - replacement_pts,
+      vor,
     });
   }
 
-  // Group by owner and sum asymmetrically weighted slot-adjusted VOR.
+  // Group by owner and sum weighted slot-adjusted VOR.
   const ownerById = new Map(owners.map((o) => [o.user_id, o]));
   const ownerPickMap = new Map<string, InternalPick[]>();
   for (const pg of pickGrades) {
@@ -1013,10 +1015,7 @@ export function computeDraftGrades(
 
   const rows: DraftGradeRow[] = [];
   for (const [owner_id, ownerPicks] of ownerPickMap) {
-    const total_vor = ownerPicks.reduce(
-      (s, p) => s + p.vor * pickImpactWeight(p.round, p.vor, isStartupDraft),
-      0,
-    );
+    const total_vor = ownerPicks.reduce((s, p) => s + p.vor, 0);
     ownerPicks.sort((a, b) => b.vor - a.vor); // steals at top, busts at bottom
     rows.push({
       owner_id,
