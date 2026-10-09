@@ -8,6 +8,8 @@ import {
   buildRivalries,
   computeDraftGrades,
   pickSlotInRound,
+  slotExpectationFactor,
+  pickImpactWeight,
   fetchAllMatchups,
   fetchSeasonPlayerScores,
   mean,
@@ -341,10 +343,9 @@ describe("computeDraftGrades & pickSlotInRound", () => {
     expect(pickSlotInRound(25, 12)).toBe(1);
   });
 
-  it("uses within-round slot for exponential decay and preserves teamCount when an owner trades away all picks", () => {
+  it("uses slot-expected baselines and preserves teamCount when an owner trades away all picks", () => {
     // 2-team draft, 2 rounds (4 picks total), but only owner 'a' makes all 4 picks (owner 'b' traded them away).
     // picksPerRound = 4 / 2 = 2 -> teamCount = max(1, 2) = 2.
-    // Pick 1 (R1.01, slot 1) and Pick 3 (R2.01, slot 1) both have slot=1, so R2.01 weight is exactly 0.5 * R1.01 weight.
     const picks: FantasyDraftPick[] = [
       { id: 1, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p1", player_name: "P1", position: "QB", team: "KC", round: 1, pick_number: 1, adp: null, created_at: "" },
       { id: 2, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p2", player_name: "P2", position: "QB", team: "BUF", round: 1, pick_number: 2, adp: null, created_at: "" },
@@ -359,8 +360,51 @@ describe("computeDraftGrades & pickSlotInRound", () => {
     ];
     const grades = computeDraftGrades(picks, scores, owners, 2025);
     expect(grades).toHaveLength(1);
-    // Because teamCount = 2 (from 4 picks / 2 rounds), QB replacement level is index 2 (3rd QB = 200 pts).
-    expect(grades[0].picks.find((p) => p.player_id === "p1")?.replacement_pts).toBe(200);
+    // Because teamCount = 2 (from 4 picks / 2 rounds), base QB replacement level is index 2 (3rd QB = 200 pts).
+    // R1.01 (slot 1) scales 200 by slotExpectationFactor(1, 1, false) = 0.95 -> 190 pts.
+    // R2.01 (slot 1) scales 200 by slotExpectationFactor(2, 1, false) = 0.50 -> 100 pts.
+    expect(grades[0].picks.find((p) => p.player_id === "p1")?.replacement_pts).toBeCloseTo(190, 5);
+    expect(grades[0].picks.find((p) => p.player_id === "p3")?.replacement_pts).toBeCloseTo(100, 5);
+  });
+
+  it("heavily dampens 3rd-round longshot misses while rewarding 3rd-round steals and preventing solo R3 weight cancellation", () => {
+    // 3-team, 3-round rookie draft where base QB starter replacement (4th QB, index 3) = 200 pts.
+    // Owner 'a': R1.01 hit (220 pts vs 190 exp -> +30 VOR) + R3.01 0-pt longshot miss (0 pts vs 40 exp -> -40 VOR * 0.15 = -6).
+    // Owner 'b': traded away R1/R2, only has R3.02 0-pt flyer (0 pts vs 38.62 exp -> -38.62 VOR * 0.15 = -5.79, NOT -200).
+    // Owner 'c': R3.03 breakout steal (157.33 pts vs 37.33 exp -> +120 VOR * 0.75 = +90).
+    const testOwners: FantasyOwner[] = [
+      { user_id: "a", display_name: "Alice", avatar: null },
+      { user_id: "b", display_name: "Bob", avatar: null },
+      { user_id: "c", display_name: "Cara", avatar: null },
+    ];
+    const picks: FantasyDraftPick[] = [
+      { id: 1, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p1", player_name: "R1 Hit", position: "QB", team: "KC", round: 1, pick_number: 1, adp: null, created_at: "" },
+      { id: 2, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p2", player_name: "R3 Miss", position: "QB", team: "BUF", round: 3, pick_number: 7, adp: null, created_at: "" },
+      { id: 3, season: 2025, league_id: "L", draft_id: "D", owner_id: "b", player_id: "p3", player_name: "Solo R3 Flyer", position: "QB", team: "BAL", round: 3, pick_number: 8, adp: null, created_at: "" },
+      { id: 4, season: 2025, league_id: "L", draft_id: "D", owner_id: "c", player_id: "p4", player_name: "R3 Steal", position: "QB", team: "CIN", round: 3, pick_number: 7, adp: null, created_at: "" },
+    ];
+    const scores: FantasyPlayerScore[] = [
+      { id: 1, season: 2025, week: 1, owner_id: "a", player_id: "vet1", player_name: "V1", position: "QB", team: "KC", points: 300, is_starter: true, created_at: "", updated_at: "" },
+      { id: 2, season: 2025, week: 1, owner_id: "a", player_id: "vet2", player_name: "V2", position: "QB", team: "KC", points: 260, is_starter: true, created_at: "", updated_at: "" },
+      { id: 3, season: 2025, week: 1, owner_id: "a", player_id: "p1", player_name: "R1 Hit", position: "QB", team: "KC", points: 220, is_starter: true, created_at: "", updated_at: "" },
+      { id: 4, season: 2025, week: 1, owner_id: "a", player_id: "vet3", player_name: "V3", position: "QB", team: "KC", points: 200, is_starter: true, created_at: "", updated_at: "" },
+      { id: 5, season: 2025, week: 1, owner_id: "c", player_id: "p4", player_name: "R3 Steal", position: "QB", team: "CIN", points: 160, is_starter: true, created_at: "", updated_at: "" },
+    ];
+    expect(slotExpectationFactor(3, 1, false)).toBeCloseTo(0.2, 5);
+    expect(pickImpactWeight(3, -25, false)).toBe(0.15);
+    expect(pickImpactWeight(3, 80, false)).toBe(0.75);
+
+    const grades = computeDraftGrades(picks, scores, testOwners, 2025);
+    const alice = grades.find((g) => g.owner_id === "a")!;
+    const bob = grades.find((g) => g.owner_id === "b")!;
+    const cara = grades.find((g) => g.owner_id === "c")!;
+
+    // Alice's 0-pt R3 pick only subtracts 6.0 pts from her +30.0 R1 hit -> +24.0 wVOR
+    expect(alice.total_vor).toBeCloseTo(24.0, 1);
+    // Bob's solo 0-pt R3 flyer only costs ~-5.8 wVOR (instead of -200 when weights cancelled out)
+    expect(bob.total_vor).toBeGreaterThan(-10);
+    // Cara's R3 steal (160 pts vs 40 expected) gives +90.0 wVOR
+    expect(cara.total_vor).toBeCloseTo(90.0, 1);
   });
 });
 
