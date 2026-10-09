@@ -61,10 +61,11 @@ export default async function DraftGradesPage({
         <div>
           <h1 className="text-3xl sm:text-4xl font-bold tracking-tight">Draft Grades</h1>
           <p className="mt-1 text-sm text-stone-500">
-            How well did each manager&apos;s picks perform? Scored by weighted VOR (wVOR): each
-            pick&apos;s season points minus the positional replacement level (QB12, RB24, WR24,
-            TE12), averaged with round anchors (R1=1.0, R2=0.5, R3=0.25) and within-round
-            exponential decay — earlier picks in a round count ~4% more per slot.
+            How well did each manager&apos;s picks perform? Scored by slot-adjusted weighted VOR
+            (wVOR): each pick&apos;s season points minus the expected points for its round and slot
+            (scaled from positional starter baselines QB12, RB24, WR24, TE12), summed with
+            asymmetric late-round weights so 3rd-round longshots barely penalize misses (0.15×)
+            while still rewarding breakout steals (0.75×).
           </p>
         </div>
         <SeasonPicker seasons={seasons} current={season} basePath="/fantasy/draft-grades" />
@@ -159,7 +160,7 @@ function GradeCard({
               <th className="text-left px-3 py-2 font-medium">Player</th>
               <th className="text-left px-3 py-2 font-medium">Pos</th>
               <th className="text-right px-3 py-2 font-medium">Season Pts</th>
-              <th className="text-right px-3 py-2 font-medium">Repl. Pts</th>
+              <th className="text-right px-3 py-2 font-medium">Exp. Pts</th>
               <th className="text-right px-5 py-2 font-medium">VOR</th>
             </tr>
           </thead>

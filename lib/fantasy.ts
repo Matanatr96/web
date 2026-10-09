@@ -857,19 +857,71 @@ export function pickSlotInRound(pickNumber: number, teamCount = 12): number {
   return ((pickNumber - 1) % teamCount) + 1;
 }
 
-// Hybrid pick weight: round anchor (R1=1, R2=0.5, R3=0.25) × within-round
-// exponential decay (~4% per slot). Earlier picks in a round count more.
-const pickWeight = (round: number, pickNumber: number, teamCount: number): number => {
-  const slot = pickSlotInRound(pickNumber, teamCount);
-  return (1 / Math.pow(2, round - 1)) * Math.exp(-0.04 * (slot - 1));
-};
+/**
+ * Computes the expected points multiplier (relative to the league-wide positional
+ * starter replacement level `QB12 / RB24 / WR24 / TE12`) for a given draft `round`
+ * and 1-indexed within-round `slot`.
+ *
+ * - For rookie drafts (`isStartupDraft === false`, `<= 5` rounds):
+ *   - Round 1: `0.95 * exp(-0.035 * (slot - 1))` (`95%` at `1.01` down to `65%` at `1.12`)
+ *   - Round 2: `0.50 * exp(-0.035 * (slot - 1))` (`50%` at `2.01` down to `34%` at `2.12`)
+ *   - Round 3+: `0.20 * exp(-0.035 * (slot - 1))` (`20%` at `3.01` down to `14%` at `3.12`)
+ * - For multi-round startup drafts (`isStartupDraft === true`, `> 5` rounds):
+ *   - Smooth decay across rounds and slots floored at `10%` of starter replacement.
+ *
+ * @param round - 1-indexed draft round.
+ * @param slot - 1-indexed slot within the round (`1..teamCount`).
+ * @param isStartupDraft - Whether the draft is a full-roster startup draft (`> 5` rounds).
+ * @returns Multiplier in `(0, 1]` applied to positional starter replacement points.
+ */
+export function slotExpectationFactor(
+  round: number,
+  slot: number,
+  isStartupDraft = false,
+): number {
+  if (isStartupDraft) {
+    return Math.max(0.1, Math.exp(-0.14 * (round - 1)) * Math.exp(-0.012 * (slot - 1)));
+  }
+  const roundBase = round === 1 ? 0.95 : round === 2 ? 0.5 : 0.2;
+  const slotDecay = Math.exp(-0.035 * (slot - 1));
+  return roundBase * slotDecay;
+}
 
 /**
- * Compute VOR-based draft grades for each owner in a season.
+ * Returns the asymmetric impact weight applied to a pick's slot-adjusted `vor`
+ * when aggregating a manager's overall draft score (`total_vor`).
  *
- * VOR per pick = player_season_pts - replacement_level_pts_at_position
- * Replacement level = points scored by the Nth player at that position, where
- * N = starters_per_team × number of teams in the draft.
+ * Late-round picks (Round 3+ in rookie drafts, Round 11+ in startup drafts) are
+ * longshot lottery tickets: missing on them applies heavily damped downside (`0.15x`),
+ * while hitting a breakout sleeper retains strong upside (`0.75x`).
+ *
+ * @param round - 1-indexed draft round.
+ * @param vor - Pick's points minus slot-expected points (`season_pts - replacement_pts`).
+ * @param isStartupDraft - Whether the draft is a full-roster startup draft (`> 5` rounds).
+ * @returns Non-negative weight multiplier for the pick's `vor`.
+ */
+export function pickImpactWeight(
+  round: number,
+  vor: number,
+  isStartupDraft = false,
+): number {
+  if (vor >= 0) {
+    if (isStartupDraft) return round <= 8 ? 1.0 : 0.65;
+    return round === 1 ? 1.0 : round === 2 ? 0.85 : 0.75;
+  }
+  if (isStartupDraft) {
+    return round <= 6 ? 1.0 : round <= 10 ? 0.5 : 0.15;
+  }
+  return round === 1 ? 1.0 : round === 2 ? 0.45 : 0.15;
+}
+
+/**
+ * Compute slot-adjusted VOR draft grades for each owner in a season.
+ *
+ * Each pick is benchmarked against the expected points for its round and slot
+ * (`positional_starter_replacement_pts × slotExpectationFactor`), and aggregated
+ * with asymmetric downside damping (`pickImpactWeight`) so 3rd-round longshots
+ * don't heavily penalize managers when they miss while still rewarding late-round steals.
  *
  * Only QB/RB/WR/TE picks are graded; K and DEF are excluded.
  * Player season totals are derived by summing across all rosters (trades don't
@@ -888,6 +940,7 @@ export function computeDraftGrades(
   const maxRound = Math.max(0, ...seasonPicks.map((p) => p.round));
   const picksPerRound = maxRound > 0 ? Math.round(seasonPicks.length / maxRound) : 0;
   const teamCount = Math.max(uniquePickOwners, picksPerRound);
+  const isStartupDraft = maxRound > 5;
 
   // Aggregate season total per player across all rosters.
   const playerTotals = new Map<string, number>();
@@ -917,7 +970,7 @@ export function computeDraftGrades(
     positionPts.set(pos, arr);
   }
 
-  // Replacement level = points of the (N+1)th player sorted descending (0-indexed at N).
+  // Base starter replacement level = points of the (N+1)th player sorted descending (0-indexed at N).
   const replacementLevel = new Map<string, number>();
   for (const pos of GRADED_POSITIONS) {
     const n = (STARTERS_PER_TEAM[pos] ?? 1) * teamCount;
@@ -925,14 +978,17 @@ export function computeDraftGrades(
     replacementLevel.set(pos, sorted[n] ?? sorted[sorted.length - 1] ?? 0);
   }
 
-  // Grade each pick.
+  // Grade each pick against its round-and-slot expected baseline.
   type InternalPick = DraftPickGrade & { owner_id: string };
   const pickGrades: InternalPick[] = [];
   for (const pick of seasonPicks) {
     const pos = pick.position;
     if (!pos || !GRADED_POSITIONS.has(pos)) continue;
     const season_pts = playerTotals.get(pick.player_id) ?? 0;
-    const replacement_pts = replacementLevel.get(pos) ?? 0;
+    const baseReplacementPts = replacementLevel.get(pos) ?? 0;
+    const slot = pickSlotInRound(pick.pick_number, teamCount);
+    const replacement_pts =
+      baseReplacementPts * slotExpectationFactor(pick.round, slot, isStartupDraft);
     pickGrades.push({
       owner_id: pick.owner_id,
       player_id: pick.player_id,
@@ -946,7 +1002,7 @@ export function computeDraftGrades(
     });
   }
 
-  // Group by owner and sum VOR.
+  // Group by owner and sum asymmetrically weighted slot-adjusted VOR.
   const ownerById = new Map(owners.map((o) => [o.user_id, o]));
   const ownerPickMap = new Map<string, InternalPick[]>();
   for (const pg of pickGrades) {
@@ -957,15 +1013,10 @@ export function computeDraftGrades(
 
   const rows: DraftGradeRow[] = [];
   for (const [owner_id, ownerPicks] of ownerPickMap) {
-    const weightedSum = ownerPicks.reduce(
-      (s, p) => s + p.vor * pickWeight(p.round, p.pick_number, teamCount),
+    const total_vor = ownerPicks.reduce(
+      (s, p) => s + p.vor * pickImpactWeight(p.round, p.vor, isStartupDraft),
       0,
     );
-    const totalWeight = ownerPicks.reduce(
-      (s, p) => s + pickWeight(p.round, p.pick_number, teamCount),
-      0,
-    );
-    const total_vor = totalWeight > 0 ? weightedSum / totalWeight : 0;
     ownerPicks.sort((a, b) => b.vor - a.vor); // steals at top, busts at bottom
     rows.push({
       owner_id,
