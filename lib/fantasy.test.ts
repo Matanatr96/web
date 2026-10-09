@@ -1,8 +1,15 @@
 import { describe, it, expect } from "vitest";
+import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   buildStandings,
   buildWeeklyAverages,
   computeScheduleLottery,
+  computeWeeklyStats,
+  buildRivalries,
+  computeDraftGrades,
+  pickSlotInRound,
+  fetchAllMatchups,
+  fetchSeasonPlayerScores,
   mean,
   stdev,
   percentile,
@@ -14,9 +21,11 @@ import {
   buildTradeLeaderboard,
 } from "./fantasy";
 import type {
+  FantasyDraftPick,
   FantasyLeague,
   FantasyMatchup,
   FantasyOwner,
+  FantasyPlayerScore,
   FantasyTrade,
 } from "./types";
 
@@ -47,8 +56,7 @@ describe("buildStandings", () => {
     expect(a.wins).toBe(1); expect(a.losses).toBe(0);
     expect(d.wins).toBe(0); expect(d.losses).toBe(1);
 
-    // All-play: a beats 3 others; b beats 1; c beats 1; d beats 0.
-    // (b and c both scored more than d; both lost to a.)
+    // All-play: a beats 3 others; b beats 2; c beats 1; d beats 0.
     expect(a.unrealized_wins).toBe(3);
     expect(a.unrealized_losses).toBe(0);
     expect(b.unrealized_wins).toBe(2);
@@ -64,9 +72,44 @@ describe("buildStandings", () => {
     expect(a.ppg_vs_avg).toBe(15);
     expect(d.ppg_vs_avg).toBe(-15);
 
-    // Default sort: by wins desc, then all-play wins desc, then PPG desc.
-    // a (1W, 3 ap), c (1W, 1 ap), b (0W, 2 ap), d (0W, 0 ap).
+    // Default sort: by win-tie record desc, then PPG desc, then all-play wins desc.
     expect(rows.map((r) => r.owner_id)).toEqual(["a", "c", "b", "d"]);
+  });
+
+  it("breaks record ties by avg_ppg (Points For) before unrealized_wins to match Sleeper", () => {
+    // Two weeks where owner 'a' and owner 'b' both finish 1-1:
+    // Week 1: a(150) beats c(50) [3 all-play W]; b(95) loses to d(100) [1 all-play W]
+    // Week 2: a(60) loses to d(65) [0 all-play W]; b(95) beats c(90) [3 all-play W]
+    // Totals:
+    //   a: 1-1, 210 PF (105 PPG), 3 unrealized_wins
+    //   b: 1-1, 190 PF (95 PPG),  4 unrealized_wins
+    // Sleeper ranks 'a' ahead of 'b' because 210 PF > 190 PF despite lower all-play wins.
+    const twoWeeks: FantasyMatchup[] = [
+      { id: 1, season: 2024, week: 1, owner_id: "a", opponent_id: "c", points: 150, opponent_points: 50,  result: "W" },
+      { id: 2, season: 2024, week: 1, owner_id: "c", opponent_id: "a", points: 50,  opponent_points: 150, result: "L" },
+      { id: 3, season: 2024, week: 1, owner_id: "b", opponent_id: "d", points: 95,  opponent_points: 100, result: "L" },
+      { id: 4, season: 2024, week: 1, owner_id: "d", opponent_id: "b", points: 100, opponent_points: 95,  result: "W" },
+      { id: 5, season: 2024, week: 2, owner_id: "a", opponent_id: "d", points: 60,  opponent_points: 65,  result: "L" },
+      { id: 6, season: 2024, week: 2, owner_id: "d", opponent_id: "a", points: 65,  opponent_points: 60,  result: "W" },
+      { id: 7, season: 2024, week: 2, owner_id: "b", opponent_id: "c", points: 95,  opponent_points: 90,  result: "W" },
+      { id: 8, season: 2024, week: 2, owner_id: "c", opponent_id: "b", points: 90,  opponent_points: 95,  result: "L" },
+    ];
+    const rows = buildStandings(twoWeeks, owners, 2024);
+    expect(rows.map((r) => r.owner_id)).toEqual(["d", "a", "b", "c"]);
+  });
+
+  it("ignores unplayed all-zero weeks", () => {
+    const withUnplayedWeek2: FantasyMatchup[] = [
+      ...week1,
+      { id: 5, season: 2024, week: 2, owner_id: "a", opponent_id: "c", points: 0, opponent_points: 0, result: "T" },
+      { id: 6, season: 2024, week: 2, owner_id: "c", opponent_id: "a", points: 0, opponent_points: 0, result: "T" },
+      { id: 7, season: 2024, week: 2, owner_id: "b", opponent_id: "d", points: 0, opponent_points: 0, result: "T" },
+      { id: 8, season: 2024, week: 2, owner_id: "d", opponent_id: "b", points: 0, opponent_points: 0, result: "T" },
+    ];
+    const rows = buildStandings(withUnplayedWeek2, owners, 2024);
+    const a = rows.find((r) => r.owner_id === "a")!;
+    expect(a.ties).toBe(0);
+    expect(a.avg_ppg).toBe(100);
   });
 
   it("returns empty for unseen season", () => {
@@ -192,27 +235,30 @@ describe("computeScheduleLottery", () => {
     expect(matrix[di][di]).toMatchObject({ wins: 0, losses: 2, ties: 0 });
   });
 
-  it("cross-schedule cell reflects owner's scores vs the schedule-owner's opponents", () => {
-    // a with d's schedule: face d's opponents each week.
+  it("cross-schedule cell reflects owner's scores vs the schedule-owner's opponents without self-ties", () => {
+    // a with d's schedule (never played each other):
     //   Week 1: d faced c (scored 100) → a(110) > 100 → W
     //   Week 2: d faced b (scored 85)  → a(80)  < 85  → L
-    // Expected: 1-1
+    // Expected: 1-1-0
     const { owners: seasonOwners, matrix } = computeScheduleLottery(slMatchups, slOwners, slLeagues, 2024);
     const ai = seasonOwners.findIndex((o) => o.user_id === "a");
+    const bi = seasonOwners.findIndex((o) => o.user_id === "b");
     const di = seasonOwners.findIndex((o) => o.user_id === "d");
     expect(matrix[ai][di]).toMatchObject({ wins: 1, losses: 1, ties: 0 });
+
+    // a with b's schedule (played each other in Week 1):
+    //   Week 1: b faced a → swapping schedules means a faces b (90) → a(110) > 90 → W (NOT a self-tie!)
+    //   Week 2: b faced d (60) → a(80) > 60 → W
+    // Expected: 2-0-0 (zero artificial self-ties)
+    expect(matrix[ai][bi]).toMatchObject({ wins: 2, losses: 0, ties: 0 });
   });
 
-  it("luck delta is positive for an owner with an easy schedule", () => {
-    // d scored 70 and 60 (weakest). With any other schedule they would have
-    // faced the same or tougher opponents, so delta should be ≤ 0.
-    // c scored 100 and 95 (second strongest) but faced tough opponents both
-    // weeks; with easier schedules they'd win more → delta should be ≥ 0.
+  it("luck delta is non-positive for an owner who lost every game and non-negative for a strong scorer with a tough draw", () => {
     const { luckDeltas } = computeScheduleLottery(slMatchups, slOwners, slLeagues, 2024);
     const d = luckDeltas.find((r) => r.owner_id === "d")!;
     const c = luckDeltas.find((r) => r.owner_id === "c")!;
     expect(d.delta).toBeLessThanOrEqual(0);
-    expect(c.delta).toBeGreaterThanOrEqual(0);
+    expect(c.delta).toBeLessThanOrEqual(0); // c went 1-1 but would go 2-0 on b's or d's schedule (median 1.5 → delta -0.5)
   });
 
   it("returns empty matrix and luckDeltas for an unknown season", () => {
@@ -222,6 +268,136 @@ describe("computeScheduleLottery", () => {
     expect(seasonOwners).toHaveLength(0);
     expect(matrix).toHaveLength(0);
     expect(luckDeltas).toHaveLength(0);
+  });
+});
+
+describe("computeWeeklyStats", () => {
+  it("enforces mandatory positional starter minimums on cross-position FLEX bench swaps", () => {
+    const matchups: FantasyMatchup[] = [
+      { id: 1, season: 2025, week: 1, owner_id: "a", opponent_id: "b", points: 100, opponent_points: 100, result: "T" },
+      { id: 2, season: 2025, week: 1, owner_id: "b", opponent_id: "a", points: 100, opponent_points: 100, result: "T" },
+    ];
+    // Owner 'a' starts 1 QB, 2 RB, 3 WR (so 1 WR is in FLEX), 1 TE.
+    // RB2 scored 2 pts, TE1 scored 1 pt, WR3 scored 8 pts.
+    // Bench has a WR ("Bench WR") with 25 pts.
+    // Because RB count is 2 (== min 2) and TE count is 1 (== min 1), Bench WR can ONLY
+    // legally replace a WR starter (worst WR = 8 pts, delta = 17), NOT TE1 (1 pt) or RB2 (2 pts).
+    const playerScores: FantasyPlayerScore[] = [
+      { id: 1, season: 2025, week: 1, owner_id: "a", player_id: "qb1", player_name: "QB1", position: "QB", team: "KC", points: 20, is_starter: true, created_at: "", updated_at: "" },
+      { id: 2, season: 2025, week: 1, owner_id: "a", player_id: "rb1", player_name: "RB1", position: "RB", team: "SF", points: 15, is_starter: true, created_at: "", updated_at: "" },
+      { id: 3, season: 2025, week: 1, owner_id: "a", player_id: "rb2", player_name: "RB2", position: "RB", team: "DET", points: 2, is_starter: true, created_at: "", updated_at: "" },
+      { id: 4, season: 2025, week: 1, owner_id: "a", player_id: "wr1", player_name: "WR1", position: "WR", team: "CIN", points: 18, is_starter: true, created_at: "", updated_at: "" },
+      { id: 5, season: 2025, week: 1, owner_id: "a", player_id: "wr2", player_name: "WR2", position: "WR", team: "DAL", points: 12, is_starter: true, created_at: "", updated_at: "" },
+      { id: 6, season: 2025, week: 1, owner_id: "a", player_id: "wr3", player_name: "WR3", position: "WR", team: "MIN", points: 8, is_starter: true, created_at: "", updated_at: "" },
+      { id: 7, season: 2025, week: 1, owner_id: "a", player_id: "te1", player_name: "TE1", position: "TE", team: "BAL", points: 1, is_starter: true, created_at: "", updated_at: "" },
+      { id: 8, season: 2025, week: 1, owner_id: "a", player_id: "bwr", player_name: "Bench WR", position: "WR", team: "BUF", points: 25, is_starter: false, created_at: "", updated_at: "" },
+    ];
+
+    const stats = computeWeeklyStats(matchups, playerScores, owners, 2025, 1);
+    expect(stats).not.toBeNull();
+    expect(stats!.closest_matchup?.margin).toBe(0);
+    expect(stats!.bench_mistake).toMatchObject({
+      owner_id: "a",
+      benched_player: "Bench WR",
+      started_player: "WR3",
+      pts_delta: 17,
+    });
+  });
+});
+
+describe("buildRivalries", () => {
+  it("excludes Losers Bracket (Toilet Bowl) games in Weeks 15-17 when winners_bracket is present", () => {
+    const leagues: FantasyLeague[] = [
+      {
+        season: 2024,
+        league_id: "L1",
+        name: "KFL",
+        playoff_week_start: 15,
+        winners_bracket: [
+          { r: 1, m: 1, p: null, t1: "a", t2: "b", w: "a", l: "b" },
+        ],
+      },
+    ];
+    const matchups: FantasyMatchup[] = [
+      // Week 15 Winners Bracket game: a vs b
+      { id: 1, season: 2024, week: 15, owner_id: "a", opponent_id: "b", points: 120, opponent_points: 110, result: "W" },
+      { id: 2, season: 2024, week: 15, owner_id: "b", opponent_id: "a", points: 110, opponent_points: 120, result: "L" },
+      // Week 15 Losers Bracket (Toilet Bowl) game: c vs d (not in winners_bracket)
+      { id: 3, season: 2024, week: 15, owner_id: "c", opponent_id: "d", points: 95,  opponent_points: 85,  result: "W" },
+      { id: 4, season: 2024, week: 15, owner_id: "d", opponent_id: "c", points: 85,  opponent_points: 95,  result: "L" },
+    ];
+    const rivalries = buildRivalries(matchups, [], owners, leagues);
+    expect(rivalries).toHaveLength(1);
+    expect(rivalries[0]).toMatchObject({ a_id: "a", b_id: "b", playoff_games: 1 });
+  });
+});
+
+describe("computeDraftGrades & pickSlotInRound", () => {
+  it("converts overall pick_no into 1-indexed within-round slot", () => {
+    expect(pickSlotInRound(1, 12)).toBe(1);
+    expect(pickSlotInRound(12, 12)).toBe(12);
+    expect(pickSlotInRound(13, 12)).toBe(1);
+    expect(pickSlotInRound(24, 12)).toBe(12);
+    expect(pickSlotInRound(25, 12)).toBe(1);
+  });
+
+  it("uses within-round slot for exponential decay and preserves teamCount when an owner trades away all picks", () => {
+    // 2-team draft, 2 rounds (4 picks total), but only owner 'a' makes all 4 picks (owner 'b' traded them away).
+    // picksPerRound = 4 / 2 = 2 -> teamCount = max(1, 2) = 2.
+    // Pick 1 (R1.01, slot 1) and Pick 3 (R2.01, slot 1) both have slot=1, so R2.01 weight is exactly 0.5 * R1.01 weight.
+    const picks: FantasyDraftPick[] = [
+      { id: 1, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p1", player_name: "P1", position: "QB", team: "KC", round: 1, pick_number: 1, adp: null, created_at: "" },
+      { id: 2, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p2", player_name: "P2", position: "QB", team: "BUF", round: 1, pick_number: 2, adp: null, created_at: "" },
+      { id: 3, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p3", player_name: "P3", position: "QB", team: "BAL", round: 2, pick_number: 3, adp: null, created_at: "" },
+      { id: 4, season: 2025, league_id: "L", draft_id: "D", owner_id: "a", player_id: "p4", player_name: "P4", position: "QB", team: "CIN", round: 2, pick_number: 4, adp: null, created_at: "" },
+    ];
+    const scores: FantasyPlayerScore[] = [
+      { id: 1, season: 2025, week: 1, owner_id: "a", player_id: "p1", player_name: "P1", position: "QB", team: "KC", points: 300, is_starter: true, created_at: "", updated_at: "" },
+      { id: 2, season: 2025, week: 1, owner_id: "a", player_id: "p2", player_name: "P2", position: "QB", team: "BUF", points: 250, is_starter: true, created_at: "", updated_at: "" },
+      { id: 3, season: 2025, week: 1, owner_id: "a", player_id: "p3", player_name: "P3", position: "QB", team: "BAL", points: 200, is_starter: false, created_at: "", updated_at: "" },
+      { id: 4, season: 2025, week: 1, owner_id: "a", player_id: "p4", player_name: "P4", position: "QB", team: "CIN", points: 100, is_starter: false, created_at: "", updated_at: "" },
+    ];
+    const grades = computeDraftGrades(picks, scores, owners, 2025);
+    expect(grades).toHaveLength(1);
+    // Because teamCount = 2 (from 4 picks / 2 rounds), QB replacement level is index 2 (3rd QB = 200 pts).
+    expect(grades[0].picks.find((p) => p.player_id === "p1")?.replacement_pts).toBe(200);
+  });
+});
+
+describe("Supabase pagination helpers", () => {
+  it("fetchAllMatchups and fetchSeasonPlayerScores paginate until fewer than 1,000 rows are returned", async () => {
+    const totalMatchups = 1028;
+    const allMatchupRows = Array.from({ length: totalMatchups }, (_, i) => ({
+      id: i + 1,
+      season: 2025,
+      week: 1,
+      owner_id: "a",
+      opponent_id: "b",
+      points: 100,
+      opponent_points: 90,
+      result: "W",
+    }));
+
+    const mockDb = {
+      from: () => {
+        const chain = {
+          select: () => chain,
+          eq: () => chain,
+          order: () => chain,
+          range: async (from: number, to: number) => ({
+            data: allMatchupRows.slice(from, to + 1),
+            error: null,
+          }),
+        };
+        return chain;
+      },
+    } as unknown as SupabaseClient;
+
+    const fetchedMatchups = await fetchAllMatchups(mockDb);
+    expect(fetchedMatchups).toHaveLength(1028);
+
+    const fetchedScores = await fetchSeasonPlayerScores(mockDb, 2025);
+    expect(fetchedScores).toHaveLength(1028);
   });
 });
 

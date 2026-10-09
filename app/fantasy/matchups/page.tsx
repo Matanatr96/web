@@ -13,6 +13,7 @@ import {
   buildStandings,
   buildWeeklyAverages,
   computeWeeklyStats,
+  fetchAllMatchups,
   mean,
   stdev,
   percentile,
@@ -28,6 +29,11 @@ export const dynamic = "force-dynamic";
 
 type SearchParams = { season?: string; value?: string };
 
+/**
+ * Renders the KFL Matchups page with season standings, all-play records,
+ * weekly scoring averages, score percentile calculator, playoff brackets,
+ * and the latest Oracle of Regret snapshot.
+ */
 export default async function FantasyMatchupsPage({
   searchParams,
 }: {
@@ -37,17 +43,16 @@ export default async function FantasyMatchupsPage({
   const db = getSupabase();
   const admin = await isAdmin();
 
-  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }, { data: summaryData }] =
+  const [{ data: leagueData }, { data: ownerData }, matchups, { data: summaryData }] =
     await Promise.all([
       db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
       db.from("fantasy_owners").select("*"),
-      db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+      fetchAllMatchups(db),
       db.from("fantasy_weekly_summaries").select("*").order("season", { ascending: false }).order("week", { ascending: false }),
     ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
   const summaries = (summaryData ?? []) as WeeklySummary[];
 
   const seasons = leagues.map((l) => l.season);

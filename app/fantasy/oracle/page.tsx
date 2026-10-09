@@ -1,8 +1,8 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import { isAdmin } from "@/lib/auth";
-import { computeWeeklyStats } from "@/lib/fantasy";
-import type { FantasyBanter, FantasyLeague, FantasyMatchup, FantasyOwner, FantasyPlayerScore, WeeklySummary } from "@/lib/types";
+import { computeWeeklyStats, fetchAllMatchups } from "@/lib/fantasy";
+import type { FantasyBanter, FantasyLeague, FantasyOwner, FantasyPlayerScore, WeeklySummary } from "@/lib/types";
 import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 import SeasonPicker from "@/components/season-picker";
 import OracleWeekView from "./OracleWeekView";
@@ -27,19 +27,17 @@ export default async function OraclePage({
   const [
     { data: leagueData },
     { data: ownerData },
-    { data: matchupData },
+    matchups,
     { data: summaryData },
   ] = await Promise.all([
     db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
     db.from("fantasy_owners").select("*"),
-    db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+    fetchAllMatchups(db),
     db.from("fantasy_weekly_summaries").select("*").order("season", { ascending: false }).order("week", { ascending: false }),
   ]);
 
-
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
   const summaries = (summaryData ?? []) as WeeklySummary[];
 
   const seasons = [...new Set(leagues.map((l) => l.season))].sort((a, b) => b - a);
