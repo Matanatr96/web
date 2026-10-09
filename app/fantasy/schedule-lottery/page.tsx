@@ -1,13 +1,17 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import type { FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
-import { computeScheduleLottery, ownerColorMap } from "@/lib/fantasy";
+import type { FantasyLeague, FantasyOwner } from "@/lib/types";
+import { computeScheduleLottery, fetchAllMatchups, ownerColorMap } from "@/lib/fantasy";
 import SeasonPicker from "@/components/season-picker";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = { season?: string };
 
+/**
+ * Renders the Schedule Lottery page with an NxN schedule permutation matrix
+ * and luck-delta leaderboard for the selected season.
+ */
 export default async function ScheduleLotteryPage({
   searchParams,
 }: {
@@ -16,16 +20,15 @@ export default async function ScheduleLotteryPage({
   const params = await searchParams;
   const db = getSupabase();
 
-  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
+  const [{ data: leagueData }, { data: ownerData }, matchups] =
     await Promise.all([
       db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
       db.from("fantasy_owners").select("*"),
-      db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+      fetchAllMatchups(db),
     ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
 
   const seasons = leagues.map((l) => l.season);
   const requestedSeason = params.season ? Number(params.season) : seasons[0];
@@ -36,10 +39,11 @@ export default async function ScheduleLotteryPage({
   const { owners: seasonOwners, matrix, luckDeltas } = result;
   const n = seasonOwners.length;
 
-  // Compute win% for each cell (for color intensity).
-  const totalWeeks = n > 0 ? matrix[0][0].wins + matrix[0][0].losses + matrix[0][0].ties : 0;
-  const winPct = (cell: { wins: number; losses: number; ties: number }) =>
-    totalWeeks > 0 ? (cell.wins + cell.ties * 0.5) / totalWeeks : 0;
+  // Compute win% for each cell against its own total games (for color intensity).
+  const winPct = (cell: { wins: number; losses: number; ties: number }) => {
+    const total = cell.wins + cell.losses + cell.ties;
+    return total > 0 ? (cell.wins + cell.ties * 0.5) / total : 0;
+  };
 
   // Min/max win% across the full matrix for color scaling.
   let minPct = 1;

@@ -1,7 +1,8 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import type { FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
+import type { FantasyLeague, FantasyOwner } from "@/lib/types";
 import {
+  fetchAllMatchups,
   regularSeasonOnly,
   topScoringRecords,
   lowestScoringRecords,
@@ -12,19 +13,22 @@ import { fmt } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
+/**
+ * Renders the KFL All-Time Records page displaying the highest single-game
+ * scores, lowest single-game scores, and biggest blowouts across all seasons.
+ */
 export default async function FantasyRecordsPage() {
   const db = getSupabase();
 
-  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
+  const [{ data: leagueData }, { data: ownerData }, matchups] =
     await Promise.all([
       db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
       db.from("fantasy_owners").select("*"),
-      db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+      fetchAllMatchups(db),
     ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
 
   const colorMap = ownerColorMap(owners);
 

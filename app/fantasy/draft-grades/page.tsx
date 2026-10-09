@@ -4,16 +4,19 @@ import type {
   FantasyDraftPick,
   FantasyLeague,
   FantasyOwner,
-  FantasyPlayerScore,
   DraftGradeRow,
 } from "@/lib/types";
-import { computeDraftGrades, ownerColorMap } from "@/lib/fantasy";
+import { computeDraftGrades, fetchSeasonPlayerScores, ownerColorMap, pickSlotInRound } from "@/lib/fantasy";
 import SeasonPicker from "@/components/season-picker";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = { season?: string };
 
+/**
+ * Renders the Draft Grades page with weighted VOR (wVOR) scores, letter grades,
+ * and expandable per-pick breakdowns for the selected season.
+ */
 export default async function DraftGradesPage({
   searchParams,
 }: {
@@ -37,12 +40,8 @@ export default async function DraftGradesPage({
   const requestedSeason = params.season ? Number(params.season) : seasons[0];
   const season = seasons.includes(requestedSeason) ? requestedSeason : seasons[0];
 
-  // Fetch player scores only for the selected season to keep the payload lean.
-  const { data: playerScoreData } = await db
-    .from("fantasy_player_scores")
-    .select("*")
-    .eq("season", season);
-  const playerScores = (playerScoreData ?? []) as FantasyPlayerScore[];
+  // Fetch all player scores for the selected season using pagination so >1,000 rows are never truncated.
+  const playerScores = await fetchSeasonPlayerScores(db, season);
 
   const colorMap = ownerColorMap(owners);
   const grades = computeDraftGrades(allDraftPicks, playerScores, owners, season);
@@ -170,7 +169,7 @@ function GradeCard({
               return (
                 <tr key={pick.player_id}>
                   <td className="px-5 py-2 tabular-nums text-stone-500">
-                    R{pick.round}.{pick.pick_number}
+                    R{pick.round}.{String(pickSlotInRound(pick.pick_number)).padStart(2, "0")}
                   </td>
                   <td className="px-3 py-2 font-medium">{pick.player_name}</td>
                   <td className="px-3 py-2 text-stone-500">{pick.position}</td>

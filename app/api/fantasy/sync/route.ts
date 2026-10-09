@@ -16,6 +16,11 @@ type SleeperUser = {
 type SleeperRoster = {
   roster_id: number;
   owner_id: string | null;
+  settings?: {
+    wins?: number;
+    losses?: number;
+    ties?: number;
+  };
 };
 
 type SleeperLeague = {
@@ -231,6 +236,27 @@ async function handleSync(req: Request) {
         if (ownerErr) throw ownerErr;
       }
 
+      const isCurrentSeason = season === Number(state.season ?? latestSeason);
+      const playoffStart = leagueMeta?.settings?.playoff_week_start ?? 15;
+      const completedRegSeasonWeeks = Math.max(
+        0,
+        ...rosters.map(
+          (r) =>
+            (r.settings?.wins ?? 0) +
+            (r.settings?.losses ?? 0) +
+            (r.settings?.ties ?? 0),
+        ),
+      );
+      const isWeekComplete = (week: number): boolean => {
+        if (!isCurrentSeason) return true;
+        if (week < playoffStart) {
+          return week <= completedRegSeasonWeeks;
+        }
+        const round = week - playoffStart + 1;
+        const roundEntries = winnersBracket.filter((b) => b.r === round);
+        return roundEntries.length > 0 && roundEntries.every((b) => b.w != null);
+      };
+
       // 3. Fetch all weeks 1..maxWeekForSeason in parallel so completed weeks
       // (e.g. Week 4 after Sleeper rolls state.week to 5 on Wednesday) and any
       // stat corrections are always ingested.
@@ -246,6 +272,7 @@ async function handleSync(req: Request) {
 
       for (const { week, entries } of weeklyMatchups) {
         if (!entries || entries.length === 0) continue;
+        if (!isWeekComplete(week)) continue;
         const totalPoints = entries.reduce((s, e) => s + (e.points ?? 0), 0);
         if (totalPoints === 0) continue;
 

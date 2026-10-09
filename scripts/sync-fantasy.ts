@@ -41,6 +41,11 @@ type SleeperUser = {
 type SleeperRoster = {
   roster_id: number;
   owner_id: string | null;
+  settings?: {
+    wins?: number;
+    losses?: number;
+    ties?: number;
+  };
 };
 
 type SleeperMatchup = {
@@ -160,6 +165,7 @@ async function syncSeason(
   season: number,
   leagueId: string,
   currentWeek: number,
+  activeSeason: number,
   players: PlayerMap,
 ) {
   console.log(`\n[${season}] league ${leagueId}`);
@@ -219,8 +225,33 @@ async function syncSeason(
     if (r.owner_id) rosterToUser.set(r.roster_id, r.owner_id);
   }
 
+  const isCurrentSeason = season === activeSeason;
+  const effectivePlayoffStart = playoffStart ?? 15;
+  const completedRegSeasonWeeks = Math.max(
+    0,
+    ...rosters.map(
+      (r) =>
+        (r.settings?.wins ?? 0) +
+        (r.settings?.losses ?? 0) +
+        (r.settings?.ties ?? 0),
+    ),
+  );
+  const isWeekComplete = (week: number): boolean => {
+    if (!isCurrentSeason) return true;
+    if (week < effectivePlayoffStart) {
+      return week <= completedRegSeasonWeeks;
+    }
+    const round = week - effectivePlayoffStart + 1;
+    const roundEntries = winnersBracket.filter((b) => b.r === round);
+    return roundEntries.length > 0 && roundEntries.every((b) => b.w != null);
+  };
+
   let matchupCount = 0;
   for (let week = 1; week <= MAX_WEEK; week++) {
+    if (!isWeekComplete(week)) {
+      if (week > currentWeek) break;
+      continue;
+    }
     let entries: SleeperMatchup[];
     try {
       entries = await fetchJson<SleeperMatchup[]>(
@@ -235,9 +266,8 @@ async function syncSeason(
     // Skip weeks where nobody has scored yet (future weeks return 0s).
     const totalPoints = entries.reduce((s, e) => s + (e.points ?? 0), 0);
     if (totalPoints === 0) {
-      // For the current week, allow zero in case it just opened. Past weeks
-      // with all zeros mean no data.
       if (week > currentWeek) break;
+      continue;
     }
 
     // Group by matchup_id to pair head-to-head.
@@ -489,6 +519,7 @@ async function main() {
 
   const state = await fetchJson<SleeperState>(`${SLEEPER}/state/nfl`);
   const currentWeek = state.week ?? 1;
+  const activeSeason = Number(state.season ?? leagues[leagues.length - 1].season);
 
   // Sleeper recommends caching /players/nfl (~5MB) and refreshing at most
   // once per day. We fetch it once per script run.
@@ -500,7 +531,7 @@ async function main() {
   console.log(`  loaded ${players.size} players`);
 
   for (const { season, league_id } of leagues) {
-    await syncSeason(season, league_id, currentWeek, players);
+    await syncSeason(season, league_id, currentWeek, activeSeason, players);
   }
   console.log("\nAll done.");
 }

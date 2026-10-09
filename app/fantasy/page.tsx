@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import type { BracketEntry, FantasyLeague, FantasyMatchup, FantasyOwner } from "@/lib/types";
-import { regularSeasonOnly, ownerColorMap } from "@/lib/fantasy";
+import { fetchAllMatchups, regularSeasonOnly, ownerColorMap } from "@/lib/fantasy";
 import RefreshMatchupsButton from "@/components/refresh-matchups-button";
 
 export const dynamic = "force-dynamic";
@@ -14,16 +14,15 @@ export const dynamic = "force-dynamic";
 export default async function FantasyPage() {
   const db = getSupabase();
 
-  const [{ data: leagueData }, { data: ownerData }, { data: matchupData }] =
+  const [{ data: leagueData }, { data: ownerData }, matchups] =
     await Promise.all([
       db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
       db.from("fantasy_owners").select("*"),
-      db.from("fantasy_matchups").select("*"),
+      fetchAllMatchups(db),
     ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
 
   const regSeason = regularSeasonOnly(matchups, leagues);
 

@@ -2,19 +2,22 @@ import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
 import type {
   FantasyLeague,
-  FantasyMatchup,
   FantasyOwner,
   FantasyTrade,
   Rivalry,
   RivalryGame,
 } from "@/lib/types";
-import { buildRivalries, findRivalry, ownerColorMap } from "@/lib/fantasy";
+import { buildRivalries, fetchAllMatchups, findRivalry, ownerColorMap } from "@/lib/fantasy";
 import { fmt } from "@/lib/utils";
 
 export const dynamic = "force-dynamic";
 
 type SearchParams = { pair?: string };
 
+/**
+ * Renders the KFL Rivalry Ledger page with pairwise head-to-head dossiers
+ * and the composite heat leaderboard across all regular-season and playoff games.
+ */
 export default async function RivalriesPage({
   searchParams,
 }: {
@@ -26,18 +29,17 @@ export default async function RivalriesPage({
   const [
     { data: leagueData },
     { data: ownerData },
-    { data: matchupData },
+    matchups,
     { data: tradeData },
   ] = await Promise.all([
     db.from("fantasy_leagues").select("*").order("season", { ascending: false }),
     db.from("fantasy_owners").select("*"),
-    db.from("fantasy_matchups").select("*").order("season", { ascending: false }),
+    fetchAllMatchups(db),
     db.from("fantasy_trades").select("*"),
   ]);
 
   const leagues = (leagueData ?? []) as FantasyLeague[];
   const owners = (ownerData ?? []) as FantasyOwner[];
-  const matchups = (matchupData ?? []) as FantasyMatchup[];
   const trades = (tradeData ?? []) as FantasyTrade[];
 
   const colorMap = ownerColorMap(owners);

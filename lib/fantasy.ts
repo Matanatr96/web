@@ -1,3 +1,4 @@
+import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   BlowoutRecord,
   DraftGradeRow,
@@ -17,6 +18,65 @@ import type {
   TradeLeaderboardRow,
   WeeklyStats,
 } from "./types";
+
+const SUPABASE_PAGE_SIZE = 1000;
+
+/**
+ * Fetches all rows from `fantasy_matchups` across all seasons using deterministic
+ * range pagination so PostgREST's 1,000-row per-request limit never truncates
+ * multi-season matchup history.
+ *
+ * @param db - Supabase client instance.
+ * @returns Complete list of `FantasyMatchup` rows across all seasons.
+ */
+export async function fetchAllMatchups(db: SupabaseClient): Promise<FantasyMatchup[]> {
+  const all: FantasyMatchup[] = [];
+  for (let from = 0; ; from += SUPABASE_PAGE_SIZE) {
+    const { data, error } = await db
+      .from("fantasy_matchups")
+      .select("*")
+      .order("season", { ascending: false })
+      .order("week", { ascending: true })
+      .order("owner_id", { ascending: true })
+      .range(from, from + SUPABASE_PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as FantasyMatchup[];
+    all.push(...rows);
+    if (rows.length < SUPABASE_PAGE_SIZE) break;
+  }
+  return all;
+}
+
+/**
+ * Fetches all rows from `fantasy_player_scores` for a given `season` using
+ * deterministic range pagination so full-season player score tables (~3,400+
+ * rows per season) are never truncated at 1,000 rows by PostgREST.
+ *
+ * @param db - Supabase client instance.
+ * @param season - Four-digit NFL season year (e.g., 2025).
+ * @returns Complete list of `FantasyPlayerScore` rows for the requested season.
+ */
+export async function fetchSeasonPlayerScores(
+  db: SupabaseClient,
+  season: number,
+): Promise<FantasyPlayerScore[]> {
+  const all: FantasyPlayerScore[] = [];
+  for (let from = 0; ; from += SUPABASE_PAGE_SIZE) {
+    const { data, error } = await db
+      .from("fantasy_player_scores")
+      .select("*")
+      .eq("season", season)
+      .order("week", { ascending: true })
+      .order("owner_id", { ascending: true })
+      .order("player_id", { ascending: true })
+      .range(from, from + SUPABASE_PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = (data ?? []) as FantasyPlayerScore[];
+    all.push(...rows);
+    if (rows.length < SUPABASE_PAGE_SIZE) break;
+  }
+  return all;
+}
 
 const OWNER_COLORS = [
   "text-sky-600 dark:text-sky-400",
@@ -102,6 +162,9 @@ export function buildStandings(
   });
 
   for (const [, weekRows] of byWeek) {
+    // Skip unplayed all-zero weeks if any exist.
+    if (weekRows.every((r) => r.points === 0 && r.opponent_points === 0)) continue;
+
     // For all-play we need every owner's score this week.
     const scores = weekRows.map((r) => ({ owner_id: r.owner_id, points: r.points }));
 
@@ -115,7 +178,6 @@ export function buildStandings(
       else a.ties += 1;
 
       // All-play: count opponents with strictly lower score this week.
-      // Ties count as half a win each (rare; matches typical sheet behavior).
       let lower = 0;
       let equal = 0;
       for (const s of scores) {
@@ -161,13 +223,13 @@ export function buildStandings(
     });
   }
 
-  // Default sort: most wins, then most unrealized wins, then highest PPG.
+  // Sort matching Sleeper standings: win-tie record desc, then PPG (points for) desc, then all-play wins desc.
   rows.sort((a, b) => {
-    if (b.wins !== a.wins) return b.wins - a.wins;
-    if (b.unrealized_wins !== a.unrealized_wins) {
-      return b.unrealized_wins - a.unrealized_wins;
-    }
-    return b.avg_ppg - a.avg_ppg;
+    const aWinScore = a.wins + a.ties * 0.5;
+    const bWinScore = b.wins + b.ties * 0.5;
+    if (bWinScore !== aWinScore) return bWinScore - aWinScore;
+    if (b.avg_ppg !== a.avg_ppg) return b.avg_ppg - a.avg_ppg;
+    return b.unrealized_wins - a.unrealized_wins;
   });
 
   return rows;
@@ -332,7 +394,6 @@ export function computeScheduleLottery(
     .map((id) => owners.find((o) => o.user_id === id))
     .filter((o): o is FantasyOwner => o != null);
   const n = seasonOwners.length;
-  const idx = new Map(seasonOwners.map((o, i) => [o.user_id, i]));
 
   // Group matchups by week.
   const weeks = [...new Set(seasonRows.map((m) => m.week))].sort((a, b) => a - b);
@@ -348,22 +409,28 @@ export function computeScheduleLottery(
 
     // score[owner_id] = their actual points this week
     const score = new Map(weekRows.map((m) => [m.owner_id, m.points]));
+    // opponentId[owner_id] = their actual opponent's user_id this week
+    const opponentId = new Map(weekRows.map((m) => [m.owner_id, m.opponent_id]));
     // opponentScore[owner_id] = their actual opponent's points this week
     const opponentScore = new Map(weekRows.map((m) => [m.owner_id, m.opponent_points]));
 
     for (let oi = 0; oi < n; oi++) {
-      const myScore = score.get(seasonOwners[oi].user_id);
+      const myId = seasonOwners[oi].user_id;
+      const myScore = score.get(myId);
       if (myScore == null) continue;
 
       for (let si = 0; si < n; si++) {
         // Owner oi playing schedule-owner si's schedule: face si's actual opponent.
+        // If si's actual opponent this week WAS oi (they played each other head-to-head),
+        // swapping schedules means oi takes si's place in that game and faces si.
         const schedOwner = seasonOwners[si];
-        const theirOpponentScore = opponentScore.get(schedOwner.user_id);
+        const schedOpponentId = opponentId.get(schedOwner.user_id);
+        const theirOpponentScore =
+          schedOpponentId === myId
+            ? score.get(schedOwner.user_id)
+            : opponentScore.get(schedOwner.user_id);
         if (theirOpponentScore == null) continue;
 
-        if (oi === si) {
-          // Own schedule — still count it for median calculation.
-        }
         const cell = matrix[oi][si];
         if (myScore > theirOpponentScore) cell.wins += 1;
         else if (myScore < theirOpponentScore) cell.losses += 1;
@@ -373,9 +440,11 @@ export function computeScheduleLottery(
   }
 
   // Luck delta: actual wins (diagonal) vs median across all N schedules.
+  const winValue = (c: { wins: number; losses: number; ties: number }) =>
+    c.wins + c.ties * 0.5;
   const luckDeltas = seasonOwners.map((owner, oi) => {
-    const actual_wins = matrix[oi][oi].wins;
-    const allWins = matrix[oi].map((c) => c.wins).sort((a, b) => a - b);
+    const actual_wins = winValue(matrix[oi][oi]);
+    const allWins = matrix[oi].map(winValue).sort((a, b) => a - b);
     const mid = Math.floor(allWins.length / 2);
     const median_wins =
       allWins.length % 2 === 0
@@ -425,6 +494,13 @@ export function buildTradeLeaderboard(
 
 // FLEX-eligible positions that can be benched and compared cross-slot.
 const FLEX_POSITIONS = new Set(["RB", "WR", "TE"]);
+// Mandatory positional starter minimums in KFL (1 QB, 2 RB, 2 WR, 1 TE, 2 FLEX).
+const MIN_STARTERS_BY_POSITION: Record<string, number> = {
+  QB: 1,
+  RB: 2,
+  WR: 2,
+  TE: 1,
+};
 
 /**
  * Compute weekly stats for a given season+week from matchup and player score data.
@@ -464,14 +540,23 @@ export function computeWeeklyStats(
     points: sorted[sorted.length - 1].points,
   };
 
-  // Biggest blowout and closest matchup (W-rows only to avoid double-counting).
-  const winRows = weekMatchups.filter((m) => m.result === "W" && m.opponent_id != null);
-  const withMargin = winRows.map((m) => ({
+  // Deduplicate head-to-head games (keep W rows and one row per T game) for blowout / closest.
+  const seenPairs = new Set<string>();
+  const gameRows: FantasyMatchup[] = [];
+  for (const m of weekMatchups) {
+    if (m.opponent_id == null) continue;
+    if (m.result !== "W" && m.result !== "T") continue;
+    const pk = pairKey(m.owner_id, m.opponent_id);
+    if (seenPairs.has(pk)) continue;
+    seenPairs.add(pk);
+    gameRows.push(m);
+  }
+  const withMargin = gameRows.map((m) => ({
     winner_id: m.owner_id,
     winner_name: ownerName(m.owner_id),
     loser_id: m.opponent_id as string,
     loser_name: ownerName(m.opponent_id as string),
-    margin: m.points - m.opponent_points,
+    margin: Math.abs(m.points - m.opponent_points),
     winner_points: m.points,
     loser_points: m.opponent_points,
   }));
@@ -479,24 +564,36 @@ export function computeWeeklyStats(
   const biggest_blowout = withMargin[0] ?? null;
   const closest_matchup = withMargin[withMargin.length - 1] ?? null;
 
-  // Biggest bench mistake: max(bench_pts - starter_pts_at_same_position) across all owners.
+  // Biggest bench mistake: max(bench_pts - legal_starter_pts) across all owners.
   const weekScores = playerScores.filter((p) => p.season === season && p.week === week);
   let bench_mistake = null;
   let maxDelta = -Infinity;
 
-  for (const [ownerId, matchup] of byOwner) {
+  for (const [ownerId] of byOwner) {
     const ownerScores = weekScores.filter((p) => p.owner_id === ownerId);
     const starters = ownerScores.filter((p) => p.is_starter);
     const bench = ownerScores.filter((p) => !p.is_starter && p.points > 0);
 
+    // Count how many starters the owner started at each position so we only allow
+    // cross-position FLEX swaps when the starter's position exceeds its mandatory
+    // minimum (meaning at least one starter of that position occupies a FLEX slot).
+    const starterCountByPos = new Map<string, number>();
+    for (const s of starters) {
+      if (s.position) {
+        starterCountByPos.set(s.position, (starterCountByPos.get(s.position) ?? 0) + 1);
+      }
+    }
+
     for (const benchPlayer of bench) {
       const pos = benchPlayer.position;
-      // Find starters the bench player could have replaced (same position, or FLEX swap).
+      // Find starters the bench player could legally have replaced.
       const eligible = starters.filter((s) => {
-        if (!pos) return false;
+        if (!pos || !s.position) return false;
         if (s.position === pos) return true;
-        // A FLEX-eligible bench player can replace a FLEX-eligible starter.
-        if (FLEX_POSITIONS.has(pos) && s.position && FLEX_POSITIONS.has(s.position)) return true;
+        if (FLEX_POSITIONS.has(pos) && FLEX_POSITIONS.has(s.position)) {
+          const minRequired = MIN_STARTERS_BY_POSITION[s.position] ?? 1;
+          return (starterCountByPos.get(s.position) ?? 0) > minRequired;
+        }
         return false;
       });
       if (eligible.length === 0) continue;
@@ -552,6 +649,22 @@ export function buildRivalries(
   owners: FantasyOwner[],
   leagues: FantasyLeague[],
 ): Rivalry[] {
+  // Build lookup of verified Winners Bracket playoff matchups per season so
+  // Losers Bracket (Toilet Bowl) consolation games in Weeks 15–17 are excluded.
+  const winnersBracketPairsBySeason = new Map<number, Set<string>>();
+  for (const l of leagues) {
+    if (!l.winners_bracket || l.winners_bracket.length === 0) continue;
+    const playoffStart = l.playoff_week_start ?? 15;
+    const pairs = new Set<string>();
+    for (const b of l.winners_bracket) {
+      if (b.t1 && b.t2) {
+        const week = playoffStart + (b.r - 1);
+        pairs.add(`${week}|${pairKey(b.t1, b.t2)}`);
+      }
+    }
+    winnersBracketPairsBySeason.set(l.season, pairs);
+  }
+
   // Dedupe matchups: each game appears twice (once per owner). Keep one row
   // per (season, week, canonical-pair-key), with A = lexicographically smaller
   // user_id so the perspective is stable across the dataset.
@@ -559,8 +672,23 @@ export function buildRivalries(
   const seen = new Map<string, DedupedGame>();
   for (const m of matchups) {
     if (m.opponent_id == null) continue;
-    const key = `${m.season}|${m.week}|${pairKey(m.owner_id, m.opponent_id)}`;
+    const pk = pairKey(m.owner_id, m.opponent_id);
+    const key = `${m.season}|${m.week}|${pk}`;
     if (seen.has(key)) continue;
+
+    const reg = isRegularSeason(m.season, m.week, leagues);
+    let is_playoff = !reg;
+    if (!reg) {
+      const wbSet = winnersBracketPairsBySeason.get(m.season);
+      if (wbSet) {
+        // When winners_bracket is populated for this season, skip Losers Bracket
+        // (Toilet Bowl) games altogether so meaningless consolation games don't
+        // distort H2H records or get a 3x playoff heat multiplier.
+        if (!wbSet.has(`${m.week}|${pk}`)) continue;
+        is_playoff = true;
+      }
+    }
+
     const aIsOwner = m.owner_id < m.opponent_id;
     const a_id = aIsOwner ? m.owner_id : m.opponent_id;
     const b_id = aIsOwner ? m.opponent_id : m.owner_id;
@@ -573,7 +701,7 @@ export function buildRivalries(
       b_id,
       season: m.season,
       week: m.week,
-      is_playoff: !isRegularSeason(m.season, m.week, leagues),
+      is_playoff,
       a_points,
       b_points,
       winner,
@@ -716,11 +844,25 @@ const GRADED_POSITIONS = new Set(["QB", "RB", "WR", "TE"]);
 // Number of starters per position per team (12-team standard scoring).
 const STARTERS_PER_TEAM: Record<string, number> = { QB: 1, RB: 2, WR: 2, TE: 1 };
 
+/**
+ * Converts a 1-indexed overall `pickNumber` (Sleeper `pick_no`) into its
+ * 1-indexed within-round slot (`1..teamCount`).
+ *
+ * @param pickNumber - 1-indexed overall pick number from Sleeper (`pick_no`).
+ * @param teamCount - Number of teams in each draft round (defaults to 12).
+ * @returns 1-indexed slot within the round (`1..teamCount`).
+ */
+export function pickSlotInRound(pickNumber: number, teamCount = 12): number {
+  if (teamCount <= 0) return pickNumber;
+  return ((pickNumber - 1) % teamCount) + 1;
+}
+
 // Hybrid pick weight: round anchor (R1=1, R2=0.5, R3=0.25) × within-round
 // exponential decay (~4% per slot). Earlier picks in a round count more.
-const pickWeight = (round: number, pickNumber: number): number =>
-  (1 / Math.pow(2, round - 1)) * Math.exp(-0.04 * (pickNumber - 1));
-
+const pickWeight = (round: number, pickNumber: number, teamCount: number): number => {
+  const slot = pickSlotInRound(pickNumber, teamCount);
+  return (1 / Math.pow(2, round - 1)) * Math.exp(-0.04 * (slot - 1));
+};
 
 /**
  * Compute VOR-based draft grades for each owner in a season.
@@ -742,7 +884,10 @@ export function computeDraftGrades(
   const seasonPicks = picks.filter((p) => p.season === season);
   if (seasonPicks.length === 0) return [];
 
-  const teamCount = new Set(seasonPicks.map((p) => p.owner_id)).size;
+  const uniquePickOwners = new Set(seasonPicks.map((p) => p.owner_id)).size;
+  const maxRound = Math.max(0, ...seasonPicks.map((p) => p.round));
+  const picksPerRound = maxRound > 0 ? Math.round(seasonPicks.length / maxRound) : 0;
+  const teamCount = Math.max(uniquePickOwners, picksPerRound);
 
   // Aggregate season total per player across all rosters.
   const playerTotals = new Map<string, number>();
@@ -812,8 +957,14 @@ export function computeDraftGrades(
 
   const rows: DraftGradeRow[] = [];
   for (const [owner_id, ownerPicks] of ownerPickMap) {
-    const weightedSum = ownerPicks.reduce((s, p) => s + p.vor * pickWeight(p.round, p.pick_number), 0);
-    const totalWeight = ownerPicks.reduce((s, p) => s + pickWeight(p.round, p.pick_number), 0);
+    const weightedSum = ownerPicks.reduce(
+      (s, p) => s + p.vor * pickWeight(p.round, p.pick_number, teamCount),
+      0,
+    );
+    const totalWeight = ownerPicks.reduce(
+      (s, p) => s + pickWeight(p.round, p.pick_number, teamCount),
+      0,
+    );
     const total_vor = totalWeight > 0 ? weightedSum / totalWeight : 0;
     ownerPicks.sort((a, b) => b.vor - a.vor); // steals at top, busts at bottom
     rows.push({
