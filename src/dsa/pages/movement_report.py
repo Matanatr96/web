@@ -55,8 +55,8 @@ HITS = [None, "fh", "bh", "serve"]
 def load(project: str) -> tuple[dict, list, list, np.ndarray]:
     d = ROOT_PROJECTS / project / "movement"
     z = dict(np.load(d / "tracks.npz"))
-    return (json.loads((d / "analysis.json").read_text()), json.loads((d / "points.json").read_text()), split(z),
-            z["height"])
+    a = json.loads((d / "analysis.json").read_text()) if (d / "analysis.json").exists() else {}
+    return a, json.loads((d / "points.json").read_text()), split(z), z["height"]
 
 
 @lru_cache(maxsize=None)
@@ -92,7 +92,7 @@ def pieces(project: str, body: str = "", serve: frozenset = frozenset()) -> tupl
             rows.append(np.r_[np.ravel([c.mean(0) for c in np.array_split(lat[g0:g1], 3)]), np.log(g1 - g0)])
             hh = height[off[i] + g0:off[i] + g1]
             out.append({"syl": int(st[g0]) if share[st[g0]] > RARE else -1, "point": i, "g0": int(g0), "g1": int(g1),
-                        "year": p["year"], "vel": k["vel"][g0:g1].mean(0), "speed": float(k["speed"][g0:g1].mean()),
+                        "year": p["year"], "player": p["player"], "vel": k["vel"][g0:g1].mean(0), "speed": float(k["speed"][g0:g1].mean()),
                         "width": float(np.nanmean(ank[g0:g1])) if np.isfinite(ank[g0:g1]).any() else np.nan,
                         "height": float(np.nanmedian(hh) if np.isfinite(hh).any()
                                         else np.nanmedian(height[off[i]:off[i + 1]])),
@@ -169,8 +169,18 @@ def name(d: dict) -> tuple[str, str]:
     return f"{verb} {way}{into}", group
 
 
-def opponent(project: str, video: str) -> str:
-    return PROJECTS[project]["videos"][video][1].split(" vs ")[1].split(",")[0]
+def mine(project: str, p: dict) -> bool:
+    """A point of the project's player(s): his (a project player), or one of the listed players' (not opponents)."""
+    return p["his"] if "who" in PROJECTS[project] else p["player"] in PROJECTS[project]["players"]
+
+
+def opponent(project: str, video: str, player: str = "") -> str:
+    """From the match title ("..., R3 vs Blake" for a project player; "..., Rublev vs Tiafoe" otherwise: the other)."""
+    title = PROJECTS[project]["videos"][video][1]
+    if "who" in PROJECTS[project]:
+        return title.split(" vs ")[1].split(",")[0]
+    a, b = title.split(", ")[-1].split(" vs ")
+    return a if player.split()[-1] == b else b
 
 
 @lru_cache(maxsize=None)
@@ -183,7 +193,7 @@ def windows(project: str) -> dict[str, list[tuple[int, int, int]]]:
     _, points, tracks, _ = load(project)
     out: dict[str, list] = {}
     for i, p in enumerate(points):
-        if p["his"]:
+        if mine(project, p):
             n = int(round((len(tracks[i][0]) - 1) / HZ * fps_of(project, p["video"]))) + 1
             out.setdefault(p["video"], []).append((i, p["frame"], n))
     return out
@@ -222,15 +232,17 @@ def export(project: str, out: Path, videos: bool = True, only: list[str] | None 
         for i, _, n in win[v]:
             pose = tracks[i][0][::HZ // POSE_HZ][:, KEEP, :2]
             q = np.where(np.isfinite(pose), np.round(pose * SCALE), -32768).astype(np.int16)
-            pts[i] = {"v": vids.index(v), "t0": round(t, 4), "off": at, "n": len(q), "opp": opponent(project, v),
-                      "year": points[i]["year"]}
+            pts[i] = {"v": vids.index(v), "t0": round(t, 4), "off": at, "n": len(q),
+                      "opp": opponent(project, v, points[i]["player"]), "year": points[i]["year"],
+                      "who": points[i]["player"]}
             chunks.append(q)
             at += len(q)
             t += n / fps_of(project, v)
     np.concatenate(chunks).tofile(out / "pose.bin")
 
     base = {"videos": vids, "pose_hz": POSE_HZ, "hz": HZ, "scale": SCALE, "joints": len(KEEP), "bones": BONES,
-            "points": {str(i): p for i, p in pts.items()}}
+            "points": {str(i): p for i, p in pts.items()},
+            "players": [] if "who" in PROJECTS[project] else PROJECTS[project]["players"]}
     if (ROOT_PROJECTS / project / "movement" / "syllables_lower.npz").exists():
         level(project, "lower", base, out / "data_lower.json", seed)
     shutil.copy(Path(__file__).with_name("movement_explorer.js"), out / "explorer.js")
@@ -266,9 +278,12 @@ def level(project: str, body: str, base: dict, path: Path, seed: int) -> dict:
     # syllables: the map is for display only, the clusters are the syllables; UMAP is not told them, so how well
     # each syllable holds together on the map is an honest check
     Y = spread(umap.UMAP(n_neighbors=30, min_dist=0.0, random_state=seed).fit_transform(X))
+    cols = columns(ps, Y, lab)
+    if base["players"]:
+        cols["player"] = [base["players"].index(x["player"]) for x in ps]
     path.write_text(json.dumps(
         {**base, "groups": groups, "first": "Ready stance", "clusters": cluster_list(kinds, order, Y, lab),
-         "pieces": columns(ps, Y, lab)},
+         "pieces": cols},
         separators=(",", ":"), allow_nan=False))
     return {"pieces": len(ps), "syllables": len(set(lab) - {-1}) + max(len(serve) - 1, 0), "serve": len(serve),
             "ps": ps, "kinds": kinds}
@@ -313,9 +328,10 @@ def section(project: str, out: Path, videos: bool = True) -> tuple[str, str]:
     """The steps of how the explorer was made, for the page's methods, and the explorer's HTML."""
     info = export(project, out / "explorer", videos)
     ps = info["ps"]
+    many = "who" not in PROJECTS[project]                    # many players: colour and filter by player too
     dur = np.array([(x["g1"] - x["g0"]) / HZ for x in ps])
     method = [                                  # HTML: one plain line each
-        f'His movement was split into short, repeated movements ("syllables") with '
+        f'{"Their" if many else "His"} movement was split into short, repeated movements ("syllables") with '
         f'<a href="https://doi.org/10.1038/s41592-024-02318-2">keypoint-MoSeq</a>, from his joints alone. It found '
         f"{info['syllables']}; a typical one lasts {np.median(dur):.1f} s.",
         "The serve was over-segmented into several syllables in a row, so they were merged into one, Serve.",
@@ -328,7 +344,7 @@ def section(project: str, out: Path, videos: bool = True) -> tuple[str, str]:
     one = lambda src, unit, label: f"""\
 <div class="explorer" data-src="{src}" data-unit="{unit}">
   <div class="ex-bar">
-    <div class="ex-ctl"><span class="ex-lab">Colour by</span>{seg("ex-colour", [("cluster", label), ("year", "Year"), ("speed", "Speed")])}</div>
+    <div class="ex-ctl"><span class="ex-lab">Colour by</span>{seg("ex-colour", [("cluster", label)] + ([("player", "Player")] if many else []) + [("year", "Year"), ("speed", "Speed")])}</div>
     <div class="ex-ctl ex-filter">
       <div class="ex-range"><div class="dual"><div class="track"><div class="fill"></div></div>
         <input type="range" class="ex-y0" aria-label="From"><input type="range" class="ex-y1" aria-label="To"></div>

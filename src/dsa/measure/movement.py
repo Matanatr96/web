@@ -31,6 +31,7 @@ from dsa.ingest.projects import PROJECTS, pair
 from dsa.measure.shots import player_of
 from dsa.measure.technique import JOINTS, MIRROR, lefty
 from dsa.paths import PROJECTS as ROOT_PROJECTS
+from dsa.paths import video_dir
 from dsa.scene import clean
 from dsa.scene.court import METRE, MID, NEAR, homography
 
@@ -105,7 +106,8 @@ def track(spec: str) -> list[dict]:
 
 
 def extract(project: str) -> None:
-    specs = [f"{project}/{v}" for v in PROJECTS[project]["videos"]]
+    specs = [f"{project}/{v}" for v in PROJECTS[project]["videos"]
+             if (video_dir(f"{project}/{v}") / "names.json").exists()]   # through step 4 (not a piece still running)
     points = []
     with ProcessPoolExecutor(6) as ex:
         for spec, ps in zip(specs, ex.map(track, specs)):

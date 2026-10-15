@@ -71,8 +71,11 @@ def fit(coords: dict, confs: dict, seed: int = 0, body: str = "") -> dict:
 
 
 def main(project: str, body: str = "", seed: int = 0) -> None:
+    from dsa.ingest.projects import PROJECTS as CATALOG
     from dsa.paths import PROJECTS
 
+    mine = "who" in CATALOG[project]             # a project player: his points only
+    listed = set(CATALOG[project].get("players", []))   # a project of many players: theirs, not their opponents'
     d = PROJECTS / project / "movement"
     z = np.load(d / "tracks.npz")
     points = json.loads((d / "points.json").read_text())
@@ -80,7 +83,7 @@ def main(project: str, body: str = "", seed: int = 0) -> None:
     coords, confs = {}, {}
     for i, p in enumerate(points):
         a = pose[off[i]:off[i + 1]].astype(float)
-        if not p["his"] or len(a) < HZ:
+        if (mine and not p["his"]) or (listed and p["player"] not in listed) or len(a) < HZ:
             continue
         xy = a[..., :2]               # in his torso lengths x 100 about his hips, so camera zoom doesn't matter
         torso = np.nanmedian(np.linalg.norm(xy[:, 1:3].mean(1) - xy[:, 7:9].mean(1), axis=-1))
@@ -88,6 +91,8 @@ def main(project: str, body: str = "", seed: int = 0) -> None:
         coords[f"p{i}"] = ((xy - np.nanmedian(xy[:, 7:9].mean(1), 0)) / torso * 100)[:, use].astype(np.float32)
         confs[f"p{i}"] = np.clip(np.nan_to_num(a[..., 2]) / CONF, 0, 1)[:, use].astype(np.float32)
     print(len(coords), "points,", sum(len(v) for v in coords.values()), "frames", flush=True)
+    if not coords:
+        raise SystemExit("no points to fit (dsa.measure.movement extract first)")
 
     with modal.enable_output(), app.run():
         res = fit.remote(coords, confs, seed, body)

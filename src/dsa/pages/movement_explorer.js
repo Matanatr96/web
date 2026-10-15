@@ -10,6 +10,9 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
   const POSE = new Int16Array(buf), P = D.pieces, N = P.x.length, J = D.joints;
   const CL = new Map(D.clusters.map(c => [c.id, c]));
   const YEARS = [...new Set(P.year)].sort((a, b) => a - b), Y0 = YEARS[0], Y1 = YEARS[YEARS.length - 1];
+  const PLAYERS = (D.players || []).map(n => n.split(" ").slice(-1)[0]);
+  const PL_COL = ["#e6194b", "#3cb44b", "#4363d8", "#f58231", "#911eb4", "#42d4f4", "#f032e6", "#9a6324", "#808000",
+                  "#2f4f9f", "#469990", "#c9a227"];
   const HIT_NAMES = ["No shot", "Forehand", "Backhand", "Serve"], HIT_COL = ["#c4c4cc", "#f28e2b", "#4e79a7", "#59a14f"];
   const GREY = "#d0d0d6", PAD = 0.35, CROWD = 150, NEAR = 150, SLOW = 0.5, HOLD = 0.7;
   const $ = s => root.querySelector(s);
@@ -25,6 +28,7 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
     return d3.interpolateRgb(GREY, d3.hsl((ang + 360) % 360, 0.8, 0.45) + "")(Math.min(1, v / 2));
   };
   const colourOf = i => ({ cluster: () => CL.get(P.c[i])?.colour ?? GREY, year: () => yearCol(P.year[i]),
+                           player: () => PL_COL[P.player[i] % PL_COL.length],
                            hit: () => HIT_COL[P.hit[i]], speed: () => speedCol(P.speed[i]), dir: () => dirCol(i) })[S.colour]();
   let COL = [], GROUPS = new Map();
   const VIS = new Uint8Array(N);
@@ -36,14 +40,15 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
   const SPD = Math.ceil(d3.quantile(P.speed, 0.99) * 2) / 2, DIRS = ["right", "forward", "left", "back", "still"];
   const DIR = Uint8Array.from({ length: N }, (_, i) => Math.hypot(P.vd[i], P.vl[i]) < 0.5 ? 4
     : Math.round(((Math.atan2(-P.vd[i], P.vl[i]) * 180 / Math.PI + 360) % 360) / 90) % 4);
-  const FILTER0 = () => ({ year: [Y0, Y1], speed: [0, SPD], hit: new Set([0, 1, 2, 3]), dir: new Set([0, 1, 2, 3, 4]) });
+  const FILTER0 = () => ({ year: [Y0, Y1], speed: [0, SPD], hit: new Set([0, 1, 2, 3]), dir: new Set([0, 1, 2, 3, 4]),
+                           player: new Set(PLAYERS.map((_, k) => k)) });
   let F = FILTER0();
   function refilter() {
     const m = S.colour, [lo, hi] = F[m] instanceof Array ? F[m] : [];
     for (let i = 0; i < N; i++)
       VIS[i] = m === "year" ? P.year[i] >= lo && P.year[i] <= hi
         : m === "speed" ? P.speed[i] >= lo && (P.speed[i] <= hi || hi >= SPD)
-        : m === "hit" ? F.hit.has(P.hit[i]) : m === "dir" ? F.dir.has(DIR[i]) : 1;
+        : m === "hit" ? F.hit.has(P.hit[i]) : m === "player" ? F.player.has(P.player[i]) : m === "dir" ? F.dir.has(DIR[i]) : 1;
   }
 
   // ---- poses: his joints in image px at pose_hz through each point
@@ -227,7 +232,7 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
     hover = i;
     if (i < 0) { tip.style.display = "none"; return; }
     const pt = D.points[P.point[i]];
-    tip.textContent = `${CL.get(P.c[i])?.name ?? "Rare syllable"} · ${pt.year} vs ${pt.opp}`;
+    tip.textContent = `${CL.get(P.c[i])?.name ?? "Rare syllable"} · ${pt.who && PLAYERS.length ? pt.who.split(" ").slice(-1)[0] + " · " : ""}${pt.year} vs ${pt.opp}`;
     tip.style.display = "block"; tip.style.left = Math.min(x + 14, W - 260) + "px"; tip.style.top = (y + 12) + "px";
   });
   canvas.addEventListener("pointerup", () => {
@@ -309,7 +314,7 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
     el.className = "ex-clip" + (me ? " me" : "");
     const video = document.createElement("video"), cv = document.createElement("canvas"), lab = document.createElement("span");
     video.muted = true; video.playsInline = true; video.preload = "auto";
-    lab.textContent = `${pt.year} · vs ${pt.opp}`;
+    lab.textContent = `${pt.who && PLAYERS.length ? pt.who.split(" ").slice(-1)[0] + " · " : ""}${pt.year} · vs ${pt.opp}`;
     el.append(video, cv, lab); clipsEl.appendChild(el);
     // a still crop around everywhere he goes in the clip, 4:3
     const xs = [], ys = [], talls = [];
@@ -454,6 +459,7 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
       cluster: P.c.includes(-1) ? `<i style="background:${GREY};margin-left:0"></i>rare ${UNIT}` : "",
       year: grad(yearCol, Y0, Y1, Y0, Y1),
       hit: HIT_NAMES.map((n, k) => `<i style="background:${HIT_COL[k]}${k ? "" : ";margin-left:0"}"></i>${n}`).join(""),
+      player: "",
       speed: grad(speedCol, 0, 4, "still", "4 m/s"),
       dir: ["right", "forward", "left", "back"].map((n, k) => `<i style="background:${d3.hsl(k * 90, 0.8, 0.45)}${k ? "" : ";margin-left:0"}"></i>${n}`).join("") + `<i style="background:${GREY}"></i>still`,
     }[S.colour];
@@ -474,16 +480,16 @@ document.querySelectorAll(".explorer[data-src]").forEach(root => (async () => {
   function setFilter() {
     const m = S.colour;
     rangeEl.style.display = RANGES[m] ? "" : "none";
-    chipsEl.style.display = m === "hit" || m === "dir" ? "" : "none";
+    chipsEl.style.display = m === "hit" || m === "dir" || m === "player" ? "" : "none";
     filterEl.style.display = m === "cluster" ? "none" : "";        // colour by syllable: nothing to filter
     if (RANGES[m]) {
       const R = RANGES[m];
       for (const el of [y0, y1]) { el.min = R.lo; el.max = R.hi; el.step = R.step; }
       [y0.value, y1.value] = F[m]; range();
     }
-    if (m === "hit" || m === "dir") {
-      const names = m === "hit" ? HIT_NAMES : DIRS.map(d => d[0].toUpperCase() + d.slice(1));
-      const cols = m === "hit" ? HIT_COL : [0, 1, 2, 3].map(k => d3.hsl(k * 90, 0.8, 0.45) + "").concat(GREY);
+    if (m === "hit" || m === "dir" || m === "player") {
+      const names = m === "hit" ? HIT_NAMES : m === "player" ? PLAYERS : DIRS.map(d => d[0].toUpperCase() + d.slice(1));
+      const cols = m === "hit" ? HIT_COL : m === "player" ? PL_COL : [0, 1, 2, 3].map(k => d3.hsl(k * 90, 0.8, 0.45) + "").concat(GREY);
       chipsEl.innerHTML = names.map((n, k) => `<button data-k="${k}" aria-pressed="${F[m].has(k)}"><i style="background:${cols[k]}"></i>${n}</button>`).join("");
       chipsEl.querySelectorAll("button").forEach(b => b.onclick = () => {
         const k = +b.dataset.k, on = F[m].has(k);

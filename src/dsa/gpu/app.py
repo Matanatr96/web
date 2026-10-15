@@ -22,6 +22,7 @@ import time
 import numpy as np
 
 from dsa.gpu.process import plan, process
+from dsa.ingest.projects import PROJECTS
 from dsa.paths import ROOT, video_dir
 
 try:
@@ -160,7 +161,8 @@ if modal is not None:
             todo[v] = (lengths, fps)
             is_tv = tv or name == "kept.mp4"
             have = set() if seconds else listing(str(rel))
-            s = is_tv and str(rel / "strokes/scores.npz") not in have
+            on = is_tv or PROJECTS[v.split("/")[0]].get("strokes", False)   # F3ED: TV, or a project that asks
+            s = on and str(rel / "strokes/scores.npz") not in have
             p = str(rel / "raw.npz") not in have
             if s or p:
                 jobs.append((v, rel, name, lengths, fps, is_tv, s, p))

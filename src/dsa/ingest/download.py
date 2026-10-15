@@ -9,19 +9,23 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
-from dsa.ingest.projects import PROJECTS
+from dsa.ingest.projects import MORE, PROJECTS
 from dsa.paths import ROOT, video_dir
 
 
 def upload(spec: str) -> Path:
-    """Where the video's whole YouTube upload is kept (projects that keep them: quiz, atp_hardcourt)."""
+    """Where the video's whole YouTube upload is kept (projects that keep them: quiz, atp_hardcourt); one another
+    project downloaded already is used from there."""
     project, video = spec.split("/")
-    return ROOT / "raw" / project / f"{PROJECTS[project]['videos'][video][0]}.mp4"
+    yt = PROJECTS[project]["videos"][video][0]
+    own = ROOT / "raw" / project / f"{yt}.mp4"
+    return own if own.exists() else next((ROOT / "raw").glob(f"*/{yt}.mp4"), own)
 
 
 FORMAT = "bv*[height<=720][ext=mp4]"
@@ -38,6 +42,13 @@ def stream(yt: str) -> str:
                           text=True).stdout.split()[0]
 
 
+def fetch(yt: str, full: Path) -> None:
+    """The whole upload to `full` (one at a time: YouTube blocks bursts)."""
+    full.parent.mkdir(parents=True, exist_ok=True)
+    subprocess.run([sys.executable, "-m", "yt_dlp", "--no-warnings", *JS, "-f", FORMAT, "-N", "8",
+                    "-o", str(full), f"https://www.youtube.com/watch?v={yt}"], check=True)
+
+
 def start(spec: str) -> int:
     """The second play starts in a YouTube upload (after walk-ons, coin toss and warm-up), from a frame every
     EVERY s of its first LOOK s, read by Opus. Frames in raw/starts/<id>/."""
@@ -46,10 +57,13 @@ def start(spec: str) -> int:
     from dsa.opus import ask
 
     project, video = spec.split("/")
-    yt, match = PROJECTS[project]["videos"][video][:2]
+    yt, match = (PROJECTS[project]["videos"].get(video) or MORE[video])[:2]
     out = ROOT / "raw/starts" / yt
     out.mkdir(parents=True, exist_ok=True)
-    url, ts = stream(yt), range(0, LOOK + 1, EVERY)
+    if (out / "start.json").exists():
+        return json.loads((out / "start.json").read_text())["start"]
+    whole = next((ROOT / "raw").glob(f"*/{yt}.mp4"), None)       # read from the upload on disk when it's there
+    url, ts = str(whole) if whole else stream(yt), range(0, LOOK + 1, EVERY)
     def grab(t):                        # a stalled read gives up; the frame is then left out
         try:
             subprocess.run(["ffmpeg", "-v", "error", "-y", "-rw_timeout", "20000000", "-ss", str(t), "-i", url,
@@ -71,6 +85,7 @@ def start(spec: str) -> int:
                f"rallying back and forth before the match, no score shown). Answer its k.", imgs, schema,
                out / "cache")
     print(spec, "starts at", ts[a["first"]], "s:", a["why"])
+    (out / "start.json").write_text(json.dumps({"start": ts[a["first"]], "why": a["why"]}))
     return ts[a["first"]]
 
 
@@ -88,6 +103,15 @@ def get(spec: str) -> None:
     if project == "tests":
         src, start_s = p["videos"][video]
         cut(src, start_s, p["seconds"], out)
+        return
+    if project == "own":
+        src, _, start_s, seconds = p["videos"][video]
+        if src.startswith("yt:"):                   # one of ours on YouTube: the whole upload to raw/own/ first
+            full = ROOT / "raw" / project / f"{src[3:]}.mp4"
+            if not full.exists():
+                fetch(src[3:], full)
+            src = str(full)
+        cut(src, start_s, seconds or 10 ** 6, out)
         return
     info = p["videos"][video]
     at = 0
@@ -109,13 +133,11 @@ def get(spec: str) -> None:
             seconds = info[4]
         else:
             at, seconds = info[2], info[3]
-            if at is None:
-                sys.exit(f"{spec}: no start yet (python -m dsa.ingest.download start {spec})")
         full = upload(spec)
-        full.parent.mkdir(parents=True, exist_ok=True)
         if not full.exists():
-            subprocess.run([sys.executable, "-m", "yt_dlp", "--no-warnings", *JS, "-f", FORMAT, "-N", "8",
-                            "-o", str(full), f"https://www.youtube.com/watch?v={info[0]}"], check=True)
+            fetch(info[0], full)
+        if at is None:                              # where play starts, read from the upload now on disk
+            at = start(spec)
     # F3ED (step 2) finds hits at 25-30 fps: 50 / 60 fps uploads are halved
     fps = probe(str(full))[0]
     # re-encoded when halved, and when cut from inside an upload: copied from there, the file's frame count

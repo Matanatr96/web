@@ -31,9 +31,10 @@ def _band(img, y0, y1, alpha=0.55):
     img[y0:y1] = (img[y0:y1] * (1 - alpha)).astype(np.uint8)
 
 
-def _frames(spec: str, frame: int, fps: float, t0: float) -> dict[int, np.ndarray]:
-    cap = cv2.VideoCapture(str(video_dir(spec) / "kept.mp4"))
-    a, b = frame + int(np.floor(t0 * fps)) - 1, frame + int(np.ceil(T1 * fps)) + 1
+def _frames(spec: str, frame: int, fps: float, t0: float, t1: float = T1) -> dict[int, np.ndarray]:
+    d = video_dir(spec)
+    cap = cv2.VideoCapture(str(d / "kept.mp4" if (d / "kept.mp4").exists() else d / "source.mp4"))   # phone: no cut
+    a, b = frame + int(np.floor(t0 * fps)) - 1, frame + int(np.ceil(t1 * fps)) + 1
     cap.set(cv2.CAP_PROP_POS_FRAMES, max(a, 0))
     out = {}
     for g in range(max(a, 0), b + 1):
@@ -44,17 +45,18 @@ def _frames(spec: str, frame: int, fps: float, t0: float) -> dict[int, np.ndarra
     return out
 
 
-def _panel(project: str, s: dict, kind: str, moment: float, t0: float) -> list[np.ndarray]:
-    """One stroke's frames at HZ from t0 to T1 (the measured moment held), drawn."""
-    spec = f"{project}/{s['video']}"
+def _panel(project: str, s: dict, kind: str, moment: float, t0: float, t1: float = T1,
+           held: bool = True) -> list[np.ndarray]:
+    """One stroke's frames at HZ from t0 to t1 (the measured moment held, if held), drawn."""
+    spec = f"{s.get('project', project)}/{s['video']}"           # a stroke may come from another project
     fps = json.loads((video_dir(spec) / "players.json").read_text())["fps"]
-    imgs = _frames(spec, s["frame"], fps, t0)
-    pose = s["pose"]
-    zero = int(np.flatnonzero(np.isclose(GRID, 0))[0])
-    ts = np.round(np.arange(t0, T1 + 1e-9, 1 / HZ), 4)
+    imgs = _frames(spec, s["frame"], fps, t0, t1)
+    pose, hz = s["pose"], s.get("hz", HZ)              # the pose's time grid: GRID's span at hz
+    zero = int(round(-GRID[0] * hz))
+    ts = np.round(np.arange(t0, t1 + 1e-9, 1 / hz), 4)
     # the crop follows his hips (smoothed), sized to his height, so he stays large while he runs
     def hip_at(t):
-        q = pose[zero + int(round(t * HZ)), 7:9, :2].mean(0)
+        q = pose[zero + int(round(t * hz)), 7:9, :2].mean(0)
         return q if np.isfinite(q).all() else None
     hips = np.array([hip_at(t) if hip_at(t) is not None else [np.nan, np.nan] for t in ts], float)
     for c in range(2):
@@ -62,15 +64,18 @@ def _panel(project: str, s: dict, kind: str, moment: float, t0: float) -> list[n
         hips[:, c] = np.interp(np.arange(len(ts)), np.flatnonzero(ok_), hips[ok_, c])
     k = np.ones(7) / 7
     hips = np.stack([np.convolve(np.pad(hips[:, c], 3, mode="edge"), k, "valid") for c in range(2)], 1)
-    tall = np.nanmedian([np.nanmax(pose[zero + int(round(t * HZ)), :, 1]) - np.nanmin(pose[zero + int(round(t * HZ)), :, 1])
+    tall = np.nanmedian([np.nanmax(pose[zero + int(round(t * hz)), :, 1]) - np.nanmin(pose[zero + int(round(t * hz)), :, 1])
                          for t in ts])
     side = tall * 2.0
     sc = SIZE / side
     trail, out, hold = [], [], int(np.argmin(abs(ts - moment)))
     for n_, t in enumerate(ts):
         ox, oy = hips[n_, 0] - side / 2, hips[n_, 1] - side * 0.45
+        ih, iw = next(iter(imgs.values())).shape[:2]     # kept inside the picture where it fits (a phone films him
+        ox = min(max(ox, 0), iw - side) if side <= iw else ox            # near its bottom edge): no black edges
+        oy = min(max(oy, 0), ih - side) if side <= ih else oy
         P = lambda p: (int(round((p[0] - ox) * sc)), int(round((p[1] - oy) * sc)))      # noqa: E731
-        gi = zero + int(round(t * HZ))
+        gi = zero + int(round(t * hz))
         g = s["frame"] + int(round(t * fps))
         src = imgs.get(g, next(iter(imgs.values())))
         m = np.float32([[sc, 0, -ox * sc], [0, sc, -oy * sc]])
@@ -137,7 +142,7 @@ def _panel(project: str, s: dict, kind: str, moment: float, t0: float) -> list[n
         for j in range(13):
             if ok[j]:
                 cv2.circle(img, P(p[j]), 2, WHITE, -1, cv2.LINE_AA)
-        if kind in ("stance_fwd_m", "stance_side_m") and ok[11] and ok[12]:
+        if kind in ("stance_m", "stance_fwd_m", "stance_side_m") and ok[11] and ok[12]:
             cv2.line(img, P(p[11]), P(p[12]), ACCENT, 3, cv2.LINE_AA)
         bi, fi = s.get("feet", (12, 11))                 # back and front ankle
         if kind == "stance_angle" and ok[bi] and ok[fi]:
@@ -157,29 +162,45 @@ def _panel(project: str, s: dict, kind: str, moment: float, t0: float) -> list[n
         _text(img, s["label"], (12, 21), 0.5)
         if s.get("where"):
             _text(img, s["where"], (12, 41), 0.42, (200, 200, 200))
-        _text(img, f"{t:+.2f} s" if abs(t) > 0.005 else "contact", (SIZE - 78, 21), 0.5)
+        if held:
+            _text(img, f"{t:+.2f} s" if abs(t) > 0.005 else "contact", (SIZE - 78, 21), 0.5)
         if after and s.get("value_text"):
             _band(img, SIZE - 34, SIZE)
             _text(img, s["value_text"], (12, SIZE - 12), 0.5)
         out.append(img)
-        if n_ == hold:
-            out += [img] * int(HOLD * HZ * SLOW)
+        if n_ == hold and held:
+            out += [img] * int(HOLD * hz * SLOW)
     return out
 
 
-def render(project: str, early: dict, late: dict, kind: str, moment: float, out: Path, t0: float = T0) -> Path:
+def render(project: str, early: dict, late: dict, kind: str, moment: float, out: Path, t0: float = T0,
+           titles: tuple[str, str] = ("2003-07", "2017-19")) -> Path:
     a, b = _panel(project, early, kind, moment, t0), _panel(project, late, kind, moment, t0)
     n = min(len(a), len(b))
     w, h = 2 * SIZE + GAP, SIZE + BAR
     enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{w}x{h}",
-                            "-r", f"{HZ * SLOW:g}", "-i", "-", "-c:v", "libx264", "-crf", "21", "-preset", "veryfast",
+                            "-r", f"{early.get('hz', HZ) * SLOW:g}", "-i", "-", "-c:v", "libx264", "-crf", "21", "-preset", "veryfast",
                             "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)], stdin=subprocess.PIPE)
     for i in range(n):
         canvas = np.full((h, w, 3), 24, np.uint8)
         canvas[BAR:, :SIZE], canvas[BAR:, SIZE + GAP:] = a[i], b[i]
-        _text(canvas, "2003-07", (12, 23), 0.55)
-        _text(canvas, "2017-19", (SIZE + GAP + 12, 23), 0.55)
+        _text(canvas, titles[0], (12, 23), 0.55)
+        _text(canvas, titles[1], (SIZE + GAP + 12, 23), 0.55)
         enc.stdin.write(canvas.tobytes())
+    enc.stdin.close()
+    enc.wait()
+    return out
+
+
+def single(project: str, s: dict, out: Path, t0: float, t1: float) -> Path:
+    """One stroke from t0 to t1 at real speed, no hold, every frame a keyframe: a page scrubs it in step with its
+    skeleton (video time = seconds from t0)."""
+    frames = _panel(project, s, "none", 0.0, t0, t1, held=False)
+    enc = subprocess.Popen(["ffmpeg", "-v", "error", "-y", "-f", "rawvideo", "-pix_fmt", "bgr24", "-s", f"{SIZE}x{SIZE}",
+                            "-r", f"{s.get('hz', HZ):g}", "-i", "-", "-c:v", "libx264", "-crf", "24", "-preset", "veryfast",
+                            "-g", "1", "-pix_fmt", "yuv420p", "-movflags", "+faststart", str(out)], stdin=subprocess.PIPE)
+    for img in frames:
+        enc.stdin.write(img.tobytes())
     enc.stdin.close()
     enc.wait()
     return out

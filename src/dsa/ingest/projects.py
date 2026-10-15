@@ -3,7 +3,13 @@ dsa.paths.video_dir). Downloading them: dsa.ingest.download.
 """
 from __future__ import annotations
 
+import json
+import re
+
+from dsa.paths import ROOT
+
 EXTRA = 2400                            # atp_hardcourt: seconds after the first window
+PAD_S = 1800                            # atp_hardcourt: each later piece of a match (dsa.ingest.pad)
 
 PROJECTS = {
     "federer_usopen": {
@@ -72,17 +78,40 @@ PROJECTS = {
             "own_richard": ("data/raw/tennis_videos/peter_richard_202609.MOV", 1135),
         },
     },
+    "own": {
+        "what": "Our own phone sessions (30 fps, 1080p), Peter against a friend each time, for how his strokes compare "
+                "with the atp_hardcourt players'. The phone sits lower and closer than a TV camera.",
+        "who": "Peter",                  # named by hand (Opus can't know him): names.json
+        "players": ["Peter", "Richard Pham"],
+        "compare_with": "atp_hardcourt",     # dsa.measure.profiles: boxes against its players; a tab each on its page
+        "strokes": True,                 # F3ED on phone footage too (it is trained on TV: checked on a sample)
+        "no_clips": ["2025_richard"],    # the app's graphics over the picture: measured, never shown as a clip
+        # name: (recording on the external drive or "yt:<id>", match, start s, seconds kept; 0 = all)
+        "videos": {
+            # one session in three pieces (players.json ids are per piece): Peter in pink, then blue; Richard in grey,
+            # then shirtless
+            "2026_richard_a": ("data/raw/tennis_videos/peter_richard_202609.MOV", "Practice vs Richard Pham", 0, 1135),
+            "2026_richard": ("data/raw/tennis_videos/peter_richard_202609.MOV", "Practice vs Richard Pham", 1135, 1200),
+            "2026_richard_c": ("data/raw/tennis_videos/peter_richard_202609.MOV", "Practice vs Richard Pham", 2335, 0),
+            "2025_richard": ("data/raw/tennis_videos/peter_richard_20250614.mp4", "Practice vs Richard Pham", 0, 0),   # SwingVision export, points only; YouTube kbBfuwNfNj8, 60 fps
+        },
+    },
     "atp_hardcourt": {
         "what": "Today's and recent ATP players at the Australian Open and US Open (hard courts, the same "
                 "broadcasts), three to four matches each, for how their strokes and movement differ. Matches between "
                 "two listed players count for both. Full matches: a few minutes of each from where play starts.",
+        # Dimitrov dropped (too few routine backhands); his matches stay, his strokes among the others'
         "players": ["Jannik Sinner", "Carlos Alcaraz", "Novak Djokovic", "Daniil Medvedev", "Frances Tiafoe",
-                    "Alexander Zverev", "Ben Shelton", "Grigor Dimitrov", "Nick Kyrgios"],   # the test run's nine
+                    "Alexander Zverev", "Ben Shelton", "Nick Kyrgios", "Andrey Rublev", "Taylor Fritz", "Tommy Paul"],
         # the GPU step (dsa.gpu.process): skeletons at the near end only (all the analysis uses; the far end is three
         # quarters of them) and a court check every 10 frames; checked on federer_usopen to change next to nothing
         "gpu": {"near_only": True, "court_every": 10},
-        "fine": True,       # step 2b (dsa.gpu.fine): the near player's skeleton at the upload's 50 / 60 fps around each hit
+        "fine": False,      # step 2b (dsa.gpu.fine): the near player's skeleton at the upload's 50 / 60 fps around each hit;
+                            # off since fine_measures is (done for the first 17 matches' first hour)
         "hz": 60,           # dsa.measure.technique's time grid for those skeletons
+        # but only 6 of the 17 uploads are 50 / 60 fps (all US Open): measuring those from fine.npz and the rest
+        # from 25 / 30 fps would make frame rate look like style, so every match is measured at 25 / 30
+        "fine_measures": False,
         # name: (YouTube id, match, second play starts (None = not looked yet), seconds kept; 0 = all,
         # (player 1, player 2)). Names start with the year and the event (ao, uso). The 2024 US Open quarterfinal
         # ended with Dimitrov retiring hurt.
@@ -101,7 +130,6 @@ PROJECTS = {
             "2022_uso_kyrgios_medvedev": ("XdKQEuP0r5o", "US Open 2022 fourth round, Kyrgios vs Medvedev", 30, 1200, ("Nick Kyrgios", "Daniil Medvedev")),
             "2023_uso_tiafoe_shelton": ("qwg_pIJlNtI", "US Open 2023 quarterfinal, Tiafoe vs Shelton", 60, 1200, ("Frances Tiafoe", "Ben Shelton")),
             "2024_uso_tiafoe_dimitrov": ("fBBnCKcOMK4", "US Open 2024 quarterfinal, Tiafoe vs Dimitrov", 30, 1200, ("Frances Tiafoe", "Grigor Dimitrov")),
-            "2019_ao_tiafoe_dimitrov": ("1SaezKbO4iQ", "Australian Open 2019 fourth round, Tiafoe vs Dimitrov", 0, 1200, ("Frances Tiafoe", "Grigor Dimitrov")),
             "2019_uso_medvedev_dimitrov": ("mLGcEqse4H4", "US Open 2019 semifinal, Medvedev vs Dimitrov", 0, 1200, ("Daniil Medvedev", "Grigor Dimitrov")),
             "2022_uso_kyrgios_khachanov": ("mvbdH85TLV4", "US Open 2022 quarterfinal, Kyrgios vs Khachanov", 30, 1200, ("Nick Kyrgios", "Karen Khachanov")),
             "2021_ao_kyrgios_thiem": ("VqvBtbBf5qE", "Australian Open 2021 third round, Kyrgios vs Thiem", 60, 1200, ("Nick Kyrgios", "Dominic Thiem")),
@@ -154,12 +182,64 @@ PROJECTS = {
 # atp_hardcourt: minutes 20-60 of each match as its own video "<name>_b" (the first 20 are done; nothing is redone)
 _atp = PROJECTS["atp_hardcourt"]["videos"]
 for _v, (_yt, _m, _at, _s, _p) in list(_atp.items()):
-    _atp[f"{_v}_b"] = (_yt, _m, _at + _s, EXTRA, _p)
+    _atp[f"{_v}_b"] = (_yt, _m, None if _at is None else _at + _s, EXTRA, _p)
+
+# atp_hardcourt, more footage, a piece at a time (dsa.ingest.pad): more matches (their first hour) and later
+# pieces of any match, PAD_S each ("<match>_x<k>"). Only the pieces listed in PAD are part of the project.
+MORE = {
+    # in order: matches between two listed players who are short of strokes (both players' strokes count); one
+    # against someone not listed (Korda, de Minaur, Dimitrov) gives half as much for the same price: spares
+    "2024_uso_fritz_tiafoe": ("4AV40TOmfe0", "US Open 2024 semifinal, Fritz vs Tiafoe", ("Taylor Fritz", "Frances Tiafoe")),   # SSD (raw/quiz)
+    "2022_uso_rublev_tiafoe": ("OsQzOCVrSzk", "US Open 2022 quarterfinal, Rublev vs Tiafoe", ("Andrey Rublev", "Frances Tiafoe")),
+    "2023_ao_rublev_djokovic": ("GRVEHRyNNB8", "Australian Open 2023 quarterfinal, Rublev vs Djokovic", ("Andrey Rublev", "Novak Djokovic")),
+    "2021_uso_tiafoe_rublev": ("ssrxfLAB_Y8", "US Open 2021 third round, Tiafoe vs Rublev", ("Frances Tiafoe", "Andrey Rublev")),
+    "2024_uso_fritz_zverev": ("FgcirxnayKs", "US Open 2024 quarterfinal, Fritz vs Zverev", ("Taylor Fritz", "Alexander Zverev")),
+    "2024_ao_djokovic_fritz": ("ZarYCPgfCQA", "Australian Open 2024 quarterfinal, Djokovic vs Fritz", ("Novak Djokovic", "Taylor Fritz")),
+    "2023_ao_shelton_paul": ("KMflCz1WDpA", "Australian Open 2023 quarterfinal, Shelton vs Paul", ("Ben Shelton", "Tommy Paul")),
+    "2023_ao_djokovic_paul": ("7dSqbzWPxek", "Australian Open 2023 semifinal, Djokovic vs Paul", ("Novak Djokovic", "Tommy Paul")),
+    "2025_ao_paul_zverev": ("udi_GsVOefY", "Australian Open 2025 quarterfinal, Paul vs Zverev", ("Tommy Paul", "Alexander Zverev")),
+    "2023_uso_paul_shelton": ("fy2W6WHf5eQ", "US Open 2023 fourth round, Paul vs Shelton", ("Tommy Paul", "Ben Shelton")),
+    "2024_uso_shelton_tiafoe": ("8MOWcvOKwlA", "US Open 2024 third round, Shelton vs Tiafoe", ("Ben Shelton", "Frances Tiafoe")),   # SSD
+    "2026_uso_zverev_shelton": ("r6iz35hizA8", "US Open 2026 final, Zverev vs Shelton", ("Alexander Zverev", "Ben Shelton")),
+    # spares (dsa.ingest.pad: only once no later piece of a match in helps)
+    "2023_uso_djokovic_fritz": ("B9iBZKUAxD8", "US Open 2023 quarterfinal, Djokovic vs Fritz", ("Novak Djokovic", "Taylor Fritz")),
+    "2022_ao_fritz_tiafoe": ("i9onbTfuNwU", "Australian Open 2022 second round, Fritz vs Tiafoe", ("Taylor Fritz", "Frances Tiafoe")),
+    "2024_uso_dimitrov_rublev": ("IDRsM8sDdTc", "US Open 2024 fourth round, Dimitrov vs Rublev", ("Grigor Dimitrov", "Andrey Rublev")),   # SSD
+    "2024_ao_deminaur_rublev": ("oWi78iQGPi8", "Australian Open 2024 fourth round, de Minaur vs Rublev", ("Alex de Minaur", "Andrey Rublev")),   # SSD
+    "2022_uso_korda_paul": ("tQd0KIzHFPE", "US Open 2022 second round, Korda vs Paul", ("Sebastian Korda", "Tommy Paul")),   # SSD
+}
+PAD = ROOT / "projects/atp_hardcourt/pad.json"           # the pieces added so far, in order
+
+
+def started(yt: str) -> int | None:
+    """Where play starts in an upload, once dsa.ingest.download start has looked (raw/starts/<id>/start.json)."""
+    f = ROOT / "raw/starts" / yt / "start.json"
+    return json.loads(f.read_text())["start"] if f.exists() else None
+
+
+def piece(name: str) -> tuple | None:
+    """A MORE match's first hour ("<match>") or a later piece of any match ("<match>_x<k>": PAD_S from the end of
+    what came before), as a video entry; a later piece is None while its match's start is unknown."""
+    base, _, k = name.partition("_x")
+    if base in MORE:
+        yt, m, p = MORE[base]
+        at, first = started(yt), 3600
+    else:
+        yt, m, at, _, p = _atp[base]
+        first = 3600                                           # minutes 0-20 and 20-60
+    if not k:                       # a start not known yet is found by dsa.ingest.download get, once downloaded
+        return (yt, m, at, first, p)
+    return None if at is None else (yt, m, at + first + (int(k) - 1) * PAD_S, PAD_S, p)
+
+
+for _v in (json.loads(PAD.read_text()) if PAD.exists() else []):
+    if (_e := piece(_v)) is not None:
+        _atp[_v] = _e
 
 
 def match(video: str) -> str:
-    """The match a video is part of (a "_b" video continues its match)."""
-    return video.removesuffix("_b")
+    """The match a video is part of (a "_b" video and the later pieces "_x<k>" (dsa.ingest.pad) continue it)."""
+    return re.sub(r"_x\d+$", "", video).removesuffix("_b")
 
 
 def pair(spec: str) -> tuple[str, str]:

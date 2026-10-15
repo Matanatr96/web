@@ -179,7 +179,8 @@ def ask_opus(video: str, frame: int, work: Path, what: str = "tennis video filme
 def phone(video: str, fps: float, n: int, work: Path) -> tuple[list[np.ndarray | None], list[str]]:
     """The court of every frame, and a line per camera position saying how it was found."""
     out: list[np.ndarray | None] = [None] * n
-    log, prev = [], None
+    log, prev, segs = [], None, []
+    work.mkdir(parents=True, exist_ok=True)
     for s0, s1 in segments(video, fps, n):
         f = min(s0 + int(2 * fps), s1 - 1)
         pts, how = None, ""
@@ -192,8 +193,22 @@ def phone(video: str, fps: float, n: int, work: Path) -> tuple[list[np.ndarray |
             how = "Opus" + (", snapped" if ok else ", as marked")
         out[s0:s1] = [pts] * (s1 - s0)
         log.append(f"{s0 / fps:.0f}-{s1 / fps:.0f} s: {how}")
+        segs.append((s0, s1, pts))
         prev = pts
+    np.savez(work / "court.npz", start=np.array([a for a, _, _ in segs]), end=np.array([b for _, b, _ in segs]),
+             points=np.array([p for _, _, p in segs], float))          # read back by dsa.scene.results
     return out, log
+
+
+def phone_saved(work: Path, n: int) -> list[np.ndarray | None] | None:
+    """The court of every frame as dsa.scene.court.phone found it (<video>/court/court.npz), or None."""
+    f = work / "court.npz"
+    if not f.exists():
+        return None
+    z, out = np.load(f), [None] * n
+    for a, b, p in zip(z["start"], z["end"], z["points"]):
+        out[int(a):int(b)] = [p] * (int(b) - int(a))
+    return out
 
 
 # --- tv -----------------------------------------------------------------------------------------------------

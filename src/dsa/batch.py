@@ -7,7 +7,7 @@ files, so the batch can be stopped and started again at any time.
   slice  dsa.ingest.download get (whole upload on disk)    source.mp4                     SLICE
   cut    modal run src/dsa/gpu/app.py --cuts   (T4)        kept.mp4, kept.json            CUT
   gpu    modal run src/dsa/gpu/app.py          (L40S)      raw.npz, strokes/              GPU
-  after  dsa.scene.run, dsa.scene.names,                   players.json, names.json,      AFTER
+  after  dsa.scene.run, dsa.scene.who (the whole match),    players.json, names.json,      AFTER
          dsa.pages.render [--plain] (first PREVIEW s)      render.mp4, render_plain.mp4
   fine   dsa.gpu.fine clip, then app.py --fine (L40S)      fine.npz (projects with "fine")  FINE
 
@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import fcntl
+import socket
 import subprocess
 import sys
 import time
@@ -30,9 +31,11 @@ from dsa.ingest.download import upload
 from dsa.ingest.projects import PROJECTS
 from dsa.paths import ROOT, video_dir
 
-GET, CUT, GPU, AFTER = 1, 2, 8, 2           # at a time; GET one: YouTube blocks bursts (docs/PIPELINE.md); cuts
+GET, CUT, GPU, AFTER = 1, 4, 6, 2           # at a time; GET one: YouTube blocks bursts (docs/PIPELINE.md); cuts
                                              # count as GPU runs too, so both together stay within the 10-GPU limit
+                                             # (cuts, the slowest step per minute of video, get the larger share)
 GET_GAP = 90                                 # seconds between download starts
+HOLD = ROOT / "logs/batch/no_youtube"        # while this file exists nothing is downloaded (gets wait)
 SLICE = 3                                    # cut from a whole upload already on disk, at a time
 FINE = 2                                     # step 2b at a time (its GPU runs count toward GPU too)
 TRIES, POLL = 2, 15                          # tries per step; seconds between looks
@@ -68,7 +71,7 @@ def command(name: str, spec: str) -> list[str]:
     if name == "fine":                      # nothing for the GPU when the upload is 25 / 30 fps (fine.json "same")
         return ["sh", "-c", f"{py} dsa.gpu.fine clip {spec} && "
                             f"if [ -f {video_dir(spec)}/fine.mp4 ]; then {' '.join(modal)} --fine; fi"]
-    return ["sh", "-c", f"{py} dsa.scene.run {spec} && {py} dsa.scene.names {spec} && "
+    return ["sh", "-c", f"{py} dsa.scene.run {spec} && {py} dsa.scene.who {spec} && "
                         f"{py} dsa.pages.render {spec} --seconds {PREVIEW} && "
                         f"{py} dsa.pages.render {spec} --plain --seconds {PREVIEW}"]
 
@@ -76,16 +79,27 @@ def command(name: str, spec: str) -> list[str]:
 # each step's processes, as pgrep sees them (from this batch or an earlier one: the GPU limit is for all)
 APP = "src/dsa/gpu/app.py"
 PATTERN = {"get": r"yt_dlp .*youtube\.com", "slice": r"dsa\.ingest\.download get ",
-           "cut": r"app\.py --videos \S+ --cuts", "gpu": r"app\.py --videos ",
-           "after": r"dsa\.(scene\.run|scene\.names|pages\.render) ",
-           "fine": r"(dsa\.gpu\.fine clip|app\.py --videos \S+ --fine)"}
+           "cut": r"app\.py --videos [^ ]+ --cuts", "gpu": r"app\.py --videos ",
+           "after": r"dsa\.(scene\.run|scene\.who|pages\.render) ",
+           "fine": r"(dsa\.gpu\.fine clip|app\.py --videos [^ ]+ --fine)"}
 
 
 def busy(spec: str) -> bool:
     """Some step is already running on `spec` (left by an earlier batch): never start it twice (a GPU run twice
     is paid twice; two cuts write the same files)."""
-    pat = rf"(dsa\.(ingest\.download get|scene\.run|scene\.names|pages\.render|gpu\.fine clip)|app\.py --videos) {spec}( |$)"
+    pat = rf"(dsa\.(ingest\.download get|scene\.run|scene\.who|pages\.render|gpu\.fine clip)|app\.py --videos) {spec}( |$)"
     return subprocess.run(["pgrep", "-f", pat], capture_output=True).returncode == 0
+
+
+def online() -> bool:
+    """YouTube and Modal can be reached (an outage made every step fail twice and be dropped; on a plane's wifi the
+    names resolved while connections to Modal failed, so a connection is made, not only a lookup)."""
+    try:
+        for host in ("www.youtube.com", "api.modal.com"):
+            socket.create_connection((host, 443), timeout=10).close()
+        return True
+    except OSError:
+        return False
 
 
 def count(name: str) -> int:
@@ -113,19 +127,24 @@ def run(project: str) -> None:
                 del running[spec]
                 if p.returncode or step(spec) == name:
                     print(f"{time.strftime('%H:%M')} {spec} {name} failed ({p.returncode})", flush=True)
-                    if tries[(spec, name)] >= TRIES:
+                    if not online():                 # the laptop lost its connection: not the step's fault
+                        tries[(spec, name)] -= 1
+                        print(f"{time.strftime('%H:%M')} offline; waiting for the network", flush=True)
+                        while not online():
+                            time.sleep(POLL)
+                    elif tries[(spec, name)] >= TRIES:
                         dropped.add(spec)
                 else:
                     print(f"{time.strftime('%H:%M')} {spec} {name} done", flush=True)
         todo = {s: step(s) for s in specs if s not in dropped}
         todo = {s: n for s, n in todo.items() if n}
-        if not todo and not running:
+        if (not todo or HOLD.exists() and set(todo.values()) == {"get"}) and not running:
             break
         for spec, name in todo.items():
             same = max(sum(n == name for n, _ in running.values()), count(name))
             if spec in running or same >= limit[name] or busy(spec):
                 continue
-            if name == "get" and time.time() - last_get < GET_GAP:
+            if name == "get" and (HOLD.exists() or time.time() - last_get < GET_GAP):
                 continue
             if name == "get":
                 last_get = time.time()

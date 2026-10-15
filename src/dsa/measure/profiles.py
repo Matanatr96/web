@@ -6,7 +6,7 @@ player); the measured camera, the event (AO / USO) and the situation regressed o
 a player's style isn't taken for camera; then each player's match gives one number, his mean. For each player and
 measure, his matches against every other player's matches by Welch's t-test, Holm over the measures within the
 player. A finding: Holm-adjusted p below ALPHA and a difference of at least MIN_SD standard deviations of the
-match means. Lengths are tested in torso lengths (camera zoom cancels) and shown in metres.
+match means. Lengths are in torso lengths (zoom and the player's size cancel).
 
 How they move (dsa.measure.movement's rally, run-to-the-ball and recovery measures) is compared the same way.
 
@@ -19,7 +19,7 @@ import json
 
 import numpy as np
 
-from dsa.ingest.projects import match
+from dsa.ingest.projects import PROJECTS, match
 from dsa.measure.technique import MEASURES, camera, prepare
 from dsa.paths import PROJECTS as ROOT_PROJECTS
 
@@ -44,6 +44,39 @@ def adjusted(f: np.ndarray, ctx: np.ndarray, cam: np.ndarray, player: np.ndarray
     cells = np.column_stack([player == p for p in dict.fromkeys(player)]).astype(float)
     beta = np.linalg.lstsq(np.column_stack([cells, nuis]), f, rcond=None)[0]
     return f - nuis @ beta[cells.shape[1]:]
+
+
+COURT = ["stance_m", "stance_side_m", "stance_fwd_m", "into_court"]      # metres on the court: made body-relative too
+
+
+def body_relative(f: np.ndarray, names: list[str], z: dict, keep: np.ndarray, lo: int, hi: int, meta: list) -> np.ndarray:
+    """Every length in his own torso lengths (mid-shoulder to mid-hip), so a tall player's long reach isn't taken for
+    style: the pose's lengths already are; the court's (metres) are divided by his torso in metres (the torso in
+    pixels over the court's pixels per metre where he stands)."""
+    px = z["pose"][keep][:, lo:hi + 1]
+    mid = lambda a, b: (px[:, :, a, :2] + px[:, :, b, :2]) / 2                            # noqa: E731
+    torso = np.nanmedian(np.linalg.norm(mid(1, 2) - mid(7, 8), axis=-1), 1)
+    ppm = np.array([(m["camera"] or {}).get("ppm", np.nan) for m in meta])
+    m = torso / ppm
+    m = np.where(np.isfinite(m), m, np.nanmedian(m))
+    g = f.copy()
+    for j, n in enumerate(names):
+        if n in COURT:
+            g[:, j] = f[:, j] / m
+    return g
+
+
+def camera_share(f: np.ndarray, ctx: np.ndarray, cam: np.ndarray, player: np.ndarray) -> np.ndarray:
+    """Per measure: the share of a player's stroke-to-stroke variation the camera explains beyond the situation
+    (each column taken around its player's mean, so it is the same player under different cameras)."""
+    def within(x):
+        x = x.copy()
+        for p in dict.fromkeys(player):
+            x[player == p] -= x[player == p].mean(0)
+        return x
+    fd, xd, cd = within(f), within(ctx), within(cam)
+    rss = lambda X: ((fd - X @ np.linalg.lstsq(X, fd, rcond=None)[0]) ** 2).sum(0)          # noqa: E731
+    return 1 - rss(np.column_stack([xd, cd])) / rss(xd)
 
 
 def event(video: np.ndarray) -> np.ndarray:
@@ -72,35 +105,45 @@ def compare(res: np.ndarray, player: np.ndarray, video: np.ndarray) -> dict:
                   "diff": (mine.mean(0) - rest.mean(0)).round(4).tolist(), "t": np.round(t.statistic, 3).tolist(),
                   "df": np.round(t.df, 1).tolist(), "p": pv.tolist(), "holm": holm(pv).tolist()}
     return {"players": out, "sd": means.std(0).round(4).tolist(), "pool": means.mean(0).round(4).tolist(),
-            "units": len(units)}
+            "units": len(units), "match_means": {"player": [str(p) for p, _ in units], "match": [str(v) for _, v in units],
+                                                 "mean": means.round(4).tolist()}}
+
+
+def box(values: np.ndarray, player: np.ndarray) -> dict:
+    """Per player and measure, over all his strokes (rows): 5th, 25th, 50th, 75th and 95th percentiles."""
+    return {str(p): np.nanpercentile(values[player == p], [5, 25, 50, 75, 95], axis=0).T.round(4).tolist()
+            for p in dict.fromkeys(player)}
 
 
 def analyse(project: str, kind: str) -> dict:
     names, lengths = list(MEASURES[kind][0]), MEASURES[kind][1]
     d = prepare(project, kind, lambda m: m["player"])
+    mine = np.array([m["player"] in PROJECTS[project]["players"] for m in d["meta"]])  # not the opponents
+    for k in ("keep", "w", "f", "ctx", "score"):
+        d[k] = d[k][mine]
+    d["meta"] = [m for m, k in zip(d["meta"], mine) if k]
     f, ctx, meta, z, lo, hi = d["f"], d["ctx"], d["meta"], d["z"], d["lo"], d["hi"]
     player = np.array([m["player"] for m in meta])
     video = np.array([match(m["video"]) for m in meta])          # one unit per player and match
-    f = np.where(np.isfinite(f), f, np.nanmedian(f, 0))
+    f = body_relative(np.where(np.isfinite(f), f, np.nanmedian(f, 0)), names, z, d["keep"], lo, hi, meta)
     ctx = np.where(np.isfinite(ctx), ctx, np.nanmedian(ctx, 0))
     cam = np.column_stack([camera(meta, d["score"], lo, hi), event(video)])
     dirs = [m["direction"] or "?" for m in meta]
     out = {"kind": kind, "features": names, "lengths": lengths, "kept": int(len(f)), "extracted": d["n"],
            "standard": d["res_std"], "alpha": ALPHA, "min_sd": MIN_SD,
            "strokes": {p: int((player == p).sum()) for p in dict.fromkeys(player)},
-           "test": compare(adjusted(f, ctx, cam, player, dirs), player, video)}
-    # lengths in metres from the court, for display
-    px = z["pose"][d["keep"]][:, lo:hi + 1]
-    mid = lambda a, b: (px[:, :, a, :2] + px[:, :, b, :2]) / 2                            # noqa: E731
-    torso = np.nanmedian(np.linalg.norm(mid(1, 2) - mid(7, 8), axis=-1), 1)
-    ppm = np.array([(m["camera"] or {}).get("ppm", np.nan) for m in meta])
-    idx = [list(names).index(n) for n in lengths]
-    if idx:
-        g = f.copy()
-        scale = torso / ppm
-        g[:, idx] = f[:, idx] * np.where(np.isfinite(scale), scale, np.nanmedian(scale))[:, None]
-        out["metres"] = compare(adjusted(g, ctx, cam, player, dirs), player, video)
+           "test": compare(adjusted(f, ctx, cam, player, dirs), player, video),
+           "camera_share": camera_share(f, ctx, cam, player).round(4).tolist()}
     findings(out["test"], names)
+    # for the page's figures: each player's average skeleton (torso units, y up, mirrored to a right-hander's
+    # forehand), and per stroke its measures as shown (lengths in torso lengths, camera and situation out)
+    out["win"] = list(d["win"])
+    out["mean_pose"] = {str(p): np.nanmean(d["w"][player == p], 0).round(4).tolist() for p in dict.fromkeys(player)}
+    shown = adjusted(f, ctx, cam, player, dirs)
+    quality = np.nanmean(d["score"][:, lo:hi + 1], (1, 2))
+    out["box"] = box(shown, player)
+    np.savez_compressed(ROOT_PROJECTS / project / "profiles" / f"{kind}_strokes.npz", hit=d["keep"], f=shown,
+                        ctx=ctx, quality=quality, player=player)
     return out
 
 
@@ -122,25 +165,59 @@ def movement(project: str) -> dict:
     off, m = np.r_[0, np.cumsum(z["lengths"])], measures(points, split(z))
     out = {}
     for table, spec in (("rally", RALLY), ("to_ball", TO_BALL), ("recover", RECOVER)):
-        idx = np.array([i for i, _ in m[table]])
-        f = np.array([v for _, v in m[table]], float)
+        rows = [(i, v) for i, v in m[table] if points[i]["player"] in PROJECTS[project]["players"]]
+        idx = np.array([i for i, _ in rows])
+        f = np.array([v for _, v in rows], float)
         f = np.where(np.isfinite(f), f, np.nanmedian(f, 0))
         meta = [points[i] for i in idx]
         cam = np.array([[p["zoom"] or np.nan, np.nanmedian(z["height"][off[i]:off[i + 1]])] for p, i in zip(meta, idx)])
         cam = np.where(np.isfinite(cam), cam, np.nanmedian(cam, 0))
         cam = np.column_stack([cam, event(np.array([p["video"] for p in meta]))])
         player = np.array([p["player"] for p in meta])
-        t = compare(adjusted(f, np.zeros((len(f), 1)), cam, player, ["?"] * len(f)), player,
-                    np.array([match(p["video"]) for p in meta]))
+        res = adjusted(f, np.zeros((len(f), 1)), cam, player, ["?"] * len(f))
+        t = compare(res, player, np.array([match(p["video"]) for p in meta]))
         findings(t, list(spec))
+        t["box"] = box(res, player)
         out[table] = {"features": list(spec), "units": {k: u for k, (u, _) in spec.items()},
                       "about": {k: a for k, (_, a) in spec.items()}, "rows": int(len(f)), "test": t}
     return out
 
 
+def guests(project: str, kind: str) -> dict:
+    """A project measured against another's players ("compare_with": our own phone sessions against
+    atp_hardcourt): its players' routine strokes as boxes in the same units as analyse's (lengths in torso lengths),
+    but with nothing regressed out: the pros' camera effects, estimated within TV broadcasts, don't carry to a
+    phone (twice the zoom, a much lower angle), so the phone's view is left in."""
+    names, lengths = list(MEASURES[kind][0]), MEASURES[kind][1]
+    d = prepare(project, kind, lambda m: m["player"])
+    f, meta, z, lo, hi = d["f"], d["meta"], d["z"], d["lo"], d["hi"]
+    player = np.array([m["player"] for m in meta])
+    g = body_relative(f, names, z, d["keep"], lo, hi, meta)
+    quality = np.nanmean(d["score"][:, lo:hi + 1], (1, 2))
+    (ROOT_PROJECTS / project / "profiles").mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(ROOT_PROJECTS / project / "profiles" / f"{kind}_strokes.npz", hit=d["keep"], f=g,
+                        ctx=d["ctx"], quality=quality, player=player)
+    cam = {p: {k: round(float(np.nanmedian([(m["camera"] or {}).get(k, np.nan) for m, q in zip(meta, player) if q == p])), 3)
+               for k in ("zoom", "angle", "tilt")} | {"height_px": round(float(np.nanmedian(
+                   [m["height"] or np.nan for m, q in zip(meta, player) if q == p])))} for p in dict.fromkeys(player)}
+    return {"kind": kind, "features": names, "lengths": lengths, "kept": int(len(f)), "extracted": d["n"],
+            "strokes": {p: int((player == p).sum()) for p in dict.fromkeys(player)},
+            "videos": {p: sorted({m["video"] for m, q in zip(meta, player) if q == p}) for p in dict.fromkeys(player)},
+            "camera": cam, "box": box(np.where(np.isfinite(g), g, np.nan), player),
+            "median": {p: np.nanmedian(g[player == p], 0).round(4).tolist() for p in dict.fromkeys(player)},
+            "win": list(d["win"]),
+            "mean_pose": {str(p): np.nanmean(d["w"][player == p], 0).round(4).tolist() for p in dict.fromkeys(player)}}
+
+
 def run(project: str) -> None:
     out_dir = ROOT_PROJECTS / project / "profiles"
     out_dir.mkdir(parents=True, exist_ok=True)
+    if PROJECTS[project].get("compare_with"):
+        for kind in KINDS:
+            r = guests(project, kind)
+            (out_dir / f"{kind}.json").write_text(json.dumps(r))
+            print(f"{kind}: {r['strokes']}", flush=True)
+        return
     for kind in KINDS:
         r = analyse(project, kind)
         (out_dir / f"{kind}.json").write_text(json.dumps(r))

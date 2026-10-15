@@ -217,3 +217,36 @@ def test_points_end_at_serves_cuts_and_pauses():
     got = points(hits, [(0, 1100), (1100, 2000)], fps=50)
     assert [p[0] for p in got] == [7, 2, 2]
     assert got[0][1:] == (25, 380) and got[2][2] == 1100                          # 1.5 s before, 2 s after, in its piece
+
+
+def _look(shirt_l, shorts_l, light=0.0):
+    """A look: grey head and shins, the shirt and shorts at the given lightness, all `light` lighter."""
+    from dsa.scene.who import PARTS, STATS, VARIANTS
+
+    look = np.full((len(PARTS), STATS), 128.0)
+    for p, l in (("torso", shirt_l), ("shorts", shorts_l)):
+        look[PARTS.index(p)] = [l, 128, 128, l - 10, l + 10]
+    look[:, [0, 3, 4]] += light
+    return np.tile(look, (len(VARIANTS), 1))
+
+
+def test_who_features_hold_in_sun_and_shade():
+    from dsa.scene.who import FEATURES, features
+
+    sun, shade = features(_look(200, 40, 0)), features(_look(200, 40, -60))
+    i = FEATURES.index("shorts L")
+    assert sun[i] == shade[i] == -160                    # black shorts under a white shirt, whatever the light
+
+
+def test_who_fit_follows_the_scoreboard_not_the_light():
+    from dsa.scene.who import fit
+
+    rng = np.random.default_rng(0)
+    units = []
+    for j in range(40):                          # black shorts (player 0) or white (player 1), in sun or shade
+        k, light = j % 2, (0 if j < 20 else -70)
+        look = _look(190 + rng.normal(0, 3), (40 if k == 0 else 190) + rng.normal(0, 3), light)
+        units.append((("v", j, 0, 89), 90, look, ("v", 0)))
+    anchors = {0: 0, 1: 1, 22: 0, 23: 1}                 # four serves read off the scoreboard
+    lab, w, d = fit(units, anchors)
+    assert all(k in (None, j % 2) for j, k in enumerate(lab)) and lab.count(None) <= 2

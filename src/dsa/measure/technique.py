@@ -23,6 +23,7 @@ import numpy as np
 from dsa.ingest.projects import PROJECTS
 from dsa.measure.shots import owners
 from dsa.paths import PROJECTS as ROOT_PROJECTS
+from dsa.paths import video_dir
 from dsa.scene import clean
 from dsa.scene.court import METRE, MID, NEAR, homography
 
@@ -36,6 +37,8 @@ def grid(hz: int = HZ) -> np.ndarray:
 
 GRID = grid()
 SMOOTH_S = 0.17                              # seconds: dsa.scene.clean's smoothing span at 30 fps, for dsa.gpu.fine's frames
+FEED = 0.3                                   # forehand / backhand: the ball seen at least this many of his heights
+                                             # above his head before contact (from the other end), else a feed
 JOINTS = [0, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16]            # dsa.gpu.models.KP: nose, then body pairs L/R
 NAMES = ["nose", "l_shoulder", "r_shoulder", "l_elbow", "r_elbow", "l_wrist", "r_wrist", "l_hip", "r_hip",
          "l_knee", "r_knee", "l_ankle", "r_ankle"]
@@ -63,7 +66,8 @@ KINDS = {                     # which hits; the front foot at contact for a righ
 def hits(spec: str, kind: str) -> tuple[list[dict], np.ndarray, np.ndarray]:
     """(meta, pose (N, len(grid), 13, 3) as x, y, score in image px, x mirrored for left-handers,
     feet (N, len(grid), 2) in court metres) for the near-court hits of `kind` in `spec`. The skeleton comes from
-    dsa.gpu.fine's 50 / 60 fps frames where the video has them (fine.npz), else from the 25 / 30 fps ones."""
+    dsa.gpu.fine's 50 / 60 fps frames where the video has them (fine.npz) and the project measures from them
+    ("fine_measures", default on), else from the 25 / 30 fps ones."""
     from dsa.scene import results
 
     project, v = spec.split("/")
@@ -71,7 +75,7 @@ def hits(spec: str, kind: str) -> tuple[list[dict], np.ndarray, np.ndarray]:
     G = grid(PROJECTS[project].get("hz", HZ))
     d = results.load(spec)
     fine = None
-    if (d["src"] / "fine.npz").exists():
+    if PROJECTS[project].get("fine_measures", True) and (d["src"] / "fine.npz").exists():
         fz, fj = np.load(d["src"] / "fine.npz"), json.loads((d["src"] / "fine.json").read_text())
         fine = {"kp": fz["kp"], "box": fz["box"], "frames": np.array(fj["frames"]), "fps": fj["fps"],
                 "ratio": fj["ratio"], "windows": fj["windows"]}
@@ -150,6 +154,16 @@ def hits(spec: str, kind: str) -> tuple[list[dict], np.ndarray, np.ndarray]:
             pose = pose[:, MIRROR]
             pose[..., 0] = -pose[..., 0]
             foot[:, 1] = -foot[:, 1]
+        if kind in ("forehand", "backhand"):         # dsa.gpu.strokes' forehand / backhand only where the contact
+            x = pose[int(np.argmin(abs(G))), :, 0]   # agrees: the hitting wrist right of the hips / the hands left
+            side = x[6] - x[7:9].mean() if kind == "forehand" else x[5:7].mean() - x[7:9].mean()
+            if np.isfinite(side) and (side > 0) != (kind == "forehand"):    # (it often swaps a left-hander's)
+                continue
+            b = pb[f][0]                             # and only a ball that came from the other end: seen above his
+            ball = d["ball"][max(lo, f - int(1.2 * fps)):f - int(0.15 * fps)]   # head in the second before, not
+            ys = ball[ball[:, 0] > 0, 2]             # a feed (dropped and hit, it never rises above him)
+            if b is not None and len(ys) and (b[1] - ys.min()) / (b[3] - b[1]) < FEED:
+                continue
         meta.append({"video": v, "year": int(v[:4]), "frame": f, "player": player, "his": player == who,
                      "lefty": lefty(player), "direction": h["direction"], "outcome": h["outcome"],
                      "shot": h["shot"], "hand": h["hand"], "technique": h["technique"],
@@ -161,7 +175,8 @@ def hits(spec: str, kind: str) -> tuple[list[dict], np.ndarray, np.ndarray]:
 
 
 def extract(project: str, kind: str) -> None:
-    specs = [f"{project}/{v}" for v in PROJECTS[project]["videos"]]
+    specs = [f"{project}/{v}" for v in PROJECTS[project]["videos"]
+             if (video_dir(f"{project}/{v}") / "names.json").exists()]   # through step 4 (not a piece still running)
     meta, poses, feet = [], [], []
     with ProcessPoolExecutor(6) as ex:
         for spec, (m, p, f) in zip(specs, ex.map(hits, specs, [kind] * len(specs))):
@@ -183,7 +198,10 @@ WIN = (-0.6, 0.4)                            # seconds analysed around the align
 QUALITY = 0.9                                # share of joint samples seen in WIN, else the stroke is left out
 STANDARD = {"depth": (-1.0, 3.0),            # routine strokes only: metres behind the baseline (- inside),
             "run": 0.8,                      # the slower share by running speed (per player group),
-            "extreme": 5.0}                  # and no measure this many robust SDs from the player's median
+            "extreme": 5.0,                  # and no measure this many robust SDs from the player's median
+            "rise": 0.3}                     # forehand / backhand: the wrist this many torso lengths higher 0.3 s
+                                             # after contact than 0.15 s before (low to high: no slices, drop shots,
+                                             # blocks or stretched defensive swings, which the labels miss)
 
 
 def era(year: int) -> int:
@@ -230,20 +248,28 @@ def angle(a, b, c) -> np.ndarray:
 
 STROKE = {                                    # name: (unit, what it measures)
     "contact_height": ("torso", "hitting wrist above the hips at contact"),
-    "contact_side": ("torso", "hitting wrist right of the hips at contact (out to the side)"),
+    "contact_side": ("torso", "hitting wrist out to the side of the hips at contact (backhand: to the backhand side)"),
     "elbow_angle": ("deg", "hitting elbow at contact (180 straight arm)"),
-    "shoulder_width": ("torso", "shoulder line as seen at contact (narrow: still side-on)"),
-    "shoulder_coil": ("torso", "narrowest shoulder line in the take-back (narrow: more turn)"),
-    "hip_coil": ("torso", "narrowest hip line in the take-back"),
-    "separation": ("torso", "hip line minus shoulder line at the shoulders' most-turned moment (hips ahead)"),
+    "shoulder_width": ("deg", "how far the shoulders have opened at contact: 0 side-on, 90 square to the net, over 90 "
+                              "past square"),
+    "shoulder_coil": ("deg", "most the shoulders turn away from the net in the take-back: 90 side-on, over 90 back "
+                             "turned past side-on"),
+    "hip_coil": ("deg", "most the hips turn away from the net in the take-back: 90 side-on"),
+    "separation": ("deg", "shoulders' turn minus the hips' at the shoulders' most-turned moment (shoulders turned "
+                          "further than the hips)"),
     "shoulder_tilt": ("deg", "shoulder line from level at contact (negative: hitting shoulder low)"),
     "knee_bend": ("deg", "most-bent knee angle in the 0.4 s before contact (lower: more bend)"),
-    "takeback": ("torso", "furthest the wrist goes right in the take-back"),
-    "swing_time": ("s", "from the wrist's furthest-back point to contact"),
+    "takeback": ("torso", "hitting wrist out to the side of the hips at the end of the take-back (the wrist's slowest "
+                          "moment before the forward swing)"),
+    "swing_time": ("s", "from the end of the take-back (the forward swing's start) to contact"),
     "wrist_speed": ("torso/s", "peak hitting-wrist speed through contact"),
     "finish_height": ("torso", "wrist above the shoulders 0.3 s after contact"),
-    "finish_side": ("torso", "wrist right of the hips 0.3 s after contact (negative: wrapped across)"),
+    "finish_side": ("torso", "wrist out to the hitting side of the hips 0.3 s after contact (negative: wrapped across the body)"),
     "head_still": ("torso", "head movement relative to the hips in the 0.2 s around contact"),
+    "finish_arm": ("deg", "hitting arm (shoulder to wrist) from upright 0.3 s after contact, seen from behind (positive: "
+                          "out to the hitting side, negative: across the body, beyond -90 below the shoulder)"),
+    "finish_open": ("deg", "how far the shoulders have opened 0.3 s after contact: 0 side-on, 90 square, over 90 past"),
+    "takeback_turn": ("deg", "shoulder turn from square at the forward swing's start: 0 square, 90 side-on"),
     "stance_m": ("m", "feet apart at contact, both ankles mapped onto the court surface through its lines"),
     "stance_side_m": ("m", "feet apart sideways (along the baseline) at contact, on the court surface"),
     "stance_fwd_m": ("m", "front foot ahead of the back foot toward the net at contact, on the court surface "
@@ -262,18 +288,24 @@ def ground(stance: dict | None, k: str) -> float:
     if k == "stance_angle":
         return float(np.degrees(np.arctan2(stance["stance_fwd_m"], stance["stance_side_m"])))
     return stance[k]
-STROKE_LENGTHS = ["contact_height", "contact_side", "shoulder_width", "shoulder_coil", "hip_coil", "separation", "takeback",
+STROKE_LENGTHS = ["contact_height", "contact_side", "takeback",
            "wrist_speed", "finish_height", "finish_side", "head_still"]       # in torso lengths: depend on the scale          # from the court, not the pose: appended last
 SERVE = {
     "reach": ("torso", "hitting wrist above the ankles at contact"),
     "toss_arm": ("torso", "tossing wrist's highest point above the head before contact"),
+    "toss_straight": ("deg", "tossing elbow at the tossing wrist's highest point (180 straight arm)"),
+    "toss_tilt": ("deg", "tossing arm (shoulder to wrist) from vertical at its highest point, seen from behind "
+                         "(positive: leaning in over the head, negative: out to the side)"),
     "trophy_time": ("s", "from the tossing wrist's highest point to contact"),
     "trophy_tilt": ("deg", "shoulder line from level when the tossing wrist is highest (tossing shoulder up)"),
     "lean": ("torso", "shoulders right of the ankles at contact, seen from behind"),
+    "trunk_lean": ("deg", "trunk (mid-hip to mid-shoulder) from upright at contact, seen from behind (positive: to the "
+                          "tossing side)"),
+    "hips_over": ("torso", "hips right of the ankles at contact, seen from behind"),
     "wrist_speed": ("torso/s", "peak hitting-wrist speed through contact"),
     "into_court": ("m", "how far his feet travel toward the net from 0.6 s before to 0.4 s after contact, on the court"),
 }
-SERVE_LENGTHS = ["reach", "toss_arm", "lean", "wrist_speed"]
+SERVE_LENGTHS = ["reach", "toss_arm", "lean", "hips_over", "wrist_speed"]
 RALLY = {
     "depth": ("m", "where his feet are at contact: metres behind the baseline, on the court"),
     "run_speed": ("m/s", "how fast his feet move on the court from 0.5 to 0.1 s before contact"),
@@ -286,28 +318,76 @@ CAMERA = ["zoom", "angle", "tilt", "baseline_y", "quality"]
 CONTEXT = ["depth", "lateral", "run_speed"]
 
 
+def turn(w: np.ndarray, a: int, b: int) -> tuple[np.ndarray, np.ndarray]:
+    """How far the line between joints a and b (the shoulders 1-2, the hips 7-8) is turned away from facing the net,
+    in degrees, per frame: seen from behind, the line looks widest when square to the net and shrinks as it turns, to
+    nothing side-on, and its ends swap sides past that. So: arccos(signed width / the stroke's widest), 0 square,
+    90 side-on, over 90 turned past side-on. Also the frame it is widest (square). The line's own length cancels,
+    so a broad or narrow build doesn't count."""
+    d = w[:, :, b, 0] - w[:, :, a, 0]
+    sq = np.nanargmax(np.abs(np.nan_to_num(d)), 1)
+    rows = np.arange(len(w))
+    widest = np.abs(d[rows, sq])
+    ang = np.degrees(np.arccos(np.clip(d * np.sign(d[rows, sq])[:, None] / widest[:, None], -1, 1)))
+    return ang, sq
+
+
+FWD = (-0.55, -0.05)         # the forward swing starts in here, s from contact
+
+
+def phases(w: np.ndarray, t: np.ndarray) -> dict[str, np.ndarray]:
+    """Each stroke's phases (frame indices into w's time axis t), from its own motion rather than fixed times:
+      fwd      the start of the forward swing = the end of the take-back: walking back from the hitting wrist's
+               fastest moment through contact (speed smoothed over 5 frames) until it is under half that, then on
+               to where it stops slowing: the last real dip in speed before the swing, where the wrist turns from
+               going back to coming through (kept within FWD)
+      coil     the shoulders' most-turned moment (turn: furthest from square) in the take-back: -0.6 s to fwd
+      hipcoil  the same for the hips
+    w: (N, T, 13, 2) on t, contact at t = 0."""
+    hz = round((len(t) - 1) / (t[-1] - t[0]))
+    at = lambda s: int(np.argmin(abs(t - s)))                       # noqa: E731
+    speed = np.linalg.norm(np.diff(w[:, :, 6], axis=1), axis=-1) * hz             # between frames f and f + 1
+    k = np.ones(5) / 5
+    sm = np.stack([np.convolve(np.pad(np.nan_to_num(v, nan=np.nanmedian(v)), 2, mode="edge"), k, "valid") for v in speed])
+    peak = np.argmax(sm[:, at(-0.15):at(0.05) + 1], 1) + at(-0.15)
+    fwd = peak.copy()
+    for n, f in enumerate(peak):
+        top = sm[n, f]
+        while f > at(FWD[0]) and (sm[n, f] > 0.5 * top or sm[n, f - 1] < sm[n, f]):   # below half its peak, then
+            f -= 1                                                                      # on down to the dip
+        fwd[n] = min(f, at(FWD[1]))
+    frames = np.arange(len(t))
+    inside = (frames[None] >= at(-0.6)) & (frames[None] <= fwd[:, None])      # the take-back, per stroke
+    most = lambda i, j: np.argmax(np.where(inside, np.nan_to_num(turn(w, i, j)[0]), -1), 1)   # noqa: E731
+    return {"fwd": fwd, "coil": most(1, 2), "hipcoil": most(7, 8)}
+
+
 def features(w: np.ndarray, feet: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """w: (N, T, 13, 2) aligned to WIN; feet (N, T, 2) court metres on the same window.
     -> (N, len(FEATURES)), (N, len(CONTEXT))."""
     t = np.round(np.linspace(WIN[0], WIN[1], w.shape[1]), 4)
     hz = round((w.shape[1] - 1) / (WIN[1] - WIN[0]))
     at = lambda s: int(np.argmin(abs(t - s)))                       # noqa: E731
-    c, back, fin = at(0), slice(at(-0.6), at(-0.05)), at(0.3)
-    width = lambda a, b: np.abs(w[:, :, a, 0] - w[:, :, b, 0])      # noqa: E731
-    sw, hw = width(1, 2), width(7, 8)
-    coil_t = np.nanargmin(sw[:, back], 1) + back.start
+    c, fin = at(0), at(0.3)
+    (sa, ssq), (ha, _) = turn(w, 1, 2), turn(w, 7, 8)              # shoulders' and hips' turn from square, degrees
+    ph = phases(w, t)
+    fwd, coil_t = ph["fwd"], ph["coil"]
     rows = np.arange(len(w))
+    # open at contact: 0 side-on, 90 square to the net, over 90 rotated past square (square came before contact)
+    opened = np.where(ssq < c, 90 + sa[rows, c], 90 - sa[rows, c])
     sh_mid = w[:, :, 1:3].mean(2)
     knee = (angle(w[:, :, 7], w[:, :, 9], w[:, :, 11]) + angle(w[:, :, 8], w[:, :, 10], w[:, :, 12])) / 2
-    tb = np.nanargmax(w[:, back, 6, 0], 1) + back.start
     speed = np.linalg.norm(np.diff(w[:, :, 6], axis=1), axis=-1) * hz
     f = np.stack([
-        w[:, c, 6, 1], w[:, c, 6, 0], angle(w[:, c, 2], w[:, c, 4], w[:, c, 6]), sw[:, c],
-        np.nanmin(sw[:, back], 1), np.nanmin(hw[:, back], 1), hw[rows, coil_t] - sw[rows, coil_t],
-        np.degrees(np.arctan2(w[:, c, 2, 1] - w[:, c, 1, 1], w[:, c, 2, 0] - w[:, c, 1, 0])),
-        np.nanmin(knee[:, at(-0.4):c + 1], 1), np.nanmax(w[:, back, 6, 0], 1), (c - tb) / hz,
+        w[:, c, 6, 1], w[:, c, 6, 0], angle(w[:, c, 2], w[:, c, 4], w[:, c, 6]), opened,
+        sa[rows, coil_t], ha[rows, ph["hipcoil"]], sa[rows, coil_t] - ha[rows, coil_t],
+        np.degrees(np.arctan2(w[:, c, 2, 1] - w[:, c, 1, 1], np.abs(w[:, c, 2, 0] - w[:, c, 1, 0]))),   # |dx|: a
+        # mirrored backhand's shoulder line points the other way; tilt from level, either way (was near +-180)
+        np.nanmin(knee[:, at(-0.4):c + 1], 1), w[rows, fwd, 6, 0], (c - fwd) / hz,
         np.nanmax(speed[:, at(-0.15):at(0.1)], 1), w[:, fin, 6, 1] - sh_mid[:, fin, 1], w[:, fin, 6, 0],
-        np.linalg.norm(w[:, at(0.1), 0] - w[:, at(-0.1), 0], axis=-1)], 1)
+        np.linalg.norm(w[:, at(0.1), 0] - w[:, at(-0.1), 0], axis=-1),
+        np.degrees(np.arctan2(w[:, fin, 6, 0] - w[:, fin, 2, 0], w[:, fin, 6, 1] - w[:, fin, 2, 1])),
+        np.where(ssq < fin, 90 + sa[:, fin], 90 - sa[:, fin]), sa[rows, fwd]], 1)
     run = np.linalg.norm(feet[:, at(-0.1)] - feet[:, at(-0.5)], axis=-1) / 0.4
     return f, np.stack([feet[:, c, 0], feet[:, c, 1], run], 1)
 
@@ -323,9 +403,14 @@ def serve_features(w: np.ndarray, feet: np.ndarray, win: tuple) -> tuple[np.ndar
     speed = np.linalg.norm(np.diff(w[:, :, 6], axis=1), axis=-1) * hz
     sh = w[rows, peak][:, 1:3]
     f = np.stack([
-        w[:, c, 6, 1] - w[:, c, 11:13, 1].mean(1), w[rows, peak, 5, 1] - w[rows, peak, 0, 1], (c - peak) / hz,
+        w[:, c, 6, 1] - w[:, c, 11:13, 1].mean(1), w[rows, peak, 5, 1] - w[rows, peak, 0, 1],
+        angle(w[rows, peak, 1], w[rows, peak, 3], w[rows, peak, 5]),
+        np.degrees(np.arctan2(w[rows, peak, 5, 0] - w[rows, peak, 1, 0], w[rows, peak, 5, 1] - w[rows, peak, 1, 1])),
+        (c - peak) / hz,
         np.degrees(np.arctan2(sh[:, 0, 1] - sh[:, 1, 1], sh[:, 1, 0] - sh[:, 0, 0])),
-        w[:, c, 1:3, 0].mean(1) - w[:, c, 11:13, 0].mean(1), np.nanmax(speed[:, at(-0.15):at(0.1)], 1),
+        w[:, c, 1:3, 0].mean(1) - w[:, c, 11:13, 0].mean(1),
+        -np.degrees(np.arctan2(w[:, c, 1:3, 0].mean(1) - w[:, c, 7:9, 0].mean(1), w[:, c, 1:3, 1].mean(1) - w[:, c, 7:9, 1].mean(1))),
+        w[:, c, 7:9, 0].mean(1) - w[:, c, 11:13, 0].mean(1), np.nanmax(speed[:, at(-0.15):at(0.1)], 1),
         feet[:, at(-0.6), 0] - feet[:, at(0.4), 0]], 1)
     return f, np.stack([feet[:, at(-0.6), 0], feet[:, at(-0.6), 1], np.zeros(len(w))], 1)
 
@@ -458,11 +543,16 @@ def prepare(project: str, kind: str, group) -> dict:
     extreme = np.zeros(len(f), bool)
     if kind in ("forehand", "backhand", "serve"):
         std = (ctx[:, 0] >= STANDARD["depth"][0]) & (ctx[:, 0] <= STANDARD["depth"][1])
+        if kind != "serve":
+            rise = xy[:, int(np.argmin(abs(grid - 0.3))), 6, 1] - xy[:, int(np.argmin(abs(grid + 0.15))), 6, 1]
+            std &= rise >= STANDARD["rise"]
         for sel in (g == x for x in dict.fromkeys(g)):
             if kind != "serve":
                 std[sel] &= ctx[sel, 2] <= np.nanquantile(ctx[sel, 2], STANDARD["run"])
             med = np.nanmedian(f[sel], 0)
             mad = 1.4826 * np.nanmedian(abs(f[sel] - med), 0)
+            mad = np.maximum(mad, 0.25 * np.nanstd(f[sel], 0))   # a measure often exactly 0 (coil: the line
+            # edge-on) has MAD 0, which made every other value extreme
             extreme[sel] = (abs(f[sel] - med) > STANDARD["extreme"] * mad).any(1)
     ok = std & ~extreme
     res_std = {"situation": int((~std).sum()), "extreme": int((std & extreme).sum()), "kept": int(ok.sum()),

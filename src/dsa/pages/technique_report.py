@@ -18,7 +18,7 @@ import numpy as np
 
 from dsa.ingest.projects import PROJECTS
 from dsa.measure.technique import ERA_NAMES, GRID, HZ, KINDS, era
-from dsa.pages import movement_report
+from dsa.pages import movement_report, tennis
 from dsa.pages.exemplars import render
 from dsa.paths import PROJECTS as ROOT_PROJECTS
 from dsa.scene.court import METRE, homography
@@ -394,9 +394,10 @@ def report(project: str, videos: bool = True) -> None:
     counts = {kind: sum(load(project, kind)[0]["counts"]["his"]) for kind in KINDS}
     tabs = {"syllables": "Syllables", "then": "Then vs Now", "methods": "Methods"}   # id: label
     body = f"""
+{tennis.nav("federer")}
 <header class="wrap">
   <p class="date">{BYLINE}</p>
-  <h1>Federer, Syllable by Syllable</h1>
+  <h1>Federer</h1>
   <p>Tracking Federer's evolution between 2003 and 2019 through unsupervised and supervised methods.</p>
 </header>
 <nav class="wrap cats" role="tablist">{"".join(f'<button role="tab" data-cat="{k}">{t}</button>' for k, t in tabs.items())}</nav>
@@ -424,7 +425,7 @@ def report(project: str, videos: bool = True) -> None:
 </div>
 
 <footer class="wrap"></footer>"""
-    (out / "index.html").write_text(PAGE.replace("{{BODY}}", body).replace("{{CSS}}", movement_report.CSS)
+    (out / "index.html").write_text(PAGE.replace("{{BODY}}", body).replace("{{CSS}}", movement_report.CSS + tennis.CSS)
                                     .replace("{{JS}}", ""))
     print("wrote", out / "index.html")
 
@@ -435,7 +436,7 @@ PAGE = """<!doctype html>
 <meta charset="utf-8">
 <meta name="color-scheme" content="light">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Federer, Syllable by Syllable</title>
+<title>Federer</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
