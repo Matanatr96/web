@@ -15,7 +15,7 @@ listed player (dsa.ingest.projects) is always blue.
   export  every level's pairs, copied to <site>/clips/, with <site>/manifest.json.
 
     python -m dsa.pages.quiz points quiz/l1_federer_nadal      # or: points all
-    python -m dsa.pages.quiz export ../tennis-skeleton-quiz
+    python -m dsa.pages.quiz export ../offpolicysite/media/skeleton-tennis   # then move manifest.json to content/pages/skeleton-tennis/
 """
 from __future__ import annotations
 

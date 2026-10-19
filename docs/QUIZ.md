@@ -1,6 +1,8 @@
 # Skeleton quiz: provenance
 
-The game: https://pwang724.github.io/tennis-skeleton-quiz/ (repo `pwang724/tennis-skeleton-quiz`).
+The game: https://offpolicyinc.com/work/skeleton-tennis/. The page lives in offpolicysite
+(`content/pages/skeleton-tennis/`: `index.html`, `manifest.json`); its clips are in the site's R2 bucket
+(`media/skeleton-tennis/clips/`).
 Opens straight into level 1. Each of 10 levels (harder each time) is one match, shown as two short rallies
 drawn as skeletons + ball + court on black, playing in turn, each stroke named top left: one served by each
 player from the near end. Pick the blue player, then the orange one, from five names (the two players and
@@ -8,7 +10,8 @@ three decoys from the same or the nearest levels); 1 point each, 20 max. The gam
 level and adds one line below (the right names, and your pick where wrong); the end screen lists those lines,
 latest first. No typing, no leaderboard.
 
-Play it locally: `python3 -m http.server 8765 --directory ../tennis-skeleton-quiz`, then http://localhost:8765.
+Play it locally from offpolicysite: `python3 build.py --local && node serve.js`, then
+http://localhost:8917/work/skeleton-tennis/.
 
 ## Where things are
 
@@ -20,7 +23,7 @@ Play it locally: `python3 -m http.server 8765 --directory ../tennis-skeleton-qui
 | Step 2 (models) | `projects/quiz/<video>/raw.npz`, `strokes/` | `raw.npz`, `strokes/scores.npz` |
 | Steps 3, 4 | `projects/quiz/<video>/players.json`, `names.json` | – |
 | Usable rallies, chosen pairs, drawn clips | `projects/quiz/<video>/points/points.json`, `pairs.json`, `<first frame>.mp4`, `serve/` (scoreboard frames) | – (the game's are in git) |
-| The game (page, manifest, chosen clips) | `../tennis-skeleton-quiz/` (`clips/`, `manifest.json`) | – |
+| The game (page, manifest, chosen clips) | offpolicysite: `content/pages/skeleton-tennis/` (page, `manifest.json`), `media/skeleton-tennis/clips/` | – |
 
 The video list (YouTube ids, matches, levels, players) is `PROJECTS["quiz"]` in `src/dsa/ingest/projects.py`.
 
@@ -93,10 +96,9 @@ Rounds in the game per level: L1 9, L2 6, L3 6, L4 6, L5 8, L6 7, L7 5, L8 5, L9
    each stroke in words top left in the hitter's colour). Joints are cleaned by `dsa.scene.clean.joints`:
    left/right fixed per side of the body and only for flips of ≤8 frames (leg criss-crossing 45k → 9k
    frames over the 30 videos).
-8. **Export** (`python -m dsa.pages.quiz export ../tennis-skeleton-quiz`): every pair → `clips/` + `manifest.json`
-   (per level, rounds of two clips, match, players blue first); pushed to GitHub Pages. The game repo is
-   kept to one commit (history replaced on each push), so old clips don't pile up against GitHub's 1 GB
-   repo guideline.
+8. **Export** (`python -m dsa.pages.quiz export ../offpolicysite/media/skeleton-tennis`): every pair → `clips/` + `manifest.json`
+   (per level, rounds of two clips, match, players blue first). Then in offpolicysite: move `manifest.json` to
+   `content/pages/skeleton-tennis/`, upload the clips (`tools/upload_media.sh skeleton-tennis`), commit, push.
 
 ## Key decisions
 

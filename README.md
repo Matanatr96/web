@@ -5,7 +5,7 @@ full skeletons, the ball, and their hits. Built only from off-the-shelf models (
 TennisCourtDetector, F3ED) plus Opus for marking the court. How it works, costs and status:
 [docs/PIPELINE.md](docs/PIPELINE.md).
 
-The skeleton quiz (https://pwang724.github.io/tennis-skeleton-quiz/) is built from this pipeline; where its
+The skeleton quiz (Skeleton Tennis, https://offpolicyinc.com/work/skeleton-tennis/) is built from this pipeline; where its
 files are and how it was made: [docs/QUIZ.md](docs/QUIZ.md).
 
 One video, step by step (atp_hardcourt in full, with GPUs and costs: [docs/ATP_PIPELINE.md](docs/ATP_PIPELINE.md)):

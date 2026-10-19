@@ -97,5 +97,5 @@ python -m dsa.measure.shots atp_hardcourt                               # every 
 python -m dsa.measure.technique extract atp_hardcourt forehand          # 5 (then analyse: federer_usopen's eras)
 python -m dsa.measure.profiles atp_hardcourt                            # 6: each player against the others
 python -m dsa.pages.quiz points all                                   # quiz: a plain clip per 6+ shot point
-python -m dsa.pages.quiz export ../tennis-skeleton-quiz               # quiz: clips + manifest.json for the game
+python -m dsa.pages.quiz export ../offpolicysite/media/skeleton-tennis   # quiz: clips + manifest.json for the game
 ```
