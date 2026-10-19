@@ -1,13 +1,12 @@
-"""Step 7 for a project of many players (atp_hardcourt): how each player's strokes and movement differ from the other
-players' (dsa.measure.profiles). An overview of every player against every measure; a tab per player with only the
-measures where he is the most or second most extreme of them, either way, each with every player's strokes and his
-typical stroke next to a typical pro's (dsa.pages.exemplars, the measurement drawn on); a Statistics tab with every
-measure's boxes. Players of a project compared with this one ("compare_with": our own phone footage) get a tab each,
-ranked against the pros, with how much each measure depends on the camera.
+"""Step 7 for a project of many players (atp_hardcourt), the Coach Claude page: how each player's strokes and movement
+differ from the other players' (dsa.measure.profiles). An overview heatmap of every player against every measure, with
+the explainer beside it (dsa.pages.explainer: a few typical clips per player and stroke to flip through); players of a
+project compared with this one ("compare_with": our own phone footage) are set against the pros on it. A Syllables tab
+when the project has movement syllables, and a Statistics tab with the methods and footage.
 
     python -m dsa.measure.profiles atp_hardcourt                  # first
     python -m dsa.pages.profiles_report atp_hardcourt [--no-videos]  -> projects/<project>/review/profiles/
-    python -m dsa.pages.serve data/projects/atp_hardcourt/review 8767
+    python -m dsa.pages.serve data/projects/atp_hardcourt/review/profiles 8768
 """
 from __future__ import annotations
 
@@ -15,16 +14,14 @@ import argparse
 import html
 import json
 from collections import Counter, defaultdict
-from concurrent.futures import ThreadPoolExecutor
 from functools import lru_cache
 
 import numpy as np
 
 from dsa.ingest.projects import PROJECTS, match
 from dsa.measure.profiles import COURT
-from dsa.measure.technique import GRID, MEASURES, MIRROR, lefty, normalise, phases
-from dsa.pages import explainer, movement_report, tennis
-from dsa.pages.exemplars import render
+from dsa.measure.technique import GRID, MEASURES, MIRROR, normalise, phases
+from dsa.pages import explainer, movement_report
 from dsa.paths import PROJECTS as ROOT_PROJECTS
 from dsa.paths import video_dir
 
@@ -137,38 +134,6 @@ def tests(project: str, phone: bool = False, every: bool = False) -> list[dict]:
 
 
 # ------------------------------------------------------------------ charts
-
-def strip(row: dict, player: str, w=680, mates=(), ref=None) -> str:
-    """Every player's strokes on one measure as a box (the middle half; whiskers 5th to 95th percentile; the tick
-    the median), the player in blue, the others grey (`mates`: other players filmed the same way as him, lighter
-    blue); the dashed line is the other players' median of medians (`ref`: of these players only)."""
-    bx, j = row["box"], row["j"]
-    by = {p: v[j] for p, v in bx.items() if np.isfinite(v[j][2])}
-    order = sorted(by, key=lambda p: by[p][2])
-    lo, hi = min(by[p][0] for p in order), max(by[p][4] for p in order)
-    pad = (hi - lo) * 0.06 or 0.1
-    lo, hi = lo - pad, hi + pad
-    rh, top, left = 22, 8, 100
-    h = top + rh * len(order) + 34
-    x = lambda v: left + (v - lo) / (hi - lo) * (w - left - 16)                       # noqa: E731
-    others = float(np.median([by[p][2] for p in order if p != player and (ref is None or p in ref)]))
-    out = [f'<svg viewBox="0 0 {w} {h}" role="img">']
-    for q in np.linspace(lo + pad, hi - pad, 5):
-        out.append(f'<line x1="{x(q):.1f}" x2="{x(q):.1f}" y1="{top}" y2="{h - 26}" class="grid"/>'
-                   f'<text x="{x(q):.1f}" y="{h - 10}" class="tick" text-anchor="middle">{value(q, row["unit"])}</text>')
-    out.append(f'<line x1="{x(others):.1f}" x2="{x(others):.1f}" y1="{top}" y2="{h - 26}" class="ref"/>')
-    for i, p in enumerate(order):
-        y = top + rh * i + rh / 2
-        cls = "his" if p == player else "mate" if p in mates else "other"
-        p5, q1, med, q3, p95 = by[p]
-        name = p.split()[0] if ref is not None and p not in ref else surname(p)     # our own players: first names
-        out.append(f'<text x="{left - 10}" y="{y + 4:.1f}" class="row {cls}" text-anchor="end">{name}</text>'
-                   f'<line x1="{x(p5):.1f}" x2="{x(p95):.1f}" y1="{y:.1f}" y2="{y:.1f}" class="whisker {cls}"/>'
-                   f'<rect x="{x(q1):.1f}" y="{y - 6:.1f}" width="{max(1.0, x(q3) - x(q1)):.1f}" height="12" '
-                   f'class="box {cls}"/>'
-                   f'<line x1="{x(med):.1f}" x2="{x(med):.1f}" y1="{y - 7:.1f}" y2="{y + 7:.1f}" class="mean {cls}"/>')
-    return "".join(out) + "</svg>"
-
 
 def heat_z(project: str, res: dict, players: list[str], extra: dict | None = None) -> dict:
     """(kind, measure) -> {player: his median minus the others' median, in SDs of a player's own strokes (the
@@ -308,8 +273,6 @@ SENS = {"stance_m": "low", "stance_side_m": "low", "stance_fwd_m": "low", "stanc
         "lean": "medium",
         "contact_height": "high", "finish_height": "high", "reach": "high", "toss_arm": "high", "elbow_angle": "high", "toss_straight": "high",
         "knee_bend": "high", "shoulder_tilt": "high", "trophy_tilt": "high", "wrist_speed": "high"}
-SENS_TEXT = {"low": "barely depends on the camera", "medium": "somewhat camera-dependent",
-             "high": "strongly camera-dependent: a hint only"}
 
 
 def guest_projects(project: str) -> list[str]:
@@ -318,7 +281,6 @@ def guest_projects(project: str) -> list[str]:
 
 
 UNSURE: set[str] = set()   # players whose labels can't be trusted (Paul's chosen strokes checked by eye: all him)
-RANKS = {0: "the highest", 1: "the second highest", -1: "the lowest", -2: "the second lowest"}
 
 
 def guests(project: str) -> dict[str, tuple[str, dict]]:
@@ -330,93 +292,6 @@ def guests(project: str) -> dict[str, tuple[str, dict]]:
             if any(p in gres[k]["strokes"] for k in KINDS):
                 out[p] = (g, gres)
     return out
-
-
-def boxes(project: str, row: dict, extra: dict) -> dict:
-    """The row's boxes per player, indexed like the row (box[player][j]): the pros', plus our own players'."""
-    bx = {q: row["box"][q] for q in PROJECTS[project]["players"] if q in row["box"]}
-    for p, (g, gres) in extra.items():
-        gr = gres.get(row["kind"])
-        if gr and row["name"] in gr["features"] and p in gr["box"]:
-            bx[p] = [[np.nan] * 5] * row["j"] + [gr["box"][p][gr["features"].index(row["name"])]]
-    return bx
-
-
-def extreme(project: str, row: dict, bx: dict, p: str) -> dict | None:
-    """Where p's median ranks among the pros' (and his, if he isn't one): the highest or second highest, the lowest
-    or second lowest; None otherwise."""
-    j, pros = row["j"], [q for q in PROJECTS[project]["players"] if q in bx]
-    if p not in bx or not np.isfinite(bx[p][j][2]):
-        return None
-    med = {q: bx[q][j][2] for q in dict.fromkeys(pros + [p])}
-    order = sorted(med, key=lambda q: -med[q])
-    i = order.index(p)
-    rank = i if i < 2 else i - len(order) if i >= len(order) - 2 else None
-    if rank is None:
-        return None
-    others = {q: med[q] for q in pros if q != p}
-    return {**row, "player": p, "rank": rank, "his": med[p], "pros": float(np.median(list(others.values()))),
-            "pm": others, "of": len(order)}
-
-
-def extremes(project: str, p: str, extra: dict) -> list[dict]:
-    return [f for row in tests(project, bool(extra)) if (f := extreme(project, row, boxes(project, row, extra), p))]
-
-
-def typical_pair(project: str, f: dict, extra: dict) -> tuple[dict, dict] | None:
-    """A typical stroke of his (nearest his median, picture quality at least his median) and a typical pro's: the
-    pro whose median is nearest the other pros' (not him, not one who plays with the other hand, not UNSURE), his
-    stroke nearest it, hit from about the same place."""
-    p, j = f["player"], f["j"]
-    his_project = extra[p][0] if p in extra else project
-    hs, _, _ = strokes(his_project, f["kind"])
-    ps, _, _ = strokes(project, f["kind"])
-    mine = np.flatnonzero((hs["player"] == p) & np.isfinite(hs["f"][:, j]))
-    if not len(mine):
-        return None
-    mine = mine[hs["quality"][mine] >= np.median(hs["quality"][mine])]
-    a = mine[int(np.argmin(abs(hs["f"][mine, j] - f["his"])))]
-    cand = [q for q in f["pm"] if q not in UNSURE and lefty(q) == lefty(p)] or list(f["pm"])
-    who = min(cand, key=lambda q: abs(f["pm"][q] - f["pros"]))
-    sel = (ps["player"] == who) & (ps["quality"] >= np.median(ps["quality"][ps["player"] == who]))
-    if f["kind"] != "serve":
-        sel &= ps["ctx"][:, 2] <= np.quantile(ps["ctx"][:, 2], 0.6)
-    near = np.flatnonzero(sel)
-    if not len(near):
-        return None
-    near = near[np.argsort(abs(ps["f"][near, j] - f["pm"][who]))[:max(5, len(near) // 5)]]
-    b = near[int(np.argmin(abs(ps["ctx"][near, 0] - hs["ctx"][a, 0]) + abs(ps["ctx"][near, 1] - hs["ctx"][a, 1])))]
-    mine_s, pro_s = stroke(his_project, f, int(a)), stroke(project, f, int(b))
-    mine_s["project"], pro_s["project"] = his_project, project
-    if mine_s["hz"] != pro_s["hz"]:                 # his skeleton onto the pros' time grid (phone 30 fps, TV grid 60)
-        old = np.arange(mine_s["pose"].shape[0]) / mine_s["hz"]
-        new = np.arange(pro_s["pose"].shape[0]) / pro_s["hz"]
-        q = mine_s["pose"].reshape(len(old), -1)
-        mine_s["pose"] = np.stack([np.interp(new, old, q[:, c], left=np.nan, right=np.nan) for c in range(q.shape[1])],
-                                  1).reshape(len(new), *mine_s["pose"].shape[1:])
-        mine_s["hz"] = pro_s["hz"]
-    return mine_s, pro_s
-
-
-def clip(out_dir, f: dict):
-    return out_dir / f"x_{f['player'].replace(' ', '_').lower()}_{f['kind']}_{f['name']}.mp4"
-
-
-def extreme_videos(project: str, players: list[str], extra: dict, out_dir) -> None:
-    """His typical stroke next to a typical pro's, for every stroke measure where he is extreme."""
-    jobs = []
-    for p in players:
-        for f in extremes(project, p, extra):
-            if f["kind"] == "movement" or clip(out_dir, f).exists():
-                continue
-            pr = typical_pair(project, f, extra)
-            if pr:
-                title = p.split()[0] if p in extra else surname(p)
-                jobs.append((pr, f["name"], pr[0]["moment"], clip(out_dir, f), -0.9 if f["kind"] == "serve" else -0.6,
-                             (title, f"{surname(pr[1]['label'].split(',')[0])} (typical pro)")))
-    print(len(jobs), "videos", flush=True)
-    with ThreadPoolExecutor(6) as ex:
-        list(ex.map(lambda j: render(project, j[0][0], j[0][1], j[1], j[2], j[3], t0=j[4], titles=j[5]), jobs))
 
 
 # ------------------------------------------------------------------ videos
@@ -462,185 +337,6 @@ def stroke(project: str, f: dict, i: int) -> dict:
 
 # ------------------------------------------------------------------ page
 
-def pose_at(mp: np.ndarray, win: list, name: str) -> np.ndarray:
-    hz = round((len(mp) - 1) / (win[1] - win[0]))
-    phase = {"takeback": "fwd", "shoulder_coil": "coil", "separation": "coil", "hip_coil": "hipcoil"}.get(name)
-    if phase:                                    # the stroke's own phase (its forward swing's start, its most turned)
-        return mp[int(phases(mp[None], np.round(np.linspace(win[0], win[1], len(mp)), 4))[phase][0])]
-    t = MOMENT.get(name, 0.0)
-    if t == "toss":
-        a, b = int(round((-0.9 - win[0]) * hz)), int(round((-0.1 - win[0]) * hz))
-        return mp[a + int(np.nanargmax(mp[a:b, 5, 1]))]
-    return mp[int(np.clip(round((t - win[0]) * hz), 0, len(mp) - 1))]
-
-
-def skeletons(project: str, f: dict, extra: dict, w=340, h=280) -> str:
-    """His average pose at the measure's moment next to the pros' (the mean of the other pros' means), seen from
-    behind, torso units, left-handers mirrored to right-handed; the measurement in orange."""
-    res, _ = load(project)
-    p, name = f["player"], f["name"]
-    r = res[f["kind"]]
-    mine_r = extra[p][1][f["kind"]] if p in extra else r
-    mine = pose_at(np.array(mine_r["mean_pose"][p]), mine_r["win"], name)
-    rest = pose_at(np.nanmean([np.array(r["mean_pose"][q]) for q in f["pm"] if q in r["mean_pose"]], 0),
-                   r["win"], name)
-    poses = np.stack([rest, mine])
-    if f["kind"] == "backhand":                  # measured mirrored (out to the side: +); drawn as hit
-        poses[..., 0] = -poses[..., 0]
-    pts = poses.reshape(-1, 2)
-    lo, hi = np.nanmin(pts, 0), np.nanmax(pts, 0)
-    sc = min((w / 2 - 24) / (hi[0] - lo[0]), (h - 70) / (hi[1] - lo[1]))
-    who = p.split()[0] if p in extra else surname(p)
-    out = [f'<svg viewBox="0 0 {w} {h}" role="img">']
-    for q, cls, cx0, lab, v in zip(poses, ("other", "his"), (w / 4, 3 * w / 4),
-                                   ("Pros" if p in extra else "Other pros", who), (f["pros"], f["his"])):
-        P = lambda a: (cx0 + (a[0] - (lo[0] + hi[0]) / 2) * sc, 22 + (hi[1] - a[1]) * sc)   # noqa: E731,B023
-        hip, sh, ank = q[7:9].mean(0), q[1:3].mean(0), q[11:13].mean(0)
-        ref = {"contact_side": ("v", hip), "finish_side": ("v", hip), "takeback": ("v", hip), "lean": ("v", ank),
-               "contact_height": ("h", hip), "finish_height": ("h", sh), "reach": ("h", ank),
-               "toss_arm": ("h", q[0])}.get(name)
-        if ref:
-            if ref[0] == "v":
-                rx = P(ref[1])[0]
-                out.append(f'<line x1="{rx:.1f}" x2="{rx:.1f}" y1="14" y2="{h - 48}" class="ref"/>')
-            else:
-                ry = P(ref[1])[1]
-                out.append(f'<line x1="{cx0 - w / 4 + 10:.1f}" x2="{cx0 + w / 4 - 10:.1f}" y1="{ry:.1f}" '
-                           f'y2="{ry:.1f}" class="ref"/>')
-        hot = {"elbow_angle": [(2, 4), (4, 6)], "shoulder_width": [(1, 2)], "shoulder_coil": [(1, 2)],
-               "shoulder_tilt": [(1, 2)], "trophy_tilt": [(1, 2)], "hip_coil": [(7, 8)],
-               "separation": [(1, 2), (7, 8)], "toss_straight": [(1, 3), (3, 5)], "toss_tilt": [(1, 3), (3, 5)],
-               "knee_bend": [(7, 9), (9, 11), (8, 10), (10, 12)]}.get(name, [])
-        for a, b in BONES:
-            (x1, y1), (x2, y2) = P(q[a]), P(q[b])
-            c = "hot" if (a, b) in hot else cls
-            out.append(f'<line x1="{x1:.1f}" y1="{y1:.1f}" x2="{x2:.1f}" y2="{y2:.1f}" class="bone {c}"/>')
-        hx, hy = P(q[0])
-        out.append(f'<circle cx="{hx:.1f}" cy="{hy:.1f}" r="6" class="headc {"hot" if name == "head_still" else cls}"/>')
-        seg = {"contact_side": (q[6], (hip[0], q[6][1])), "finish_side": (q[6], (hip[0], q[6][1])),
-               "takeback": (q[6], (hip[0], q[6][1])), "contact_height": (q[6], (q[6][0], hip[1])),
-               "finish_height": (q[6], (q[6][0], sh[1])), "reach": (q[6], (q[6][0], ank[1])),
-               "toss_arm": (q[5], (q[5][0], q[0][1])), "lean": (sh, (ank[0], sh[1]))}.get(name)
-        if seg:
-            (ax, ay), (bx, by) = P(seg[0]), P(seg[1])
-            out.append(f'<line x1="{ax:.1f}" y1="{ay:.1f}" x2="{bx:.1f}" y2="{by:.1f}" class="bone hot"/>')
-        if name in ("wrist_speed", "swing_time"):
-            wx, wy = P(q[6])
-            out.append(f'<circle cx="{wx:.1f}" cy="{wy:.1f}" r="8" class="headc hot"/>')
-        out.append(f'<text x="{cx0:.0f}" y="{h - 26}" class="lab {cls}" text-anchor="middle">{html.escape(lab)}</text>'
-                   f'<text x="{cx0:.0f}" y="{h - 8}" class="val" text-anchor="middle">{value(v, f["unit"])}</text>')
-    return "".join(out) + "</svg>"
-
-
-def feet(project: str, f: dict, extra: dict, w=340, h=280) -> str:
-    """Stance from above: back foot fixed, his front foot (blue) and the pros' (grey), from the medians of
-    stance_side_m and stance_fwd_m (his, and the median of the other pros')."""
-    p = f["player"]
-    rows = {r["name"]: r for r in tests(project, every=True) if r["kind"] == f["kind"]}
-    pt = {}
-    for nm in ("stance_side_m", "stance_fwd_m"):
-        bx = boxes(project, rows[nm], extra)
-        j = rows[nm]["j"]
-        pt[nm] = (bx[p][j][2], float(np.median([bx[q][j][2] for q in f["pm"] if q in bx])))
-    o, sc = (w * 0.68, h * 0.78), 115                      # px per torso length
-    who = p.split()[0] if p in extra else surname(p)
-    out = [f'<svg viewBox="0 0 {w} {h}" role="img">',
-           f'<line x1="{o[0] - 0.75 * sc:.0f}" x2="{o[0] + 0.2 * sc:.0f}" y1="{o[1]}" y2="{o[1]}" class="ref"/>'
-           f'<text x="{o[0] + 0.2 * sc:.0f}" y="{o[1] + 18}" class="lab" text-anchor="end">baseline direction</text>']
-    for cls, k, lab in (("other", 1, "Pros" if p in extra else "Other pros"), ("his", 0, who)):
-        dx, dy = pt["stance_side_m"][k], pt["stance_fwd_m"][k]
-        fx, fy = o[0] - dx * sc, o[1] - dy * sc
-        out.append(f'<line x1="{o[0]:.0f}" y1="{o[1]:.0f}" x2="{fx:.0f}" y2="{fy:.0f}" class="leg {cls}"/>'
-                   f'<circle cx="{fx:.0f}" cy="{fy:.0f}" r="7" class="foot {cls}"/>'
-                   f'<text x="{fx - 12:.0f}" y="{fy + 4:.0f}" class="lab {cls}" text-anchor="end">{html.escape(lab)}</text>')
-    out.append(f'<circle cx="{o[0]:.0f}" cy="{o[1]:.0f}" r="7" class="foot back"/>'
-               f'<text x="{o[0] + 12:.0f}" y="{o[1] - 8:.0f}" class="lab">back foot</text>'
-               f'<text x="{w / 2:.0f}" y="18" class="lab" text-anchor="middle">net ↑</text>')
-    return "".join(out) + "</svg>"
-
-
-def card(project: str, f: dict, bx: dict, extra: dict, out_dir) -> str:
-    """One extreme: what is measured, his median against the pros', the boxes, and (strokes) his typical stroke next to
-    a typical pro's."""
-    p, name, kind = f["player"], f["name"], f["kind"]
-    first = p.split()[0] if p in extra else surname(p)
-    sens = SENS.get(name, "medium") if p in extra else None
-    badge = f' <span class="sens {sens}">{sens}</span>' if sens else ""
-    text = (f"{html.escape(f['about'][0].upper() + f['about'][1:])}. {html.escape(first)}: "
-            f"<b>{value(f['his'], f['unit'])}</b>, {RANKS[f['rank']]} of {f['of']}; the "
-            f"{'pros' if p in extra else 'other pros'}' median <b>{value(f['pros'], f['unit'])}</b>."
-            + (f" {SENS_TEXT[sens].capitalize()}." if sens else ""))
-    mates = [q for q in extra if q != p and p in extra and extra[q][0] == extra[p][0]]
-    figs = (f'<figure><div class="diagram">{strip({**f, "box": bx}, p, mates=mates, ref=PROJECTS[project]["players"])}'
-            f'</div></figure>')
-    if kind != "movement":
-        vid = clip(out_dir, f)
-        figs += '<div class="pair">'
-        if vid.exists():
-            figs += (f'<figure><div class="player"><video src="{vid.name}" loop muted playsinline controls '
-                     f'preload="none"></video></div><figcaption>{html.escape(first)}\'s typical stroke (left, near his '
-                     f'median) and a typical pro\'s (right, near the pros\' median), slowed down, held at the moment '
-                     f'measured.</figcaption></figure>')
-        figs += (f'<figure><div class="diagram">{feet(project, f, extra)}</div><figcaption>Median stance from above.'
-                 f'</figcaption></figure></div>' if name.startswith("stance") else
-                 f'<figure><div class="diagram">{skeletons(project, f, extra)}</div><figcaption>Average pose at the '
-                 f'moment measured, seen from behind (left-handers mirrored to right-handed); the measurement in '
-                 f'orange.</figcaption></figure></div>')
-    return (f'<section class="change"><h3 class="sub-h">{html.escape(kind.capitalize())}: '
-            f'{html.escape(SHORT.get(name, name))}{badge}</h3><p>{text}</p>{figs}</section>')
-
-
-def player_tab(project: str, p: str, extra: dict, foot: dict, res: dict, out_dir) -> str:
-    fs = extremes(project, p, extra)
-    if p in extra:
-        g, gres = extra[p]
-        cam = gres["forehand"]["camera"].get(p, {})
-        n = ", ".join(f"{gres[k]['strokes'].get(p, 0)} {k}s" for k in KINDS)
-        head = (f'<p class="date">Our own phone footage, games only: {n}. The phone sits lower and closer than the TV '
-                f'camera, so each measure is tagged with how much the camera changes it.</p>')
-        who = p.split()[0]
-    else:
-        head = (f'<p class="date">{len(foot[p]["matches"])} matches, {foot[p]["minutes"]:.0f} minutes of play; '
-                + ", ".join(f"{res[k]['strokes'].get(p, 0)} {k}s" for k in KINDS) + "</p>")
-        who = surname(p)
-    body = (f'<section class="wrap"><h2>{html.escape(p)}</h2>{head}<p>These are the {len(fs)} measures where '
-            f'{html.escape(who)} stands out most {"against the eleven pros" if p in extra else "from the other ten"}. '
-            f'Each chart shows every player\'s strokes, and the video puts his typical stroke next to a typical '
-            f'pro\'s.</p></section>')
-    for kind in KINDS + ["movement"]:
-        ks = [f for f in fs if f["kind"] == kind]
-        if ks:
-            body += f'<section class="wrap"><h2 class="part">{kind.capitalize()}</h2></section>'
-            shown = extra if p in extra else {}           # a pro's charts: the pros only
-            body += "".join(f'<div class="wrap">{card(project, f, boxes(project, f, shown), extra, out_dir)}</div>'
-                            for f in ks)
-    return body
-
-
-def statistics(project: str, extra: dict) -> str:
-    """Every measure, every player's box: the raw analysis."""
-    pros = PROJECTS[project]["players"]
-    body = ('<section class="wrap"><p>Every measure for every player. Each box holds the middle half of his strokes, '
-            'the whiskers run from the 5th to the 95th percentile, and the tick is his median. The dashed line is the '
-            'pros\' median.'
-            + (f' {" and ".join(html.escape(q.split()[0]) for q in extra)} are in '
-               '<span style="color:#7aa2f7">blue</span>.' if extra else "") + '</p></section>')
-    for kind in KINDS + ["movement"]:
-        rows = [r for r in tests(project, bool(extra)) if r["kind"] == kind]
-        if not rows:
-            continue
-        body += f'<section class="wrap"><h2 class="part">{kind.capitalize()}</h2></section>'
-        for r in rows:
-            sens = SENS.get(r["name"]) if extra and kind != "movement" else None
-            badge = f' <span class="sens {sens}">{sens}</span>' if sens else ""
-            body += (f'<div class="wrap"><section class="change"><h3 class="sub-h">'
-                     f'{html.escape(SHORT.get(r["name"], r["name"]))}{badge}</h3><p class="date">'
-                     f'{html.escape(r["about"][0].upper() + r["about"][1:])}.</p><figure><div class="diagram">'
-                     f'{strip({**r, "box": boxes(project, r, extra)}, None, mates=list(extra), ref=pros)}'
-                     f'</div></figure></section></div>')
-    return body
-
-
 # the write-up around the overview's heatmap: what the pros show above it, what our own strokes show below it
 PROS_NOTES = """
 <p>A lot of the observations are obvious by eye, but it has been illuminating to quantify differences in each
@@ -662,6 +358,44 @@ is tilted sideways when you're hitting the ball straight? But it seems like a lo
 and Shelton, both have significant trunk leans.</li>
 </ul>
 """
+# the overview's opening: what the page asks, and its three parts
+INTRO = """
+<p>I wanted to evaluate whether Claude is a good tennis coach. I first provided Claude with good featurization and
+ground truth to evaluate myself and others against. Then, with the same data, I analyzed my own strokes (and my friend
+Richard's). Finally, I compared my own analysis against Claude's (Opus 5.5). Turns out Claude's analysis is vastly
+better than mine. However, there were a lot of nuances to get right -- read more below.</p>
+<h2 class="part">Featurization</h2>
+<p>For featurization, I processed raw videos and extracted ball location, court coordinates, labeled strokes (FH, BH,
+topspin, slice, serve, etc) and joint data. These were largely done via off-the-shelf open-source models (mostly vision
+transformers) but some, like ball tracking, required some gentle fine-tuning and then post-processing.</p>
+<p>This data was then processed into a set of "traits". For example, one serve trait is how straight the tossing arm
+is, measured by taking the joint angle for tossing arm at the top of the toss.</p>
+<p>This part took most of my time -- working with Claude, asking it to sanity check each trait, decomposing them down
+into interpretable traits, deleting useless ones, adding interesting ones, etc. This was largely expected, since
+designing a clean, useful, interpretable, and comprehensive feature set IS the work. And it's a one-time investment -- once done, I don't have to do it again, and if I have to come back to me, there are already skills and templates. If I were to give Claude
+rating, it'd be this:</p>
+<ul class="support">
+<li><b>Completeness: 4/5.</b> Opus came up with a lot of good candidate traits.</li>
+<li><b>Useful: 3/5.</b> It had very poor judgment over how useful or interesting these traits are.</li>
+<li><b>Rigor: 2/5.</b> It did not have the common sense to normalize these traits into measures that are generalizable across individuals.
+For example, the raw trait it came up with for serve reach was in meters, which failed to normalize for differences in
+player height.</li>
+<li><b>Interpretable: 2/5.</b> It often proposed traits that were uninterpretable and I had to break these down into atomic, interpretable traits.</li>
+</ul>
+<h2 class="part">Source of Truth</h2>
+<p>Who has the best strokes in the world? Probably those that are the best in the world.</p>
+<p>Like most sports, variance in elite biomechanics is enormous. Without incontrovertible evidence to the contrary, it
+is probably impossible for a lot of amateur tennis players to conceive that Tiafoe or Meddy's forehands can perform
+past USTA 4.5s. Underneath these differences, however, players also share a lot of commonalities in timing, contact
+point, head movements, to name a few.</p>
+<p>This needs to be quantified, otherwise I wouldn't know whether my strokes are weird but tolerable (i.e. Meddy's fh)
+or weird and bad. The goal of deriving a good source of truth is therefore to quantify what it is that pros vary on
+and what it is that this conserved.</p>
+<p>So I took a diverse set of players (Big Foe, Meddy, Kygs, Bweh, etc), scored their traits, and measured the
+variance per trait.</p>
+<p>The source of truth is grounded on what pros do -- I specifically chose 11 current players that span the range of
+stroke diversity (hello Tiafoe and Meddy lol).</p>
+"""
 # the Statistics tab: how the overview's numbers are computed
 METHODS = """
 <section class="wrap"><h3>Methods</h3>
@@ -677,15 +411,14 @@ regime with 11 players, so I can't say anything about one handers, or backhands 
 </section>
 """
 OURS_NOTES = """
-<h3>My strokes vs pros</h3>
+<h2 class="part">2. My analysis</h2>
 <p>The pros don't all hit the same way, but together they show the range of mechanics that works at the highest
 level. If my stroke falls outside that range, it's worth asking why. So I ran a couple recordings of myself and my
 close friend Richard playing together through the same pipeline.</p>
-<p>For reference, I am ~9 UTR (at least when I competed prior to having two kids). Richard in his prime used to be a 13
-UTR and played for Columbia (top 10 in D1 tennis). And the top 10 pros are 16 UTR. At a 1.0 UTR gap, the higher-rated
-player is expected to win 8-9 times out of 10. So it's humbling to realize that there are literally SEVEN quantal
-levels of difference between myself and the pros. Also, what's not shown in these short snippets is Richard routinely
-kicking my ass.</p>
+<p>For reference, I am ~9 UTR, at least when I competed two years ago prior to having two kids. Richard in his prime
+used to be a 13 UTR and played for Columbia, a top 10 D1 tennis school. And the top 10 pros are 16 UTR. For reference,
+at a 1.0 UTR gap, the higher-rated player is expected to win 8-9 times out of 10. So there are literally SEVEN freaking
+quantal jumps in ability between myself and the pros. For those of you in the bay, this is equivalent to pitting GPT3 against Astra in a decompilation contest. As a corollary, what's also not shown in these short snippets is Richard routinely kicking my ass.</p>
 <p>Some insights I gained about my own strokes that I either never noticed before or never could put into words:</p>
 <ul class="support">
 <li>For my forehand, it appears that 1) my contact is too far out to the side, 2) my shoulders are not open, and 3)
@@ -702,12 +435,115 @@ Rublev for both of us; for the forehand, Fritz for me and Kyrgios for Richard; f
 Tiafoe for Richard.</li>
 </ul>
 """
+# below OURS_NOTES: what Claude, given only the measurements, said to fix
+COACH_NOTES = """
+<h2 class="part">3. Claude's analysis</h2>
+<h3>What Coach Claude Tells Me I Should Do, Verbatim (AI Slop by Definition)</h3>
+<p>I then fed all these measurements to Opus 5.5 with a blank context and asked it what I should do. I more or less
+agree with every single one of these points, and they are more comprehensive and deeper than what I would've been able
+to come up with, despite the writing being ass still. Some of these are known problems that several coaches have
+historically pointed out, while others are novel. Opus' TLDR is:</p>
+<ol class="support">
+<li>For the forehand, widen my stance, get my ass down into an athletic stance, and engage my hips and chest instead
+of just my arms through the ball.</li>
+<li>For the backhand, use a bent elbow to help with the unit turn, and drive my hips through the ball instead of arming
+it up.</li>
+<li>For the serve, toss to the right and front more so I lean less to the left.</li>
+</ol>
+<p>Coach Claude's raw analysis and suggestions for Richard and me below.</p>
+<div class="claude"><div class="claude-head"><span class="claude-tag">Claude</span><span class="claude-who"><button data-who="peter" aria-pressed="true">Peter</button><button data-who="richard" aria-pressed="false">Richard</button></span></div>
+<div data-for="peter">
+<p><b>Forehand: you turn, but you don't rotate through.</b> Your shoulder turn in the take-back is pro-level (105° vs.
+the pros' 104°), so the preparation is fine. What happens after it isn't:</p>
+<ul class="support">
+<li>Shoulders open only 51° at contact, against the pros' 80°: less than all eleven. Your chest is still sideways when
+you hit.</li>
+<li>Contact is 1.19 torsos out to the side (pros 0.96, all below you), and your stance is 0.63 m wide along the
+baseline (pros 0.87 m, all wider). You reach for the ball from a narrow base.</li>
+<li>Your take-back is small (0.24 torsos vs. 0.55) but your forward swing is long (0.27 s vs. 0.17 s, slower than all
+eleven). A short backswing feeding a long, slow forward swing is guiding the ball, not accelerating through it.</li>
+<li><b>Fix:</b> let the chest drive the swing, aiming for it to nearly face the net at contact. Take the racquet back
+further during the unit turn so the forward swing can be short and fast. Move your feet so contact is closer to your
+body and further in front, and widen your stance so your hips have something to rotate against.</li>
+</ul>
+<p><b>Backhand: straight arms, swinging up instead of through.</b> Your preparation is early (racquet back 0.6 s
+before contact) and your footwork is fine. The problem is the arms:</p>
+<ul class="support">
+<li>Take-back: arms locked, hands low by the hip, racquet pointing flat at the back fence. It is the biggest take-back
+of all twelve (0.76 torsos vs. 0.59). The pros bend their elbows and keep the racquet head up.</li>
+<li>Contact: arms still straight (elbow 150° vs. 111°), so the ball is 0.56 torsos out to the side (pros 0.33, all
+closer in).</li>
+<li>Swing: the racquet head drops low and comes almost straight up, a long path that takes 0.27 s vs. 0.16 s (slower
+than all eleven). You finish with arms straight up over your head: the highest and most upright finish of all
+twelve. The pros wrap over the right shoulder with bent elbows.</li>
+<li><b>Fix:</b> bend the elbows a little in the take-back and keep the racquet head up. Let the ball come closer and
+hit it just in front of the front hip. Swing through toward the target and let the racquet wrap over your right
+shoulder, not up at the sky.</li>
+</ul>
+<p><b>Serve: you fall sideways instead of going up and forward.</b></p>
+<ul class="support">
+<li>Trunk lean at contact is 31° toward the tossing side, the most of all twelve (pros 21°).</li>
+<li>Your feet travel 2.1 m into the court through contact, against the pros' 3.1 m: less than all eleven, and barely
+camera-dependent.</li>
+<li>Your toss arm leans in over your head (16° vs. 9°). The likely cause: the toss drifts over your head, so you bend
+sideways to reach it and can't drive forward. Your toss-to-hit timing (0.63 s vs. 0.66 s) is already normal.</li>
+<li><b>Fix:</b> toss further in front and slightly to the hitting side, so the ball would land about a metre inside
+the baseline if you let it drop, and practise serves where you have to land inside the court.</li>
+</ul>
+<p><b>In order:</b> forehand rotation and contact point first (the most-used stroke, and where the most measures
+agree), then the serve toss (one change should fix both the lean and the lack of drive), then the backhand take-back and finish.
+Re-film after a few weeks: shoulders open at contact, contact out to the side, and swing time should all move toward
+the pros.</p>
+</div>
+<div data-for="richard" hidden>
+<p>Richard's strokes are the closest to the pros' of the two of us. The forehand barely needs work; the backhand has
+the same shape as Peter's, only more so.</p>
+<p><b>Forehand: big and loose, a little too long.</b></p>
+<ul class="support">
+<li>The take-back is the biggest of all twelve (1.02 torsos vs. the pros' 0.55; the biggest pro is 0.74). The hitting
+arm goes straight back, well behind the body.</li>
+<li>Contact is 1.13 torsos out to the side (pros 0.96, all closer in), from a narrow base: 0.52 m along the baseline
+(pros 0.87 m, all wider).</li>
+<li>The rest looks like the pros' on video: a full unit turn with the racquet up, a forward swing of 0.20 s (pros
+0.17 s), and a finish that wraps low around the body.</li>
+<li><b>Fix:</b> nothing structural. Shorten the take-back a little so it holds up against pace, and widen the
+stance.</li>
+</ul>
+<p><b>Backhand: straight arms, reaching, standing up.</b></p>
+<ul class="support">
+<li>Take-back: arms locked and the racquet pointing flat at the back fence. It is the biggest of all twelve (1.16
+torsos vs. 0.59).</li>
+<li>Contact: arms still straight (elbow 156° vs. 111°), so the ball is 0.67 torsos out to the side, the furthest of
+anyone (pros 0.33).</li>
+<li>Feet: the front foot steps almost straight at the net, the feet nearly in line (stance angle 81° vs. 55°, the
+most closed of all twelve) and only 0.17 m apart along the baseline (pros 0.57 m). The narrowest base of anyone.</li>
+<li>The head moves the most of all twelve around contact (0.42 torsos vs. 0.22): on video you rise up out of the shot.
+The finish, over the right shoulder, is fine.</li>
+<li><b>Fix:</b> bend the elbows and keep the racquet head up in the take-back, so the ball can come closer. Step a
+little more to the side for a wider base, and stay down through contact.</li>
+</ul>
+<p><b>Serve: a good motion that stays at the baseline.</b></p>
+<ul class="support">
+<li>Toss to contact takes 0.77 s, the longest of all twelve (pros 0.66 s): the tossing arm stays up a long time while
+you wait for the ball.</li>
+<li>Your feet travel 2.0 m into the court through contact, against the pros' 3.1 m: less than all eleven, and barely
+camera-dependent.</li>
+<li>Your toss arm leans in over your head (15° vs. 9°). The knee bend, jump and reach look like the pros' on
+video.</li>
+<li><b>Fix:</b> toss a little lower and further into the court. The lower toss shortens the wait, and the forward one
+pulls you into the court.</li>
+</ul>
+<p><b>In order:</b> the backhand take-back and base first (four measures outside every pro), then the serve toss,
+then the forehand take-back. Re-film after a few weeks: backhand contact out to the side, stance angle, and serve
+into-court distance should all move toward the pros.</p>
+</div>
+</div>
+"""
 
 
-def page(out_dir, slug: str, body: str) -> None:
-    (out_dir / "index.html").write_text(PAGE.replace("{{TITLE}}", tennis.title(slug))
-                                        .replace("{{BODY}}", tennis.nav(slug) + body)
-                                        .replace("{{CSS}}", movement_report.CSS + tennis.CSS + explainer.CSS))
+def page(out_dir, title: str, body: str) -> None:
+    (out_dir / "index.html").write_text(PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
+                                        .replace("{{CSS}}", movement_report.CSS + explainer.CSS))
     print(out_dir / "index.html")
 
 
@@ -718,7 +554,7 @@ def tabs_html(tabs: list[tuple[str, str, str]]) -> str:
 
 
 def report(project: str, make_videos: bool = True) -> None:
-    """Top pros: the eleven players against each other."""
+    """Coach Claude: the eleven pros against each other, and our own players against them."""
     out_dir = ROOT_PROJECTS / project / "review" / "profiles"
     out_dir.mkdir(parents=True, exist_ok=True)
     res, mv = load(project)
@@ -732,12 +568,12 @@ def report(project: str, make_videos: bool = True) -> None:
                    + "".join(f"<td class=n>{found[k][p]} ({res[k]['strokes'].get(p, 0)})</td>" for k in KINDS)
                    + "</tr>" for p in players)
     svg, cols, order = heatmap(project, players, extra)
-    over = (f'<section class="wrap"><p>We fingerprinted {len(players)} popular ATP players from Australian Open and US Open '
+    over = (f'<section class="wrap">{INTRO}<h2 class="part">1. Fingerprinting the pros</h2><p>We fingerprinted {len(players)} popular ATP players from Australian Open and US Open '
             f'broadcasts, measuring the mechanics of their forehand, backhand, and serve. Each column is a player and each '
             f'row a measurement. <span style="color:var(--red)">Red</span> means more than the other pros on that row, '
             f'<span style="color:var(--blue)">blue</span> less. Neither is better.</p>{PROS_NOTES}</section>'
             f'<div class="heatwrap"><div class="scroll">{svg}</div>{explainer.panel(project, cols, order, clips, extra)}</div>'
-            + (f'<section class="wrap ours">{OURS_NOTES}</section>' if extra else ""))
+            + (f'<section class="wrap ours">{OURS_NOTES}{COACH_NOTES}</section>' if extra else ""))
     footage_html = (METHODS + f'<section class="wrap"><h3>Footage</h3><div style="overflow-x:auto"><table><thead><tr><th>Player</th><th class=n>Matches</th>'
             f'<th class=n>Minutes</th><th class=n>Serves</th><th class=n>Forehands</th><th class=n>Backhands</th>'
             f'</tr></thead><tbody>{rows}</tbody></table></div><p class="date">Each cell: strokes detected (strokes analysed, after '
@@ -749,24 +585,8 @@ def report(project: str, make_videos: bool = True) -> None:
                       f'{" ".join(method)} Colour by player to see whose movement is whose. Click a dot to play it '
                       f'and those around it.</p></section>{explorer}')]
     tabs = [("overview", "Overview", over)] + syllables + [("statistics", "Statistics", footage_html)]
-    body = ('<header class="wrap"><h1>Top pros</h1></header>' + tabs_html(tabs))
-    page(out_dir, "top-pros", body)
-
-
-def friends(project: str, make_videos: bool = True) -> None:
-    """Myself and friends: our own players (the projects compared with this one) against its eleven."""
-    extra = guests(project)
-    g = next(iter(extra.values()))[0]
-    out_dir = ROOT_PROJECTS / g / "review" / "profiles"
-    out_dir.mkdir(parents=True, exist_ok=True)
-    res, _ = load(project)
-    foot = footage(project)
-    if make_videos:
-        extreme_videos(project, list(extra), extra, out_dir)
-    cats = [(p.split()[0].lower(), p.split()[0], player_tab(project, p, extra, foot, res, out_dir)) for p in extra]
-    tabs = cats + [("statistics", "Statistics", statistics(project, extra))]
-    body = ('<header class="wrap"><h1>Myself and friends</h1></header>' + tabs_html(tabs))
-    page(out_dir, "friends", body)
+    title = "Is Claude a Good Tennis Coach?"
+    page(out_dir, title, f'<header class="wrap"><h1>{title}</h1></header>' + tabs_html(tabs))
 
 
 PAGE = """<!doctype html>
@@ -785,7 +605,7 @@ PAGE = """<!doctype html>
   h3 { font-size: 17px; margin: 22px 0 8px; font-weight: 600; } h3.sub-h { font-size: 19px; margin: 0 0 8px; }
   p { margin: 0 0 14px; } .date { color: var(--muted); font-size: 15px; }
   section.change { padding-top: 28px; }
-  ul.support { padding-left: 20px; } ul.support li { margin: 4px 0; }
+  ul.support, ol.support { padding-left: 20px; } ul.support li, ol.support li { margin: 4px 0; }
   table { width: 100%; border-collapse: collapse; font-size: 15px; }
   th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); padding: 6px 8px 6px 0; }
   td { border-bottom: 1px solid var(--line); padding: 7px 8px 7px 0; }
@@ -832,6 +652,17 @@ PAGE = """<!doctype html>
   .bone.hot { stroke-width: 4.5; stroke: var(--accent); }
   .headc { fill: none; stroke-width: 2; } .headc.other { stroke: var(--faint); } .headc.his { stroke: var(--blue); } .headc.hot { stroke: var(--accent); stroke-width: 3; }
   :root { --sunk: #f1f0ec; }
+  .claude { background: #fbf1ec; border: 1px solid #f1d9cc; border-left: 3px solid #d97757; border-radius: 10px;
+            padding: 16px 20px 4px; margin: 14px 0 0; font-size: 15px; line-height: 1.6; }
+  .claude-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+  .claude-head .claude-tag { margin-bottom: 0; }
+  .claude-who { display: inline-flex; background: #f4e1d6; border-radius: 999px; padding: 3px; }
+  .claude-who button { font: 500 13px Inter, sans-serif; color: #9a4a2c; background: transparent; border: 0;
+                       border-radius: 999px; padding: 4px 14px; cursor: pointer; }
+  .claude-who button[aria-pressed="true"] { background: #fff; color: #17171a; box-shadow: 0 1px 2px rgba(120, 60, 30, .18); }
+  .claude-tag { display: inline-block; font-size: 12px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+                color: #b4532f; margin-bottom: 10px; }
+  .claude p, .claude li { color: #2b2320; } .claude b { color: #17171a; } .claude ul.support { margin: 0 0 14px; }
 {{CSS}}
 </style></head>
 <body>{{BODY}}
@@ -840,6 +671,11 @@ PAGE = """<!doctype html>
   const seen = new IntersectionObserver(es => es.forEach(e => e.isIntersecting ? e.target.play().catch(() => {}) : e.target.pause()),
                                         { threshold: 0.5 });
   document.querySelectorAll("video").forEach(v => seen.observe(v));
+  document.querySelectorAll(".claude").forEach(box => box.querySelectorAll("[data-who]").forEach(b =>
+    b.addEventListener("click", () => {
+      box.querySelectorAll("[data-who]").forEach(x => x.setAttribute("aria-pressed", x === b));
+      box.querySelectorAll("[data-for]").forEach(d => d.hidden = d.dataset.for !== b.dataset.who);
+    })));
   const cats = document.querySelectorAll("nav.cats button");
   function showCat(id) {
     if (!document.getElementById(id)) id = cats[0].dataset.cat;
@@ -861,4 +697,3 @@ if __name__ == "__main__":
     ap.add_argument("--no-videos", action="store_true")
     a = ap.parse_args()
     report(a.project, not a.no_videos)
-    friends(a.project, not a.no_videos)

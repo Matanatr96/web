@@ -18,7 +18,7 @@ import numpy as np
 
 from dsa.ingest.projects import PROJECTS
 from dsa.measure.technique import ERA_NAMES, GRID, HZ, KINDS, era
-from dsa.pages import movement_report, tennis
+from dsa.pages import movement_report
 from dsa.pages.exemplars import render
 from dsa.paths import PROJECTS as ROOT_PROJECTS
 from dsa.scene.court import METRE, homography
@@ -394,7 +394,6 @@ def report(project: str, videos: bool = True) -> None:
     counts = {kind: sum(load(project, kind)[0]["counts"]["his"]) for kind in KINDS}
     tabs = {"syllables": "Syllables", "then": "Then vs Now", "methods": "Methods"}   # id: label
     body = f"""
-{tennis.nav("federer")}
 <header class="wrap">
   <p class="date">{BYLINE}</p>
   <h1>Federer</h1>
@@ -425,7 +424,7 @@ def report(project: str, videos: bool = True) -> None:
 </div>
 
 <footer class="wrap"></footer>"""
-    (out / "index.html").write_text(PAGE.replace("{{BODY}}", body).replace("{{CSS}}", movement_report.CSS + tennis.CSS)
+    (out / "index.html").write_text(PAGE.replace("{{BODY}}", body).replace("{{CSS}}", movement_report.CSS)
                                     .replace("{{JS}}", ""))
     print("wrote", out / "index.html")
 

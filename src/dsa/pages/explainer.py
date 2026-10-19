@@ -73,7 +73,8 @@ SAY = {
 def picks(project: str, players: list[str]) -> dict[str, dict]:
     """Per stroke kind, the strokes the video shows (indices into its strokes npz): the most average one (nearest the
     median of the players' medians on every measure shown, each in SDs of a player's own strokes; clearly seen, not
-    on the run; serves from the deuce side) and each player's most typical one (nearest his own medians)."""
+    on the run; serves from the deuce side) and each player's EXAMPLES most typical ones (nearest his own medians,
+    most typical first)."""
     from dsa.pages.profiles_report import UNSURE, kept, load, surname, strokes
 
     res, _ = load(project)
@@ -85,20 +86,22 @@ def picks(project: str, players: list[str]) -> dict[str, dict]:
         within = np.sqrt(np.nanmean(np.stack([np.nanvar(f[pl == p], 0) for p in players]), 0))
         meds = {p: np.nanmedian(f[pl == p], 0) for p in players}
         calm = s["ctx"][:, 2] <= np.nanquantile(s["ctx"][:, 2], 0.6) if k != "serve" else deuce(project, s)
-        def nearest(sel, target):
+        def nearest(sel, target, n=1):
             idx = np.flatnonzero(sel)
-            return int(idx[np.argmin(np.nansum(((f[idx] - target) / within) ** 2, 1))])
+            near = [int(j) for j in idx[np.argsort(np.nansum(((f[idx] - target) / within) ** 2, 1))][:n]]
+            return near if n > 1 else near[0]
         ok = np.isin(pl, [p for p in players if p not in UNSURE]) & (q >= np.nanmedian(q)) & calm
         out[k] = {"avg": nearest(ok, np.median(np.stack(list(meds.values())), 0)),
-                  "players": {surname(p): nearest((pl == p) & (q >= np.nanmedian(q[pl == p])) & calm, meds[p])
+                  "players": {surname(p): nearest((pl == p) & (q >= np.nanmedian(q[pl == p])) & calm, meds[p], EXAMPLES)
                               for p in players if p not in UNSURE}}
     return out
 
 
 def guest_picks(project: str, players: list[str], extra: dict) -> dict[str, dict[str, int]]:
-    """Per kind, each of our own players' most typical stroke (index into his project's strokes npz): of the SIX
-    nearest his medians on the measures shown for phone footage (serves: from the deuce side) (in SDs of a pro's own strokes), the one he stands
-    stillest for (his feet travel least over the clip): a standard stroke, not one on the move."""
+    """Per kind, each of our own players' EXAMPLES most typical strokes (indices into his project's strokes npz): of the
+    SIX nearest his medians on the measures shown for phone footage (serves: from the deuce side) (in SDs of a pro's own
+    strokes), the ones he stands stillest for (his feet travel least over the clip), stillest first: standard strokes,
+    not ones on the move."""
     from dsa.ingest.projects import PROJECTS
     from dsa.pages.profiles_report import kept, load, strokes
 
@@ -121,11 +124,12 @@ def guest_picks(project: str, players: list[str], extra: dict) -> dict[str, dict
             f = gs["f"][mine][:, gc]
             near = mine[np.argsort(np.nansum(((f - np.nanmedian(f, 0)) / within) ** 2, 1))][:SIX]
             _, _, pose = strokes(g, k)
-            out[k][q] = int(near[int(np.argmin([travel(pose[int(gs["hit"][i])]) for i in near]))])
+            out[k][q] = [int(near[j]) for j in np.argsort([travel(pose[int(gs["hit"][i])]) for i in near])[:EXAMPLES]]
     return out
 
 
 SIX = 6
+EXAMPLES = 5    # clips per player and stroke, to flip through
 
 
 def deuce(project: str, s: dict) -> np.ndarray:
@@ -149,7 +153,8 @@ def travel(pose: np.ndarray) -> float:
 
 
 def videos(project: str, players: list[str], out_dir: Path, make: bool, extra: dict | None = None) -> dict[str, dict]:
-    """The clips (file names) per kind: avg and per player (and each of ours, extra), rendered if make or missing."""
+    """The clips ([file name, label]) per kind: avg, and a list per player (and each of ours, extra), most typical
+    first; rendered if make or missing. A player's first clip keeps the name it had when there was only one."""
     from dsa.pages.exemplars import single
     from dsa.pages.profiles_report import label_of, load, stroke
 
@@ -168,9 +173,12 @@ def videos(project: str, players: list[str], out_dir: Path, make: bool, extra: d
             if make or not path.exists():
                 jobs.append((st, path, win))
             return path.name, st["label"]
-        out[k] = {"avg": clip(c["avg"], "average"), "players": {q: clip(i, q.lower()) for q, i in c["players"].items()}}
-        for q, i in mine[k].items():
-            out[k]["players"][label_of(q, extra)] = clip(i, label_of(q, extra).lower(), extra[q][0])
+        nth = lambda name, j: name if j == 0 else f"{name}_{j + 1}"            # noqa: E731
+        out[k] = {"avg": clip(c["avg"], "average"),
+                  "players": {q: [clip(i, nth(q.lower(), j)) for j, i in enumerate(ix)] for q, ix in c["players"].items()}}
+        for q, ix in mine[k].items():
+            out[k]["players"][label_of(q, extra)] = [clip(i, nth(label_of(q, extra).lower(), j), extra[q][0])
+                                                      for j, i in enumerate(ix)]
     print(len(jobs), "clips", flush=True)
     with ThreadPoolExecutor(6) as ex:
         list(ex.map(lambda j: single(project, j[0], j[1], *j[2]), jobs))
@@ -267,7 +275,7 @@ def panel(project: str, players: list[str], order: list[tuple[str, str]], clips:
     return (f'<div class="explain"><label class="ex-ref">Compare with <select id="ex-ref"><option value="">Average'
             f'</option>{pick}</select></label><div class="ex-cap"><b id="ex-title"></b>'
             f'<p id="ex-say"></p></div><div class="ex-grid">'
-            f'<figure><video id="ex-me" muted playsinline preload="auto"></video><figcaption id="ex-mcap"></figcaption></figure>'
+            f'<figure><video id="ex-me" muted playsinline preload="auto"></video><figcaption id="ex-mcap"></figcaption><div class="ex-pick" id="ex-pick"></div></figure>'
             f'<figure><video id="ex-avg" muted playsinline preload="auto"></video><figcaption id="ex-acap"></figcaption></figure>'
             f'<figure><svg id="ex-fig" viewBox="0 0 320 320" role="img"></svg><figcaption id="ex-fcap"></figcaption></figure>'
             f'<figure><svg id="ex-box" viewBox="0 0 320 320" role="img"></svg><figcaption id="ex-bcap"></figcaption></figure>'
@@ -301,6 +309,10 @@ CSS = """
   #ex-box .bar { stroke-width: 5; stroke-linecap: round; } #ex-box .bar.me { stroke: #2563eb; } #ex-box .bar.all { stroke: #b9b8b3; }
   #ex-box .dot.me { fill: #2563eb; } #ex-box .dot.all { fill: #b9b8b3; }
   .ex-cap { font-size: 15px; line-height: 1.45; min-height: 96px; }
+  .ex-pick { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 2px; }
+  .ex-pick button { font: 500 12px Inter, sans-serif; color: var(--muted); background: transparent; border: 1px solid var(--line);
+                    border-radius: 999px; min-width: 26px; padding: 2px 8px; cursor: pointer; }
+  .ex-pick button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink); }
   .ex-ref { display: block; font-size: 13px; color: var(--muted); margin: 0 0 8px; }
   .ex-ref select { font: inherit; color: var(--ink); margin-left: 6px; padding: 2px 6px; border: 1px solid var(--line);
                    border-radius: 6px; background: var(--bg); }
@@ -338,7 +350,7 @@ JS = r"""
     }
     const a = m.meds[who], b = m.meds[ref];
     return {lab: ref, low: ref, poss: ref + "'s", val: m.vals[ref], med: b, pose: K.players[ref], mom: K.mom[ref],
-            clip: C?.players[ref], cap: `${ref}'s ${m.k}`, feet: st[ref],
+            clip: C?.players[ref]?.[0], cap: `${ref}'s ${m.k}`, feet: st[ref],
             z: a == null ? null : (a - b) / m.sd, diff: a == null ? null : fmt(Math.abs(a - b), m.unit)};
   }
   const $ = id => document.getElementById(id), NS = "http://www.w3.org/2000/svg";
@@ -482,17 +494,32 @@ JS = r"""
     (blobs[file] ??= fetch(file).then(r => r.blob()).then(b => URL.createObjectURL(b)))
       .then(u => { if (v.dataset.file === file) v.src = u; });
   };
-  let outline = null;
+  let outline = null, pick = 0, picked = "";      // which of the player's clips is showing, for whom and which stroke
+  function pager(mine, key) {
+    const el = $("ex-pick");
+    el.textContent = "";
+    if (!mine || mine.length < 2) return;
+    mine.forEach(([, label], j) => {
+      const b = document.createElement("button");
+      b.textContent = j + 1; b.title = label; b.setAttribute("aria-pressed", j === pick);
+      b.addEventListener("click", () => {          // holds what is showing, so the panel stops stepping on
+        held ??= {i: cur().i, who: WHO()}; hov = null; i = held.i; pick = j; picked = key; restart();
+      });
+      el.appendChild(b);
+    });
+  }
   function caption() {
     const m = M(), C = D.clips[m.k], who = WHO(), r = R(who, m, D.kinds[m.k]);
     if (C) {
       va.style.visibility = r.clip ? "visible" : "hidden";
       if (r.clip) put(va, r.clip[0]);
       $("ex-acap").textContent = r.cap;
-      const mine = C.players[who];
+      const mine = C.players[who], key = who + " " + m.k;
+      if (key !== picked) { pick = 0; picked = key; }
       vm.style.visibility = mine ? "visible" : "hidden";
-      if (mine) put(vm, mine[0]);
-      $("ex-mcap").textContent = `${who}'s ${m.k}`;
+      if (mine) put(vm, mine[Math.min(pick, mine.length - 1)][0]);
+      $("ex-mcap").textContent = `${who}'s ${m.k}` + (mine?.length > 1 ? ` (${Math.min(pick, mine.length - 1) + 1} of ${mine.length})` : "");
+      pager(mine, key);
     }
     $("ex-fcap").textContent = `${who}'s average vs ${r.poss}`;
     const z = r.z;
