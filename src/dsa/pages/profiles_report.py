@@ -1,4 +1,4 @@
-"""Step 7 for a project of many players (atp_hardcourt), the Coach Claude page: how each player's strokes and movement
+"""Step 7 for a project of many players (atp_hardcourt), the Claude as a Tennis Coach page: how each player's strokes and movement
 differ from the other players' (dsa.measure.profiles). An overview heatmap of every player against every measure, with
 the explainer beside it (dsa.pages.explainer: a few typical clips per player and stroke to flip through); players of a
 project compared with this one ("compare_with": our own phone footage) are set against the pros on it. A Syllables tab
@@ -360,10 +360,9 @@ and Shelton, both have significant trunk leans.</li>
 """
 # the overview's opening: what the page asks, and its three parts
 INTRO = """
-<p>I wanted to evaluate whether Claude is a good tennis coach. I first provided Claude with good featurization and
-ground truth to evaluate myself and others against. Then, with the same data, I analyzed my own strokes (and my friend
-Richard's). Finally, I compared my own analysis against Claude's (Opus 5.5). Turns out Claude's analysis is vastly
-better than mine. However, there were a lot of nuances to get right -- read more below.</p>
+<p>I fed Claude featurized data from 11 professional tennis players, myself, and my semi-pro friend Richard, and asked
+it to coach us. With the same data, I also analyzed our strokes myself and compared the two. Turns out Claude's
+analysis is vastly better than mine. However, there were a lot of nuances to get right -- read more below.</p>
 <h2 class="part">Featurization</h2>
 <p>For featurization, I processed raw videos and extracted ball location, court coordinates, labeled strokes (FH, BH,
 topspin, slice, serve, etc) and joint data. These were largely done via off-the-shelf open-source models (mostly vision
@@ -554,7 +553,7 @@ def tabs_html(tabs: list[tuple[str, str, str]]) -> str:
 
 
 def report(project: str, make_videos: bool = True) -> None:
-    """Coach Claude: the eleven pros against each other, and our own players against them."""
+    """Claude as a Tennis Coach: the eleven pros against each other, and our own players against them."""
     out_dir = ROOT_PROJECTS / project / "review" / "profiles"
     out_dir.mkdir(parents=True, exist_ok=True)
     res, mv = load(project)
@@ -585,7 +584,7 @@ def report(project: str, make_videos: bool = True) -> None:
                       f'{" ".join(method)} Colour by player to see whose movement is whose. Click a dot to play it '
                       f'and those around it.</p></section>{explorer}')]
     tabs = [("overview", "Overview", over)] + syllables + [("statistics", "Statistics", footage_html)]
-    title = "Is Claude a Good Tennis Coach?"
+    title = "Claude as a Tennis Coach"
     page(out_dir, title, f'<header class="wrap"><h1>{title}</h1></header>' + tabs_html(tabs))
 
 
