@@ -49,15 +49,20 @@ def adjusted(f: np.ndarray, ctx: np.ndarray, cam: np.ndarray, player: np.ndarray
 COURT = ["stance_m", "stance_side_m", "stance_fwd_m", "into_court"]      # metres on the court: made body-relative too
 
 
-def body_relative(f: np.ndarray, names: list[str], z: dict, keep: np.ndarray, lo: int, hi: int, meta: list) -> np.ndarray:
-    """Every length in his own torso lengths (mid-shoulder to mid-hip), so a tall player's long reach isn't taken for
-    style: the pose's lengths already are; the court's (metres) are divided by his torso in metres (the torso in
-    pixels over the court's pixels per metre where he stands)."""
-    px = z["pose"][keep][:, lo:hi + 1]
-    mid = lambda a, b: (px[:, :, a, :2] + px[:, :, b, :2]) / 2                            # noqa: E731
+def torso_m(z: dict, keep: np.ndarray, lo: int, hi: int, meta: list, yscale: float = 1.0) -> np.ndarray:
+    """Per stroke, his torso (mid-shoulder to mid-hip) in metres as the camera sees it: the torso in pixels (heights
+    scaled by yscale, as prepare's) over the court's pixels per metre across the court where he stands."""
+    px = z["pose"][keep][:, lo:hi + 1, :, :2] * [1, yscale]
+    mid = lambda a, b: (px[:, :, a] + px[:, :, b]) / 2                                   # noqa: E731
     torso = np.nanmedian(np.linalg.norm(mid(1, 2) - mid(7, 8), axis=-1), 1)
-    ppm = np.array([(m["camera"] or {}).get("ppm", np.nan) for m in meta])
-    m = torso / ppm
+    return torso / np.array([(m["camera"] or {}).get("ppm", np.nan) for m in meta])
+
+
+def body_relative(f: np.ndarray, names: list[str], z: dict, keep: np.ndarray, lo: int, hi: int, meta: list,
+                  yscale: float = 1.0) -> np.ndarray:
+    """Every length in his own torso lengths (mid-shoulder to mid-hip), so a tall player's long reach isn't taken for
+    style: the pose's lengths already are; the court's (metres) are divided by his torso in metres."""
+    m = torso_m(z, keep, lo, hi, meta, yscale)
     m = np.where(np.isfinite(m), m, np.nanmedian(m))
     g = f.copy()
     for j, n in enumerate(names):
@@ -183,16 +188,43 @@ def movement(project: str) -> dict:
     return out
 
 
+def stature(project: str, kind: str, yscale: float = 1.0) -> dict[str, float]:
+    """Per player with a known height ("heights"), his median torso as the camera sees it over his height."""
+    d = prepare(project, kind, lambda m: m["player"], yscale)
+    m = torso_m(d["z"], d["keep"], d["lo"], d["hi"], d["meta"], yscale)
+    player = np.array([x["player"] for x in d["meta"]])
+    heights = PROJECTS[project].get("heights", {})
+    return {p: float(np.nanmedian(m[player == p]) / heights[p]) for p in dict.fromkeys(player) if p in heights}
+
+
+def foreshortening(project: str, kind: str) -> dict:
+    """How much longer a body looks, for its height, on this project's camera than on compare_with's: the median of
+    its players' torso-to-height ratios over the median of the other project's (each player's own median first). A
+    phone behind the baseline sits lower than a TV camera and sees the body less foreshortened, so its torsos look
+    longer: a length out to the side, in torso lengths, comes out short, and an angle from upright small.
+    k: what the skeletons' heights are divided by so the medians match. A leaning torso shortens by less than the
+    heights do, so k is found by a few rounds of rescaling, not taken from the ratio itself."""
+    ours, theirs = stature(project, kind), stature(PROJECTS[project]["compare_with"], kind)
+    target, k = np.median(list(theirs.values())), np.median(list(ours.values())) / np.median(list(theirs.values()))
+    for _ in range(4):
+        k *= np.median(list(stature(project, kind, 1 / k).values())) / target
+    return {"k": float(k), "ratio": float(np.median(list(ours.values())) / target),
+            "ours": {p: round(v, 4) for p, v in ours.items()}, "theirs": {p: round(v, 4) for p, v in theirs.items()}}
+
+
 def guests(project: str, kind: str) -> dict:
     """A project measured against another's players ("compare_with": our own phone sessions against
-    atp_hardcourt): its players' routine strokes as boxes in the same units as analyse's (lengths in torso lengths),
-    but with nothing regressed out: the pros' camera effects, estimated within TV broadcasts, don't carry to a
-    phone (twice the zoom, a much lower angle), so the phone's view is left in."""
+    atp_hardcourt): its players' routine strokes as boxes in the same units as analyse's (lengths in torso lengths).
+    The pros' camera effects, estimated within TV broadcasts, don't carry to a phone (twice the zoom, half the
+    angle), so they aren't regressed out; instead the skeletons' heights are scaled down by the measured
+    foreshortening, so the body looks as foreshortened as on TV. A camera this low sees less of anything pointing
+    toward the net, which no scaling of the picture fixes."""
     names, lengths = list(MEASURES[kind][0]), MEASURES[kind][1]
-    d = prepare(project, kind, lambda m: m["player"])
+    fs = foreshortening(project, kind)
+    d = prepare(project, kind, lambda m: m["player"], 1 / fs["k"])
     f, meta, z, lo, hi = d["f"], d["meta"], d["z"], d["lo"], d["hi"]
     player = np.array([m["player"] for m in meta])
-    g = body_relative(f, names, z, d["keep"], lo, hi, meta)
+    g = body_relative(f, names, z, d["keep"], lo, hi, meta, 1 / fs["k"])
     quality = np.nanmean(d["score"][:, lo:hi + 1], (1, 2))
     (ROOT_PROJECTS / project / "profiles").mkdir(parents=True, exist_ok=True)
     np.savez_compressed(ROOT_PROJECTS / project / "profiles" / f"{kind}_strokes.npz", hit=d["keep"], f=g,
@@ -203,7 +235,8 @@ def guests(project: str, kind: str) -> dict:
     return {"kind": kind, "features": names, "lengths": lengths, "kept": int(len(f)), "extracted": d["n"],
             "strokes": {p: int((player == p).sum()) for p in dict.fromkeys(player)},
             "videos": {p: sorted({m["video"] for m, q in zip(meta, player) if q == p}) for p in dict.fromkeys(player)},
-            "camera": cam, "box": box(np.where(np.isfinite(g), g, np.nan), player),
+            "camera": cam, "foreshortening": fs, "after": stature(project, kind, 1 / fs["k"]),
+            "box": box(np.where(np.isfinite(g), g, np.nan), player),
             "median": {p: np.nanmedian(g[player == p], 0).round(4).tolist() for p in dict.fromkeys(player)},
             "win": list(d["win"]),
             "mean_pose": {str(p): np.nanmean(d["w"][player == p], 0).round(4).tolist() for p in dict.fromkeys(player)}}

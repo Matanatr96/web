@@ -83,6 +83,7 @@ PROJECTS = {
                 "with the atp_hardcourt players'. The phone sits lower and closer than a TV camera.",
         "who": "Peter",                  # named by hand (Opus can't know him): names.json
         "players": ["Peter", "Richard Pham"],
+        "heights": {"Peter": 1.83, "Richard Pham": 1.79},   # m, as they told us (6'0", about 5'10.5")
         "compare_with": "atp_hardcourt",     # dsa.measure.profiles: boxes against its players; a tab each on its page
         "strokes": True,                 # F3ED on phone footage too (it is trained on TV: checked on a sample)
         "no_clips": ["2025_richard"],    # the app's graphics over the picture: measured, never shown as a clip
@@ -103,6 +104,10 @@ PROJECTS = {
         # Dimitrov dropped (too few routine backhands); his matches stay, his strokes among the others'
         "players": ["Jannik Sinner", "Carlos Alcaraz", "Novak Djokovic", "Daniil Medvedev", "Frances Tiafoe",
                     "Alexander Zverev", "Ben Shelton", "Nick Kyrgios", "Andrey Rublev", "Taylor Fritz", "Tommy Paul"],
+        # m, listed heights (ATP): with "own"'s, how much a phone foreshortens the body against TV (dsa.measure.profiles)
+        "heights": {"Jannik Sinner": 1.91, "Carlos Alcaraz": 1.83, "Novak Djokovic": 1.88, "Daniil Medvedev": 1.98,
+                    "Frances Tiafoe": 1.88, "Alexander Zverev": 1.98, "Ben Shelton": 1.93, "Nick Kyrgios": 1.93,
+                    "Andrey Rublev": 1.88, "Taylor Fritz": 1.96, "Tommy Paul": 1.85},
         # the GPU step (dsa.gpu.process): skeletons at the near end only (all the analysis uses; the far end is three
         # quarters of them) and a court check every 10 frames; checked on federer_usopen to change next to nothing
         "gpu": {"near_only": True, "court_every": 10},

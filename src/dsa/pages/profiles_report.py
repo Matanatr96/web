@@ -1,8 +1,9 @@
 """Step 7 for a project of many players (atp_hardcourt), the Claude as a Tennis Coach page: how each player's strokes and movement
 differ from the other players' (dsa.measure.profiles). An overview heatmap of every player against every measure, with
 the explainer beside it (dsa.pages.explainer: a few typical clips per player and stroke to flip through); players of a
-project compared with this one ("compare_with": our own phone footage) are set against the pros on it. A Syllables tab
-when the project has movement syllables, and a Statistics tab with the methods and footage.
+project compared with this one ("compare_with": our own phone footage) are set against the pros on it. One page, no
+tabs: the opening and the heatmap first, then the write-up, the movement syllables (if the project has them), and
+Methods with the traits left out and the footage.
 
     python -m dsa.measure.profiles atp_hardcourt                  # first
     python -m dsa.pages.profiles_report atp_hardcourt [--no-videos]  -> projects/<project>/review/profiles/
@@ -37,28 +38,38 @@ SHORT = {"contact_height": "contact height", "contact_side": "contact out to sid
          "separation": "hip-shoulder sep.", "shoulder_tilt": "shoulder tilt", "knee_bend": "knee angle",
          "takeback": "take-back size", "swing_time": "swing time", "wrist_speed": "wrist speed",
          "finish_height": "finish height", "finish_side": "finish out to side", "head_still": "head movement",
-         "stance_m": "stance width", "stance_side_m": "stance width", "stance_fwd_m": "stance forward",
+         "stance_m": "feet apart", "stance_side_m": "stance width", "stance_fwd_m": "stance forward",
          "stance_angle": "stance angle", "reach": "reach", "toss_arm": "toss arm height", "toss_straight": "toss arm straightness",
          "toss_tilt": "toss arm in over head", "trunk_lean": "trunk lean", "hips_over": "hips to hitting side",
          "finish_arm": "finish arm height", "trophy_time": "toss-to-hit time",
-         "trophy_tilt": "trophy shoulder tilt", "lean": "lean", "into_court": "into court"}
-# hip-shoulder separation needs the hips' turn, and seen from behind the two hip points are close together and
-# jittery: it comes out with the hips turned further than the shoulders on backhands, which they aren't
-# wrist speed: from behind, the swing's speed toward the net is along the camera's line of sight and unseen, so it
-# measures only the wrist's speed across the picture, not how fast he swings
-# the elbow's bend: a forearm pointing at the net is foreshortened and looks bent; the stance's length and depth:
-# depth on the court is squashed from behind (its angle too, but the camera explains under 2% of it); on backhands the shoulders' opening (the players' order
-# hardly repeats from one half of their matches to the other) and the take-back and swing time (the forward
-# swing's start is often at the edge of its search)
-UNRELIABLE = {"separation", "wrist_speed", "elbow_angle", "stance_m", "stance_fwd_m", "finish_open",
-              "takeback_turn"}
-# serve lean is trunk lean and hips over the feet together (they explain 94% of it between players), and a forehand's
-# finish height and side are mostly the arm's angle at the finish (93% and 78%): the parts are shown instead.
-# toss arm height: how high the tossing hand gets mixes how straight the arm is, how far it leans in, how far it
-# points toward the net (unseen from behind) and how high the shoulder lifts; toss elbow and toss arm lean instead
-# the backhand's stance by its angle rather than its width (the width alone misreads a stance stepping toward the net)
-UNRELIABLE_BY = {"backhand": {"shoulder_width", "takeback", "swing_time", "finish_arm", "stance_side_m"},
-                 "forehand": {"finish_height", "finish_side", "stance_angle"}, "serve": {"toss_arm", "lean"}}
+         "trophy_tilt": "trophy shoulder tilt", "lean": "lean", "into_court": "into court",
+         "finish_open": "shoulders open at finish", "takeback_turn": "take-back shoulder turn"}
+# the measures left out by hand, and why (shown in Methods); None: the camera rule's reason, its share printed beside
+WHY = {"separation": "Seen from behind, the two hip points are close together and jittery: it showed the hips turned "
+                     "further than the shoulders on backhands, which they aren't.",
+       "wrist_speed": "From behind, the swing toward the net is along the camera's line of sight, so it measured only "
+                      "the wrist's speed across the picture.",
+       "elbow_angle": "A forearm pointing at the net is foreshortened and looks bent.",
+       "stance_m": "Depth on the court is squashed when seen from behind.",
+       "stance_fwd_m": "Depth on the court is squashed when seen from behind.",
+       "finish_open": None, "takeback_turn": None}
+WHY_BY = {"backhand": {"shoulder_width": "The players' order hardly repeats from one half of their matches to the other.",
+                       "takeback": "The forward swing's start, which it is measured at, is often at the edge of its search.",
+                       "swing_time": "The forward swing's start is often at the edge of its search.",
+                       "finish_arm": "Finish height and finish out to side are shown directly instead.",
+                       "stance_side_m": "Width alone misreads a stance stepping toward the net; stance angle is shown "
+                                        "instead."},
+          "forehand": {"finish_height": "Mostly the arm's angle at the finish (it explains 93% of it between players): "
+                                        "finish arm height is shown instead.",
+                       "finish_side": "Mostly the arm's angle at the finish (it explains 78% of it between players): "
+                                      "finish arm height is shown instead.",
+                       "stance_angle": None},
+          "serve": {"toss_arm": "It mixes how straight the arm is, how far it leans in, how far it points toward the net "
+                                "(unseen from behind) and how high the shoulder lifts: toss arm straightness and toss arm "
+                                "in over head are shown instead.",
+                    "lean": "Trunk lean and hips over the feet explain 94% of it between players: both are shown instead."}}
+UNRELIABLE = set(WHY)
+UNRELIABLE_BY = {k: set(v) for k, v in WHY_BY.items()}
 # the rows of a stroke, phase by phase; a measure not listed goes last
 PHASES = {"serve": [["toss_straight", "toss_tilt", "trophy_tilt", "trophy_time"], ["reach", "trunk_lean", "hips_over"]],
           "forehand": [["takeback", "swing_time"], ["contact_side", "shoulder_width", "head_still"],
@@ -108,6 +119,27 @@ def kept(project: str, kind: str, phone: bool = False) -> list[str]:
     share = r.get("camera_share", [0] * len(r["features"]))
     return [n for n, c in zip(r["features"], share)
             if c < CAMERA_MAX and n not in UNRELIABLE | UNRELIABLE_BY.get(kind, set()) and not (phone and SENS.get(n) == "high")]
+
+
+def left_out(project: str) -> tuple[int, int, str]:
+    """Every measure computed, how many the heatmap shows, and a table of the rest with why each is left out."""
+    res, rows, total, shown = load(project)[0], [], 0, 0
+    for k in KINDS:
+        r = res[k]
+        share = r.get("camera_share", [0] * len(r["features"]))
+        for n, c in zip(r["features"], share):
+            total += 1
+            if n in kept(project, k):
+                shown += 1
+                continue
+            why = [w for w in [WHY_BY.get(k, {}).get(n) or WHY.get(n)] if w]
+            if c >= CAMERA_MAX:
+                why.append(f"The camera explains {c:.0%} of a player's stroke-to-stroke spread.")
+            rows.append(f"<tr><td>{k.capitalize()}</td><td>{SHORT.get(n, n)}</td>"
+                        f"<td>{' '.join(why) or 'Left out by hand; no reason recorded.'}</td></tr>")
+    table = (f'<div style="overflow-x:auto"><table><thead><tr><th>Stroke</th><th>Trait</th><th>Why it is left out</th>'
+             f'</tr></thead><tbody>{"".join(rows)}</tbody></table></div>')
+    return total, shown, table
 
 
 def tests(project: str, phone: bool = False, every: bool = False) -> list[dict]:
@@ -263,14 +295,15 @@ def legend(x: float, y: float, cw: float) -> str:
 # ------------------------------------------------------------------ guests: our own phone sessions
 
 # how much each measure depends on where the camera is, both cameras behind the court: the phone lower and closer
-# than TV. low: on the court surface (mapped through its lines) or a timing; medium: left-right in the picture
-# (in torso lengths, which a camera looking down shortens); high: up-down in the picture (height mixes with depth
-# toward the net) or an angle in the picture (an arm toward the net foreshortens differently from each height)
+# than TV. low: on the court surface (mapped through its lines) or a timing; medium: left-right in the picture, or an
+# angle from upright seen from behind (in torso lengths, which a camera looking down shortens: measured and corrected
+# for the phone, dsa.measure.profiles.foreshortening); high: up-down in the picture (height mixes with depth toward the
+# net) or an angle in the picture (an arm toward the net foreshortens differently from each height): left out for ours
 SENS = {"stance_m": "low", "stance_side_m": "low", "stance_fwd_m": "low", "stance_angle": "low", "swing_time": "low",
         "trophy_time": "low", "into_court": "low",
         "contact_side": "medium", "takeback": "medium", "finish_side": "medium", "shoulder_width": "medium",
         "shoulder_coil": "medium", "hip_coil": "medium", "separation": "medium", "head_still": "medium",
-        "lean": "medium",
+        "lean": "medium", "trunk_lean": "medium", "hips_over": "medium", "toss_tilt": "medium", "finish_arm": "medium",
         "contact_height": "high", "finish_height": "high", "reach": "high", "toss_arm": "high", "elbow_angle": "high", "toss_straight": "high",
         "knee_bend": "high", "shoulder_tilt": "high", "trophy_tilt": "high", "wrist_speed": "high"}
 
@@ -342,7 +375,7 @@ PROS_NOTES = """
 <p>A lot of the observations are obvious by eye, but it has been illuminating to quantify differences in each
 player's strokes are. Some things I noticed:</p>
 <ul class="support">
-<li><b>The serve is the most recognizable stroke.</b> Recognizability (as quantified by RMS z, see Statistics) was 1.42
+<li><b>The serve is the most recognizable stroke.</b> Recognizability (as quantified by RMS z, see Methods) was 1.42
 for the serve, 0.67 for the forehand, and 0.57 for the backhand. So the serve was the most recognizable, followed by forehand and
 then the two-handed backhand.</li>
 <li><b>Tiafoe's serve is by far the most different.</b> His serve RMS z is 2.57, against 1.68 for the next highest
@@ -358,11 +391,16 @@ is tilted sideways when you're hitting the ball straight? But it seems like a lo
 and Shelton, both have significant trunk leans.</li>
 </ul>
 """
-# the overview's opening: what the page asks, and its three parts
+# the page's opening, above the heatmap ({strokes}: the pros' strokes analysed)
 INTRO = """
 <p>I fed Claude featurized data from 11 professional tennis players, myself, and my semi-pro friend Richard, and asked
-it to coach us. With the same data, I also analyzed our strokes myself and compared the two. Turns out Claude's
-analysis is vastly better than mine. However, there were a lot of nuances to get right -- read more below.</p>
+it to coach us. The data covered the mechanics of our serves, forehands and two-handed backhands, and for the pros it
+came from {strokes:,} strokes in Australian Open and US Open broadcasts. With the same data, I also analyzed our strokes
+myself and compared the two. Turns out Claude's analysis is vastly better than mine. However, there were a lot of
+nuances to get right -- read more below.</p>
+"""
+# under the heatmap: how the traits were made, and which were kept ({total}, {shown}: measures computed and shown)
+FEATURES = """
 <h2 class="part">Featurization</h2>
 <p>For featurization, I processed raw videos and extracted ball location, court coordinates, labeled strokes (FH, BH,
 topspin, slice, serve, etc) and joint data. These were largely done via off-the-shelf open-source models, and some, like ball
@@ -377,10 +415,18 @@ rating, it'd be this:</p>
 <li><b>Completeness: 4/5.</b> Opus came up with a lot of good candidate traits.</li>
 <li><b>Useful: 3/5.</b> It had very poor judgment over how useful or interesting these traits are.</li>
 <li><b>Rigor: 2/5.</b> It did not have the common sense to normalize these traits into measures that are generalizable across individuals.
-For example, the raw trait it came up with for serve reach was in meters, which failed to normalize for differences in
+For example, the trait it came up with for serve reach was shown in meters, which failed to normalize for differences in
 player height.</li>
 <li><b>Interpretable: 2/5.</b> It often proposed traits that were uninterpretable and I had to break these down into atomic, interpretable traits.</li>
 </ul>
+<h3>Which traits we kept</h3>
+<p>We computed {total} traits across the three strokes, and the heatmap shows {shown}. A trait was left out for one of
+four reasons. First, the camera explained 10% or more of a player's stroke-to-stroke spread, so the trait measured the
+broadcast as much as the player. Second, the motion can't be seen from behind the court, where the broadcast camera
+sits: a forearm pointing at the net looks bent, for example. Third, the trait could not be measured reliably, or the
+players' order on it did not repeat from one half of their matches to the other. Fourth, the trait was mostly a mix of
+simpler traits, which are shown instead: trunk lean and hips over the feet explain 94% of serve lean between players,
+so those two are shown. Methods lists every trait left out and why.</p>
 <h2 class="part">Source of Truth</h2>
 <p>Who has the best strokes in the world? Probably those that are the best in the world.</p>
 <p>Like most sports, variance in elite biomechanics is enormous. Without incontrovertible evidence to the contrary, it
@@ -395,9 +441,9 @@ variance per trait.</p>
 <p>The source of truth is grounded on what pros do -- I specifically chose 11 current players that span the range of
 stroke diversity (hello Tiafoe and Meddy lol).</p>
 """
-# the Statistics tab: how the overview's numbers are computed
+# the end of the page: how the numbers are computed ({left_out}: the table of measures not shown)
 METHODS = """
-<section class="wrap"><h3>Methods</h3>
+<section class="wrap"><h2 class="part">Methods</h2>
 <p><b>z score.</b> For each player and measure, the player's median minus the median of the other pros' medians,
 divided by the typical stroke-to-stroke standard deviation of a single player on that measure (pooled over the pros).
 A z of 1 means the player sits one stroke-to-stroke spread away from the other pros. For Peter and Richard, the
@@ -407,8 +453,83 @@ measures: square each z, average them, and take the square root. Positive and ne
 stroke's recognizability is its RMS z averaged over the eleven pros.</p>
 <p><b>Players.</b> This list only included players with two-handed backhands, as we're already in the low data
 regime with 11 players, so I can't say anything about one handers, or backhands as an umbrella.</p>
+<p><b>Strokes kept.</b> A forehand or backhand counts only when the hitting wrist is on the matching side of the body at
+contact. This removes the strokes the stroke model calls the wrong way round, which it does often on left-handers such as
+Shelton. Feeds are removed too: a stroke counts only if the ball is not seen above the hitter's head in the second
+before contact.</p>
+<p><b>Lengths.</b> Every length is in the player's own torso lengths (mid-shoulder to mid-hip), so a tall player's long
+reach is not taken for style. Distances on the court are mapped into metres through the court lines, then divided by
+the player's torso in metres.</p>
+<p><b>Camera.</b> Before the pros are compared, the measured camera (zoom, angle, tilt, where the baseline sits in the
+picture, picture quality, the player's height on screen), the event (Australian or US Open) and the situation (where
+the player stood, how fast he ran, the shot's direction) are regressed out of each trait, with their effects estimated within each player so that a
+player's style is not taken for the camera. A trait is left off the heatmap when the camera still explains 10% or more
+of a player's stroke-to-stroke spread.</p>
+<p><b>Our footage.</b> Peter and Richard were filmed with a phone behind the baseline, lower and closer than a broadcast
+camera. The two cameras don't overlap: the far baseline looks {angle_phone} as wide as the near one on the phone,
+against {angle_tv} on TV. So the broadcast's camera effects can't be carried over to the phone. Instead we measured
+how differently the two cameras see the body. A camera looking down shortens anything upright, so a torso looks shorter,
+for the player's height, the higher the camera. On TV, the pros' torsos measure {tv} of their listed heights; on the
+phone, ours measure {phone} of our own. The difference is the camera, not our builds: Peter and Richard agree with each
+other and sit outside every pro. Before measuring our strokes, we shrink our skeletons' heights in the picture until our
+torso-to-height ratio matches the pros' (dividing by {k}). This corrects every length out to the side, which is counted
+in torso lengths, and every angle from upright. It can't correct anything pointing toward the net, which a lower camera
+sees less of, so traits that depend on that (heights and angles measured up and down the picture) are still left out
+for us.</p>
+<p><b>Coaching.</b> Claude (Opus 5.5) was started in a new session with no memory and asked what coaching advice it
+would give me. It read the measurements of the pros and of us, and the lists of traits left off the heatmap. After I
+asked it to look at my backhand, it watched clips of our strokes and revised its advice. The advice above is its text
+after that.</p>
+<h3>Traits left out</h3>
+{left_out}
 </section>
 """
+# under Claude's advice: its points against mine, stroke by stroke (my strokes). The last field: the traits its
+# points rest on, marked when the heatmap leaves them out
+COMPARE = [("Forehand", "Contact too far out to the side. Shoulders not open at contact.",
+            "Swing timing varies a lot from stroke to stroke.",
+            "A narrow stance. A small take-back feeding a long, slow forward swing.",
+            ["shoulder_width", "contact_side", "stance_side_m", "takeback", "swing_time"]),
+           ("Backhand", "Contact too far out to the side.", "",
+            "Arms locked straight in the take-back and at contact. A long upward swing to a high, upright finish.",
+            ["contact_side", "takeback", "elbow_angle", "swing_time", "finish_height"]),
+           ("Serve", "Trunk lean bigger than any pro's.", "",
+            "Feet travel less far into the court. The toss arm leans in over the head, which it proposes as the cause "
+            "of the lean.", ["trunk_lean", "into_court", "toss_tilt"]),
+           ("Plan", "", "", "An order to work in, and the traits to re-film after a few weeks.", [])]
+
+
+HEADS = ["Stroke", "Both of us", "Only me", "Only Claude", "Traits behind Claude's points"]
+
+
+def phone_check(project: str, extra: dict) -> dict[str, str]:
+    """The numbers Methods gives for our phone footage against TV: how the two cameras see the court (the far
+    baseline's width over the near one's), and the torso-to-height ratios and the factor that matches them (ranges over
+    the three strokes)."""
+    gres = next(iter(extra.values()))[1]
+    fs = [gres[k]["foreshortening"] for k in KINDS]
+    span = lambda v, d=2: f"{min(v):.{d}f}" if f"{min(v):.{d}f}" == f"{max(v):.{d}f}" else f"{min(v):.{d}f} to {max(v):.{d}f}"  # noqa: E731
+    tv_angle = np.nanmedian([(m.get("camera") or {}).get("angle", np.nan) for k in KINDS for m in
+                             json.loads((ROOT_PROJECTS / project / "technique" / k / "hits.json").read_text())])
+    return {"angle_phone": span([c["angle"] for k in KINDS for c in gres[k]["camera"].values()]),
+            "angle_tv": f"{tv_angle:.2f}",
+            "tv": span([np.median(list(f["theirs"].values())) for f in fs]),
+            "phone": span([np.median(list(f["ours"].values())) for f in fs]), "k": span([f["k"] for f in fs])}
+
+
+def compare_table(project: str) -> str:
+    rows = []
+    for k, both, me, claude, traits in COMPARE:
+        kind = k.lower()
+        names = ", ".join(SHORT.get(n, n) + ("" if kind in KINDS and n in kept(project, kind) else "†") for n in traits)
+        cells = zip(HEADS, [k, both, me, claude, names])
+        rows.append("<tr>" + "".join(f'<td data-h="{h}">{v or "–"}</td>' for h, v in cells) + "</tr>")
+    return (f'<h3>Claude\'s analysis against mine</h3><p>The table sets Claude\'s points about my strokes against my '
+            f'own.</p><table class="vs"><thead><tr>{"".join(f"<th>{h}</th>" for h in HEADS)}</tr></thead><tbody>'
+            f'{"".join(rows)}</tbody></table><p class="date">† Not on the heatmap (see Methods). Claude used them '
+            f'anyway; for the backhand take-back and swing time, it said the clips showed the same thing.</p>')
+
+
 OURS_NOTES = """
 <h2 class="part">2. My analysis</h2>
 <p>The pros don't all hit the same way, but together they show the range of mechanics that works at the highest
@@ -421,16 +542,16 @@ quantal jumps in ability between myself and the pros. For those of you in the ba
 <p>Some insights I gained about my own strokes that I either never noticed before or never could put into words:</p>
 <ul class="support">
 <li>For my forehand, it appears that 1) my contact is too far out to the side, 2) my shoulders are not open, and 3)
-my swing timing, as measured from racquet going forward to contact, varies a lot compared to the pros (SD of 0.15 s, vs. 0.03–0.11 s for the pros). I believe a lot of these are symptoms of not hitting the ball early
+my swing timing, as measured from racquet going forward to contact, varies a lot compared to the pros (SD of 0.13 s, vs. 0.03–0.11 s for the pros). I believe a lot of these are symptoms of not hitting the ball early
 enough. Richard, at least for these metrics, has a very good-looking forehand, with most metrics within professional
 bounds (except for take-back size). In fact, his timing varies the least of anyone, pros included (SD of 0.02 s). This could be
 because he's hitting against the balls I give him.</li>
-<li>For my backhand, I have the same issue of hitting the ball too far away from me. This also applies to Richard (0.67 torso widths to the side, vs. 0.56 for me and 0.23–0.49 for the pros). Among
+<li>For my backhand, I have the same issue of hitting the ball too far away from me. This also applies to Richard (0.73 torso lengths to the side, vs. 0.65 for me and 0.23–0.49 for the pros). Among
 the pros, backhands hit further from the body are more often unforced errors, so this may be worth correcting.</li>
-<li>For my serve, my trunk lean (31°) is larger than any of the pros', including Alcaraz (27.6°) and Shelton
+<li>For my serve, my trunk lean (36°) is larger than any of the pros', including Alcaraz (27.6°) and Shelton
 (27.5°).</li>
 <li>Despite these problems, I was curious whose strokes ours looked more similar to in mechanics. For the serve,
-Rublev for both of us; for the forehand, Fritz for me and Kyrgios for Richard; for the backhand, Djokovic for me and
+Rublev for both of us; for the forehand, Medvedev for me and Sinner for Richard; for the backhand, Djokovic for me and
 Tiafoe for Richard.</li>
 </ul>
 """
@@ -537,6 +658,13 @@ then the forehand take-back. Re-film after a few weeks: backhand contact out to 
 into-court distance should all move toward the pros.</p>
 </div>
 </div>
+<p class="date">Claude wrote this before we corrected our phone footage for how the phone sees the body (see Methods).
+With the correction, most of the numbers it gives for us move further from the pros: my forehand contact goes from 1.19
+to 1.37 torso lengths out to the side, my backhand contact from 0.56 to 0.65, and my serve's trunk lean from 31° to 36°.
+Two of its claims no longer hold. My forehand stance, 0.74 torso lengths along the baseline, is now inside the pros'
+range (0.68 to 1.16). On the serve, we now both travel into the court (2.45 and 2.36 torso lengths) about as far as the
+pro who travels least (2.28). Claude gives the stance widths and into-court distances in metres; they are in torso
+lengths.</p>
 """
 
 
@@ -544,12 +672,6 @@ def page(out_dir, title: str, body: str) -> None:
     (out_dir / "index.html").write_text(PAGE.replace("{{TITLE}}", html.escape(title)).replace("{{BODY}}", body)
                                         .replace("{{CSS}}", movement_report.CSS + explainer.CSS))
     print(out_dir / "index.html")
-
-
-def tabs_html(tabs: list[tuple[str, str, str]]) -> str:
-    return (f'<nav class="wrap cats" role="tablist">'
-            f'{"".join(f"<button role=tab data-cat={k}>{t}</button>" for k, t, _ in tabs)}</nav>'
-            + "".join(f'<div class="cat" id="{k}" role="tabpanel">{b}</div>' for k, _, b in tabs))
 
 
 def report(project: str, make_videos: bool = True) -> None:
@@ -567,25 +689,30 @@ def report(project: str, make_videos: bool = True) -> None:
                    + "".join(f"<td class=n>{found[k][p]} ({res[k]['strokes'].get(p, 0)})</td>" for k in KINDS)
                    + "</tr>" for p in players)
     svg, cols, order = heatmap(project, players, extra)
-    over = (f'<section class="wrap">{INTRO}<h2 class="part">1. Fingerprinting the pros</h2><p>We fingerprinted {len(players)} popular ATP players from Australian Open and US Open '
-            f'broadcasts, measuring the mechanics of their forehand, backhand, and serve. Each column is a player and each '
-            f'row a measurement. <span style="color:var(--red)">Red</span> means more than the other pros on that row, '
-            f'<span style="color:var(--blue)">blue</span> less. Neither is better.</p>{PROS_NOTES}</section>'
-            f'<div class="heatwrap"><div class="scroll">{svg}</div>{explainer.panel(project, cols, order, clips, extra)}</div>'
-            + (f'<section class="wrap ours">{OURS_NOTES}{COACH_NOTES}</section>' if extra else ""))
-    footage_html = (METHODS + f'<section class="wrap"><h3>Footage</h3><div style="overflow-x:auto"><table><thead><tr><th>Player</th><th class=n>Matches</th>'
-            f'<th class=n>Minutes</th><th class=n>Serves</th><th class=n>Forehands</th><th class=n>Backhands</th>'
-            f'</tr></thead><tbody>{rows}</tbody></table></div><p class="date">Each cell: strokes detected (strokes analysed, after '
-            f'removing slices, drop shots, shots on the run and shots away from the baseline).</p></section>')
-    syllables = []
+    total, shown, table = left_out(project)
+    strokes = sum(res[k]["strokes"].get(p, 0) for k in KINDS for p in players)
+    # the heatmap and its clips first, right under the opening
+    hero = (f'<section class="wrap">{INTRO.format(strokes=strokes)}<p>We fingerprinted {len(players)} popular ATP players '
+            f'from Australian Open and US Open broadcasts, measuring the mechanics of their forehand, backhand, and serve. '
+            f'Each column is a player and each row a measurement. <span style="color:var(--red)">Red</span> means more '
+            f'than the other pros on that row, <span style="color:var(--blue)">blue</span> less. Neither is better. '
+            f'Point at or tap a square to see that player\'s typical strokes beside an average one.</p></section>'
+            f'<div class="heatwrap"><div class="scroll">{svg}</div>{explainer.panel(project, cols, order, clips, extra)}</div>')
+    body = (f'<section class="wrap">{FEATURES.format(total=total, shown=shown)}'
+            f'<h2 class="part">1. Fingerprinting the pros</h2>{PROS_NOTES}</section>'
+            + (f'<section class="wrap ours">{OURS_NOTES}{COACH_NOTES}{compare_table(project)}</section>' if extra else ""))
+    syllables = ""
     if (ROOT_PROJECTS / project / "movement" / "syllables.npz").exists():
         method, explorer = movement_report.section(project, out_dir, make_videos)
-        syllables = [("syllables", "Syllables", f'<section class="wrap"><p>Their movement, found without supervision: '
-                      f'{" ".join(method)} Colour by player to see whose movement is whose. Click a dot to play it '
-                      f'and those around it.</p></section>{explorer}')]
-    tabs = [("overview", "Overview", over)] + syllables + [("statistics", "Statistics", footage_html)]
+        syllables = (f'<section class="wrap"><h2 class="part">Movement</h2><p>Their movement, found without supervision: '
+                     f'{" ".join(method)} Colour by player to see whose movement is whose. Click a dot to play it '
+                     f'and those around it.</p></section>{explorer}')
+    methods = (METHODS.format(left_out=table, **phone_check(project, extra)) + f'<section class="wrap"><h3>Footage</h3><div style="overflow-x:auto"><table><thead><tr><th>Player</th><th class=n>Matches</th>'
+               f'<th class=n>Minutes</th><th class=n>Serves</th><th class=n>Forehands</th><th class=n>Backhands</th>'
+               f'</tr></thead><tbody>{rows}</tbody></table></div><p class="date">Each cell: strokes detected (strokes analysed, after '
+               f'removing slices, drop shots, shots on the run and shots away from the baseline).</p></section>')
     title = "Claude as a Tennis Coach"
-    page(out_dir, title, f'<header class="wrap"><h1>{title}</h1></header>' + tabs_html(tabs))
+    page(out_dir, title, f'<header class="wrap"><h1>{title}</h1></header>' + hero + body + syllables + methods)
 
 
 PAGE = """<!doctype html>
@@ -609,17 +736,19 @@ PAGE = """<!doctype html>
   th { text-align: left; font-weight: 500; color: var(--muted); border-bottom: 1px solid var(--line); padding: 6px 8px 6px 0; }
   td { border-bottom: 1px solid var(--line); padding: 7px 8px 7px 0; }
   .n { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  nav.cats { position: sticky; top: 0; z-index: 2; background: var(--bg); display: flex; gap: 6px; flex-wrap: wrap; padding-top: 14px; padding-bottom: 14px; margin-top: 20px; border-bottom: 1px solid var(--line); }
-  nav.cats button { font: 500 15px Inter, sans-serif; color: var(--muted); background: transparent; border: 1px solid var(--line); border-radius: 999px; padding: 6px 14px; cursor: pointer; }
-  nav.cats button[aria-selected="true"] { color: var(--ink); border-color: var(--ink); }
-  .cat[hidden] { display: none; }
-  .cat { padding-top: 24px; }
-  @media (max-width: 640px) { nav.cats { flex-wrap: nowrap; overflow-x: auto; } nav.cats button { flex: none; } }
   .wide { max-width: 1060px; margin: 0 auto; padding: 0 16px; } .wide p { max-width: 760px; }
   .scroll { overflow-x: auto; max-width: 1100px; margin: 0 auto; padding: 0 20px; }
   .scroll svg { display: block; }
   svg.heat { margin: 0 auto; } svg.heat .tick { font-size: 12px; fill: var(--muted); } svg.heat .kindlab { font-size: 13px; } .hrow { font-size: 12px; fill: var(--muted); }
   section.ours { padding-top: 28px; }
+  table.vs td { vertical-align: top; font-size: 14px; } table.vs td:first-child { font-weight: 500; }
+  @media (max-width: 640px) {      /* a phone: each stroke a block, every cell under its heading */
+    table.vs thead { display: none; } table.vs, table.vs tbody, table.vs tr, table.vs td { display: block; }
+    table.vs { min-width: 0; }      /* offpolicyinc.com gives wide tables a minimum width to scroll at */
+    table.vs tr { border-bottom: 1px solid var(--line); padding: 8px 0; } table.vs td { border: 0; padding: 2px 0; }
+    table.vs td:first-child { font-size: 16px; } table.vs td:not(:first-child)::before { content: attr(data-h); display: block;
+      font-size: 12.5px; color: var(--muted); margin-top: 6px; }
+  }
   svg.heat .divider { stroke: var(--ink); stroke-width: 1.5; }
   svg.heat .bracket { fill: none; stroke: var(--muted); stroke-width: 1.2; }
   svg.heat .grouplab { font-size: 12.5px; font-weight: 600; fill: var(--ink); }
@@ -675,17 +804,6 @@ PAGE = """<!doctype html>
       box.querySelectorAll("[data-who]").forEach(x => x.setAttribute("aria-pressed", x === b));
       box.querySelectorAll("[data-for]").forEach(d => d.hidden = d.dataset.for !== b.dataset.who);
     })));
-  const cats = document.querySelectorAll("nav.cats button");
-  function showCat(id) {
-    if (!document.getElementById(id)) id = cats[0].dataset.cat;
-    cats.forEach(b => b.setAttribute("aria-selected", b.dataset.cat === id));
-    document.querySelectorAll(".cat").forEach(c => c.hidden = c.id !== id);
-    document.querySelectorAll(".cat[hidden] video").forEach(v => v.pause());
-  }
-
-  cats.forEach(b => b.addEventListener("click", () => { history.replaceState(null, "", "#" + b.dataset.cat); showCat(b.dataset.cat); }));
-  showCat(location.hash.slice(1));
-  addEventListener("hashchange", () => { showCat(location.hash.slice(1)); scrollTo(0, 0); });
 </script></body></html>
 """
 

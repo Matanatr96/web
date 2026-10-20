@@ -514,16 +514,19 @@ def camera(meta: list[dict], score: np.ndarray, lo: int, hi: int) -> np.ndarray:
     return np.where(np.isfinite(cam), cam, np.nanmedian(cam, 0))
 
 
-def prepare(project: str, kind: str, group) -> dict:
+def prepare(project: str, kind: str, group, yscale: float = 1.0) -> dict:
     """The kind's strokes, measured: hits.npz / hits.json (extract), well seen, routine (STANDARD: a routine
     situation and no measure far from that group's usual; groups: group(meta row), e.g. him / his opponents, or
     each player). Returns keep (indices into hits), w (aligned poses), f (measures), ctx (situation), score
     (pose confidence), meta, grid, lo / hi (the analysed window in grid steps), win, res_std (what was dropped),
-    n (strokes extracted), and z (hits.npz)."""
+    n (strokes extracted), and z (hits.npz). yscale: the skeletons' heights in the picture scaled by it before
+    anything is measured (a camera that foreshortens the body less than another, made to look like it)."""
     out_dir = ROOT_PROJECTS / project / "technique" / kind
     z = np.load(out_dir / "hits.npz")
     meta = json.loads((out_dir / "hits.json").read_text())
-    grid, xy, feet = z["grid"], normalise(z["pose"]), z["feet"]
+    pose = z["pose"].copy()
+    pose[..., 1] *= yscale
+    grid, xy, feet = z["grid"], normalise(pose), z["feet"]
     if KINDS[kind]["flip"]:                     # a backhand mirrored to look like a forehand: out to the side is +
         xy[..., 0] = -xy[..., 0]
     win = KINDS[kind].get("win", WIN)

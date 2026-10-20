@@ -331,6 +331,19 @@ CSS = """
     .ex-grid { grid-template-columns: repeat(4, 1fr); gap: 6px; } .ex-grid figcaption { font-size: 10.5px; }
     .ex-cap { font-size: 13px; min-height: 0; } .ex-cap b { font-size: 14px; } .ex-cap span { font-size: 12.5px; }
   }
+  /* a phone: the heatmap shrinks to the screen's width, every column showing, and the panel above it keeps only the two
+     clips, so both fit on the screen together */
+  @media (max-width: 640px) {
+    .heatwrap { padding: 0; gap: 8px; }
+    .heatwrap .scroll { overflow-x: visible; }
+    .heatwrap svg.heat { max-width: 100%; height: auto; } svg.heat .hrow, svg.heat .tick { font-size: 13px; }
+    .ex-pick { flex-wrap: nowrap; } .ex-pick button { min-width: 0; padding: 2px 7px; }
+    .ex-grid { grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 6px; }
+    .ex-grid figure:nth-child(n+3) { display: none; }
+    .ex-grid figcaption { font-size: 11.5px; min-height: 0; }
+    .ex-cap p { font-size: 12.5px; margin-top: 2px; }
+    .ex-ref { margin-bottom: 4px; }
+  }
 """
 
 JS = r"""
