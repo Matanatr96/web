@@ -47,3 +47,6 @@ tests/       one file per package, on made-up data (no models, no drive): uv run
 
 Setup: `uv sync --extra cloud`; Opus needs `CLAUDE_CODE_OAUTH_TOKEN` (from `claude setup-token`). Data lives
 under `data/` (the external drive) or `DSA_DATA`; layout and Modal in [docs/STORAGE.md](docs/STORAGE.md).
+
+License: MIT ([LICENSE](LICENSE)), for this repository's code. The models and code it downloads and runs
+(RF-DETR, WASB, RTMW, TennisCourtDetector, F3Set / F3ED, keypoint-MoSeq) keep their own licenses.
