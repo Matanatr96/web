@@ -365,8 +365,8 @@ it to coach us. With the same data, I also analyzed our strokes myself and compa
 analysis is vastly better than mine. However, there were a lot of nuances to get right -- read more below.</p>
 <h2 class="part">Featurization</h2>
 <p>For featurization, I processed raw videos and extracted ball location, court coordinates, labeled strokes (FH, BH,
-topspin, slice, serve, etc) and joint data. These were largely done via off-the-shelf open-source models (mostly vision
-transformers) but some, like ball tracking, required some gentle fine-tuning and then post-processing.</p>
+topspin, slice, serve, etc) and joint data. These were largely done via off-the-shelf open-source models, and some, like ball
+tracking, required post-processing.</p>
 <p>This data was then processed into a set of "traits". For example, one serve trait is how straight the tossing arm
 is, measured by taking the joint angle for tossing arm at the top of the toss.</p>
 <p>This part took most of my time -- working with Claude, asking it to sanity check each trait, decomposing them down
