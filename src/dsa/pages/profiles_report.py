@@ -391,13 +391,31 @@ is tilted sideways when you're hitting the ball straight? But it seems like a lo
 and Shelton, both have significant trunk leans.</li>
 </ul>
 """
-# the page's opening, above the heatmap ({strokes}: the pros' strokes analysed)
+# the page's opening, above the heatmap (the first paragraph, the abstract, ruled off like wc3env's)
 INTRO = """
-<p>I fed Claude featurized data from 11 professional tennis players, myself, and my semi-pro friend Richard, and asked
-it to coach us. The data covered the mechanics of our serves, forehands and two-handed backhands, and for the pros it
-came from {strokes:,} strokes in Australian Open and US Open broadcasts. With the same data, I also analyzed our strokes
-myself and compared the two. Turns out Claude's analysis is vastly better than mine. However, there were a lot of
-nuances to get right -- read more below.</p>
+<p class="abstract">I decomposed how 11 ATP pros hit their serves, forehands and backhands, measured myself and my friend Richard the
+same way, and asked Claude what we should improve. The TL;DR: given clean, well-featurized data, Claude (Opus 5.5) gave
+me very good advice for improving my game.</p>
+<p>To the best of my knowledge, sports analytics has not been revolutionized by AI. I find this surprising. First,
+models were already superhuman a year ago at digging through large, complex datasets, and they keep getting better.
+Second, deep, personalized analytics is insanely valuable to anyone trying to get better at a sport, amateur or pro.</p>
+<p>In any sport, we often stagnate because it is difficult to be self-aware of our own movements, and tough to be pulled
+out of the local minimum of how we currently do things. This is why coaches are so valuable. But finding a good coach is
+hard, even if you can pay for one, because a good coach has to diagnose each student’s problem and fit the fix to that
+student.</p>
+<p>For example, folks that are athletic with great self-awareness often only need simple “Miyagi-like” one-liners. For a tennis
+serve, “imagine you are chucking your racquet at the ball and then catching it when you are making
+contact”. Coaching too prescriptively runs the risk of pigeon-holing a gifted student into a movement that is standard
+but suboptimal for their ability. For beginners, though, high-level tips are often too abstract. I tried it with my wife
+(don’t recommend it). Beginners need much more descriptive language (“your wrist should pronate and snap like so”) and
+precise drills (throwing a football with curve and depth) to get the feel.</p>
+<p>This mirrors how prompting has changed. A year ago we prompted imperatively, with chain-of-thought, few-shot examples
+and step-by-step instructions enumerated for each case. Now those tricks hurt, and the best prompts are declarative:
+they provide the setting, state the goal, and get out of the model’s way.</p>
+<p>Models are infinitely patient, always available, and are often capable of explaining things at any level of
+abstraction. And while they lack the human touch, they probably can be iterated and conversed with to personalize
+recommendations at a sweet spot of abstraction and detail.</p>
+<p>So all the ingredients are there. Let me show you how I baked the cake.</p>
 """
 # under the heatmap: how the traits were made, and which were kept ({total}, {shown}: measures computed and shown)
 FEATURES = """
@@ -690,9 +708,8 @@ def report(project: str, make_videos: bool = True) -> None:
                    + "</tr>" for p in players)
     svg, cols, order = heatmap(project, players, extra)
     total, shown, table = left_out(project)
-    strokes = sum(res[k]["strokes"].get(p, 0) for k in KINDS for p in players)
     # the heatmap and its clips first, right under the opening
-    hero = (f'<section class="wrap">{INTRO.format(strokes=strokes)}<p>We fingerprinted {len(players)} popular ATP players '
+    hero = (f'<section class="wrap">{INTRO}<p>We fingerprinted {len(players)} popular ATP players '
             f'from Australian Open and US Open broadcasts, measuring the mechanics of their forehand, backhand, and serve. '
             f'Each column is a player and each row a measurement. <span style="color:var(--red)">Red</span> means more '
             f'than the other pros on that row, <span style="color:var(--blue)">blue</span> less. Neither is better. '
@@ -741,6 +758,7 @@ PAGE = """<!doctype html>
   .scroll svg { display: block; }
   svg.heat { margin: 0 auto; } svg.heat .tick { font-size: 12px; fill: var(--muted); } svg.heat .kindlab { font-size: 13px; } .hrow { font-size: 12px; fill: var(--muted); }
   section.ours { padding-top: 28px; }
+  p.abstract { padding-bottom: 28px; margin-bottom: 28px; border-bottom: 1px solid var(--ink); }
   table.vs td { vertical-align: top; font-size: 14px; } table.vs td:first-child { font-weight: 500; }
   @media (max-width: 640px) {      /* a phone: each stroke a block, every cell under its heading */
     table.vs thead { display: none; } table.vs, table.vs tbody, table.vs tr, table.vs td { display: block; }
