@@ -18,9 +18,9 @@ from dsa.paths import PROJECTS as ROOT_PROJECTS
 KINDS = ["serve", "forehand", "backhand"]
 WORDS = {"contact_height": ("higher", "lower"), "finish_height": ("higher", "lower"), "reach": ("higher", "lower"),
          "toss_arm": ("higher", "lower"), "swing_time": ("longer", "shorter"), "trophy_time": ("longer", "shorter"),
-         "takeback": ("bigger", "smaller"), "contact_side": ("further out", "closer in"),
+         "takeback": ("further out", "closer in"), "contact_side": ("further out", "closer in"),
          "finish_side": ("further out", "further across"), "stance_side_m": ("wider", "narrower"),
-         "stance_angle": ("more closed", "more open"),
+         "stance_angle": ("more open", "more closed"),
          "lean": ("further right", "further left"),
          "toss_straight": ("straighter", "more bent"), "trunk_lean": ("more tilted", "more upright"),
          "hips_over": ("further to the hitting side", "further to the toss side"), "finish_arm": ("higher", "lower"), "toss_tilt": ("further in", "further out"),
@@ -52,7 +52,9 @@ SAY = {
     "stance_m": "How far apart the feet are at contact, seen from above.",
     "stance_side_m": "How far apart the feet are along the baseline at contact, seen from above.",
     "stance_fwd_m": "How far the front foot is ahead toward the net at contact (0: open stance).",
-    "stance_angle": "The angle of the feet against the baseline: 0° side by side (open), 90° one in front (closed).",
+    "stance_angle": "The angle of the line from back foot to front foot against the baseline: 90° is the front foot "
+                    "straight ahead of the back one, less when it steps across the body (closed), more when it steps out to its "
+                    "own side (open).",
     "reach": "How high the hitting wrist is above the feet at contact.",
     "toss_arm": "How high the tossing arm reaches above the head.",
     "trunk_lean": "How far the trunk tilts from upright at contact, seen from behind, toward the tossing side "

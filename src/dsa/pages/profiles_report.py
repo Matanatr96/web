@@ -36,7 +36,7 @@ MOMENT = {"finish_height": 0.3, "finish_side": 0.3, "finish_arm": 0.3, "knee_ben
 SHORT = {"contact_height": "contact height", "contact_side": "contact out to side", "elbow_angle": "elbow at contact",
          "shoulder_width": "shoulders open", "shoulder_coil": "shoulder turn", "hip_coil": "hip turn",
          "separation": "hip-shoulder sep.", "shoulder_tilt": "shoulder tilt", "knee_bend": "knee angle",
-         "takeback": "take-back size", "swing_time": "swing time", "wrist_speed": "wrist speed",
+         "takeback": "take-back out to side", "swing_time": "swing time", "wrist_speed": "wrist speed",
          "finish_height": "finish height", "finish_side": "finish out to side", "head_still": "head movement",
          "stance_m": "feet apart", "stance_side_m": "stance width", "stance_fwd_m": "stance forward",
          "stance_angle": "stance angle", "reach": "reach", "toss_arm": "toss arm height", "toss_straight": "toss arm straightness",
@@ -62,8 +62,7 @@ WHY_BY = {"backhand": {"shoulder_width": "The players' order hardly repeats from
           "forehand": {"finish_height": "Mostly the arm's angle at the finish (it explains 93% of it between players): "
                                         "finish arm height is shown instead.",
                        "finish_side": "Mostly the arm's angle at the finish (it explains 78% of it between players): "
-                                      "finish arm height is shown instead.",
-                       "stance_angle": None},
+                                      "finish arm height is shown instead."},
           "serve": {"toss_arm": "It mixes how straight the arm is, how far it leans in, how far it points toward the net "
                                 "(unseen from behind) and how high the shoulder lifts: toss arm straightness and toss arm "
                                 "in over head are shown instead.",
@@ -72,11 +71,14 @@ UNRELIABLE = set(WHY)
 UNRELIABLE_BY = {k: set(v) for k, v in WHY_BY.items()}
 # the rows of a stroke, phase by phase; a measure not listed goes last
 PHASES = {"serve": [["toss_straight", "toss_tilt", "trophy_tilt", "trophy_time"], ["reach", "trunk_lean", "hips_over"]],
-          "forehand": [["takeback", "swing_time"], ["contact_side", "shoulder_width", "head_still"],
+          "forehand": [["takeback", "swing_time", "stance_angle"], ["contact_side", "shoulder_width", "head_still"],
                        ["finish_arm", "finish_height", "finish_side"]],
           "backhand": [["takeback", "swing_time", "stance_angle"], ["contact_side", "shoulder_width", "head_still"],
                        ["finish_arm", "finish_height", "finish_side"]]}
 CAMERA_MAX = 0.10      # a measure is left out when the camera explains this share of a player's stroke-to-stroke spread
+# kept anyway: the stance angle's share is mostly the pose model's confidence, which a front foot stepping
+# across (one ankle hidden behind the other from behind) lowers itself, not the camera's zoom, angle or tilt
+CAMERA_OK = {("forehand", "stance_angle"), ("backhand", "stance_angle")}
 BONES = [(1, 2), (1, 3), (3, 5), (2, 4), (4, 6), (1, 7), (2, 8), (7, 8), (7, 9), (9, 11), (8, 10), (10, 12)]
 DIRECTIONS = {"CC": "cross-court", "DL": "down the line", "IO": "inside-out", "II": "inside-in", "DM": "down the middle",
               "T": "down the T", "W": "out wide", "B": "into the body"}
@@ -118,7 +120,7 @@ def kept(project: str, kind: str, phone: bool = False) -> list[str]:
     r = load(project)[0][kind]
     share = r.get("camera_share", [0] * len(r["features"]))
     return [n for n, c in zip(r["features"], share)
-            if c < CAMERA_MAX and n not in UNRELIABLE | UNRELIABLE_BY.get(kind, set()) and not (phone and SENS.get(n) == "high")]
+            if (c < CAMERA_MAX or (kind, n) in CAMERA_OK) and n not in UNRELIABLE | UNRELIABLE_BY.get(kind, set()) and not (phone and SENS.get(n) == "high")]
 
 
 def left_out(project: str) -> tuple[int, int, str]:

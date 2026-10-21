@@ -148,8 +148,11 @@ def hits(spec: str, kind: str) -> tuple[list[dict], np.ndarray, np.ndarray]:
         if ground is not None:                       # ankles on the court, metres: x right, y toward the near baseline
             swap = (lefty(player)) != (KINDS[kind]["front"] == "right")      # ground[0] is the left ankle
             front, back = (ground[1], ground[0]) if swap else (ground[0], ground[1])
+            # across: how far the front foot has stepped across the back one, toward the other foot's side (negative:
+            # out to its own side, an open stance); the near player faces the net, so the court's right is his right
+            across = (back[0] - front[0]) if swap else (front[0] - back[0])      # swap: the front foot is the right one
             stance = {"stance_m": float(np.linalg.norm(front - back)), "stance_side_m": float(abs(front[0] - back[0])),
-                      "stance_fwd_m": float(back[1] - front[1])}
+                      "stance_fwd_m": float(back[1] - front[1]), "stance_across_m": float(across)}
         if lefty(player):
             pose = pose[:, MIRROR]
             pose[..., 0] = -pose[..., 0]
@@ -275,18 +278,21 @@ STROKE = {                                    # name: (unit, what it measures)
     "stance_fwd_m": ("m", "front foot ahead of the back foot toward the net at contact, on the court surface "
                           "(0: open stance, side by side)"),
     "stance_angle": ("deg", "angle of the line from back foot to front foot against the baseline at contact, on the "
-                            "court surface: 0 side by side (open stance), 90 one foot straight ahead (closed)"),
+                            "court surface: 90 the front foot straight ahead (neutral), below 90 stepped across the "
+                            "body (closed), above 90 out to its own side (open)"),
 }
 GROUND = ["stance_m", "stance_side_m", "stance_fwd_m", "stance_angle"]
 
 
 def ground(stance: dict | None, k: str) -> float:
     """A stance measure on the court; stance_angle is the line from back foot to front foot against the
-    baseline, in degrees: 0 side by side along the baseline (open), 90 one foot straight ahead (closed)."""
+    baseline, 0 to 180 degrees: 90 the front foot straight ahead, less the further it steps across (closed), more the
+    further out to its own side (open)."""
     if not stance:
         return np.nan
     if k == "stance_angle":
-        return float(np.degrees(np.arctan2(stance["stance_fwd_m"], stance["stance_side_m"])))
+        across = stance.get("stance_across_m", stance["stance_side_m"])     # strokes extracted before it: unsigned
+        return float(np.degrees(np.arctan2(stance["stance_fwd_m"], across)))
     return stance[k]
 STROKE_LENGTHS = ["contact_height", "contact_side", "takeback",
            "wrist_speed", "finish_height", "finish_side", "head_still"]       # in torso lengths: depend on the scale          # from the court, not the pose: appended last
