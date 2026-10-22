@@ -117,8 +117,11 @@ def guest_picks(project: str, players: list[str], extra: dict) -> dict[str, dict
             pc, gc = [pf.index(n) for n in names], [gres[k]["features"].index(n) for n in names]
             within = np.sqrt(np.nanmean(np.stack([np.nanvar(ps["f"][ps["player"] == p][:, pc], 0) for p in players]), 0))
             hidden = set(PROJECTS[g].get("no_clips", []))
+            fed = {tuple(x) for x in PROJECTS[g].get("fed", [])}
             mine = np.flatnonzero((gs["player"] == q)
-                                  & np.array([meta[int(h)]["video"] not in hidden for h in gs["hit"]], bool))
+                                  & np.array([meta[int(h)]["video"] not in hidden
+                                              and (meta[int(h)]["video"], meta[int(h)]["frame"]) not in fed
+                                              for h in gs["hit"]], bool))
             if k == "serve":
                 mine = mine[deuce(g, gs)[mine]]
             if not len(mine):

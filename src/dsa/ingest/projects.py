@@ -87,6 +87,9 @@ PROJECTS = {
         "compare_with": "atp_hardcourt",     # dsa.measure.profiles: boxes against its players; a tab each on its page
         "strokes": True,                 # F3ED on phone footage too (it is trained on TV: checked on a sample)
         "no_clips": ["2025_richard"],    # the app's graphics over the picture: measured, never shown as a clip
+        # (video, frame) of balls fed to the hitter, seen by eye: never shown as a clip (technique's feed test only
+        # catches a ball he drops and hits himself; one fed from the other end rises above him like a rally ball)
+        "fed": [["2026_richard_a", 9475]],
         # name: (recording on the external drive or "yt:<id>", match, start s, seconds kept; 0 = all)
         "videos": {
             # one session in three pieces (players.json ids are per piece): Peter in pink, then blue; Richard in grey,
