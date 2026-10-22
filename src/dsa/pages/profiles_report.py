@@ -225,7 +225,10 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
                              full_matrices=False)
     n_pros = len(players)
     players = [players[i] for i in np.argsort(vt[0])] + list(extra)
-    cw, rh, left, top, gap = 22, 22, 150, 72, 26      # square cells; names written upward
+    # square cells, players' names written upward over them and, over those, which are pros and which ours; each
+    # row's trait to the right of its squares (the page puts the clips on the left)
+    cw, rh, left, gap = 22, 22, 4, 26
+    top = 72 + (GROUPS_H if extra else 0)
     split = 18 if extra else 0                        # a gutter between the pros and our own players, a divider in it
 
     def cx(c: int) -> float:
@@ -239,7 +242,8 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
     n_rows = sum(len(kept(project, k)) for k in KINDS)
     order = []
     grid_h = rh * n_rows + gap * (len(KINDS) - 1)
-    w, h = cx(len(players)) + 4, top + grid_h + (GROUPS_H if extra else 0) + LEGEND_H + 8
+    lx = cx(len(players)) + 10                        # the traits' names start here
+    w, h = lx + 140, top + grid_h + LEGEND_H + 8
     out = [f'<svg class="heat" viewBox="0 0 {w} {h}" width="{w}" height="{h}" role="img">']
     for c, p in enumerate(players):
         x = cx(c) + cw / 2
@@ -248,12 +252,12 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
     y = top - gap + 4                  # the first stroke's name sits beside the players' names, its squares right under them
     for k in KINDS:
         y += gap
-        out.append(f'<text x="0" y="{y - 6}" class="kindlab">{k.capitalize()}</text>')
+        out.append(f'<text x="{lx}" y="{y - 6}" class="kindlab">{k.capitalize()}</text>')
         for n in (n for ns in groups[k] for n in ns):
             order.append((k, n))
             out.append(f'<g class="hr" data-k="{k}" data-n="{n}"><rect class="band" x="0" y="{y}" width="{w}" '
-                       f'height="{rh}"/><text x="{left - 10}" y="{y + rh / 2 + 3.5:.1f}" class="hrow" '
-                       f'text-anchor="end">{SHORT.get(n, n)}</text>')
+                       f'height="{rh}"/><text x="{lx}" y="{y + rh / 2 + 3.5:.1f}" class="hrow" '
+                       f'text-anchor="start">{SHORT.get(n, n)}</text>')
             for c, p in enumerate(players):
                 if p not in zs[k, n]:
                     if p in extra:         # not measured on our phone footage: a clear square, so the gap reads as one
@@ -270,18 +274,18 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
             y += rh
     if extra:                          # the divider last, over the highlighted row's band; then whose columns are whose
         xd = cx(n_pros) - 4 - split / 2 + 4
-        out.append(f'<line class="divider" x1="{xd}" x2="{xd}" y1="0" y2="{top + grid_h + 4}"/>')
-        yb = y + 14
+        out.append(f'<line class="divider" x1="{xd}" x2="{xd}" y1="{GROUPS_H}" y2="{top + grid_h + 4}"/>')
+        yb = 24                        # the brackets over the names, opening down onto them
         for a, b, name, anchor in [(0, n_pros, "Pros", "middle"), (n_pros, len(players), "Amateurs", "end")]:
             x1, x2 = cx(a) + 1, cx(b - 1) + cw - 1
             tx = (x1 + x2) / 2 if anchor == "middle" else x2
-            out.append(f'<path class="bracket" d="M{x1} {yb - 6}V{yb}H{x2}V{yb - 6}"/>'
-                       f'<text x="{tx:.0f}" y="{yb + 16}" class="grouplab" text-anchor="{anchor}">{name}</text>')
-    out.append(legend(left, y + 18 + (GROUPS_H if extra else 0), cw, bool(extra)))
+            out.append(f'<path class="bracket" d="M{x1} {yb + 6}V{yb}H{x2}V{yb + 6}"/>'
+                       f'<text x="{tx:.0f}" y="{yb - 8}" class="grouplab" text-anchor="{anchor}">{name}</text>')
+    out.append(legend(left + (cx(len(players)) - left - (9 * cw + cw - 2)) / 2, y + 18, cw, bool(extra)))   # centred under the squares
     return "".join(out) + "</svg>", players, order
 
 
-LEGEND_H = 116
+LEGEND_H = 136
 GROUPS_H = 34          # room under the squares for the pros / ours brackets
 
 
@@ -297,12 +301,13 @@ def legend(x: float, y: float, cw: float, na: bool = False) -> str:
         out.append(f'<rect x="{cx:.0f}" y="{y}" width="{cw - 2}" height="{cw - 2}" rx="2" fill="{col}" '
                    f'stroke="var(--line)" stroke-width="{1 if z == 0 else 0}"/>'
                    f'<text x="{cx + (cw - 2) / 2:.0f}" y="{y + cw + 12}" class="tick" text-anchor="middle">{lab}</text>')
-    out.append(f'<text x="0" y="{y + 14}" class="hrow">z score</text>'
-               f'<text x="0" y="{y + cw + 34}" class="hrow" id="zdef">z: his median minus the others\', in units of how</text>'
-               f'<text x="0" y="{y + cw + 50}" class="hrow">much one player\'s strokes vary from stroke to stroke</text>')
+    mid = x + 3 * cw * 1.5 + (cw - 2) / 2                  # under the 0 square: the scale's name below its numbers
+    out.append(f'<text x="{mid:.0f}" y="{y + cw + 30}" class="hrow" text-anchor="middle">z score</text>'
+               f'<text x="0" y="{y + cw + 80}" class="hrow" id="zdef">z: his median minus the others\', in units of how</text>'
+               f'<text x="0" y="{y + cw + 96}" class="hrow">much one player\'s strokes vary from stroke to stroke</text>')
     if na:
-        out.append(f'<rect class="na" x="{x + 0.5:.1f}" y="{y + cw + 62.5}" width="{cw - 3}" height="{cw - 3}" rx="2"/>'
-                   f'<text x="{x + cw + 8:.0f}" y="{y + cw + 76}" class="hrow" text-anchor="start">not measured on our phone footage</text>')
+        out.append(f'<rect class="na" x="{x + 0.5:.1f}" y="{y + cw + 40.5}" width="{cw - 3}" height="{cw - 3}" rx="2"/>'
+                   f'<text x="{x + cw + 8:.0f}" y="{y + cw + 54}" class="hrow" text-anchor="start">not measured on our phone footage</text>')
     return "".join(out)
 
 

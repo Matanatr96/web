@@ -530,15 +530,15 @@ JS = r"""
         el("circle", {cx: fx, cy: fy, r: 7, class: "dot " + cls});
         el("text", {x: fx - 12, y: fy + 4, "text-anchor": "end", class: "nm " + cls}, lab);
       });
-      el("text", {x: 30, y: 296, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);
-      el("text", {x: 30, y: 314, class: "val all"}, `${r.low} ${r.val}`);
+      el("text", {x: 30, y: 46, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);     // the key on top, with the panel's title
+      el("text", {x: 30, y: 64, class: "val all"}, `${r.low} ${r.val}`);
       return;
     }
     // a turn, from above with the net up: the shoulder (or hip) line at each one's median angle, the hitting side dotted.
     // Drawn from the number itself: widths on the average pose can point the other way
     const TURN = {hip_coil: "hips", shoulder_coil: "shoulders", takeback_turn: "shoulders", shoulder_width: "shoulders", finish_open: "shoulders"};
     if (TURN[m.n]) {
-      const o = [160, 150], L = 95, sg = m.k === "backhand" ? -1 : 1, open = m.n === "shoulder_width" || m.n === "finish_open";
+      const o = [160, 175], L = 95, sg = m.k === "backhand" ? -1 : 1, open = m.n === "shoulder_width" || m.n === "finish_open";
       el("line", {x1: 40, x2: 280, y1: o[1], y2: o[1], class: "ref"});
       el("text", {x: 280, y: o[1] - 8, "text-anchor": "end", class: "note"}, "square to the net");
       el("text", {x: 160, y: 22, "text-anchor": "middle", class: "note"}, `${TURN[m.n]} from above, net ↑`);
@@ -550,8 +550,8 @@ JS = r"""
         const e = cls === "me" ? 1 : -1;   // his name at the hitting end, the others' at the far end, so close lines don't collide
         el("text", {x: o[0] + e * (dx + 12 * sg), y: o[1] + e * dy + 4, "text-anchor": e * sg > 0 ? "start" : "end", class: "nm " + cls}, lab);
       });
-      el("text", {x: 30, y: 296, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);
-      el("text", {x: 30, y: 314, class: "val all"}, `${r.low} ${r.val}`);
+      el("text", {x: 30, y: 46, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);     // the key on top, with the panel's title
+      el("text", {x: 30, y: 64, class: "val all"}, `${r.low} ${r.val}`);
       return;
     }
     // two poses at the measure's moment, side by side, one scale
