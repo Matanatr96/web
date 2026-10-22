@@ -483,8 +483,11 @@ JS = r"""
       el("line", {x1: 40, x2: 290, y1: o[1], y2: o[1], class: "ref"}); el("text", {x: 290, y: o[1] + 18, "text-anchor": "end", class: "note"}, "baseline");
       el("text", {x: 160, y: 22, "text-anchor": "middle", class: "note"}, "from above, net ↑");
       el("circle", {cx: o[0], cy: o[1], r: 7, class: "dot all"});
-      [[who, "me", st[who]], [r.lab, "all", r.feet]].forEach(([lab, cls, v]) => {
+      // on the stance angle, the line is turned to the median angle: the angle of the median offsets can be far off it
+      const side = Math.sign((st.rest?.[who] || st[who] || [1])[0]) || 1;
+      [[who, "me", st[who], m.meds[who]], [r.lab, "all", r.feet, r.med]].forEach(([lab, cls, v, deg]) => {
         if (!v || v[0] == null) return;
+        if (m.n === "stance_angle" && deg != null) { const L = Math.hypot(v[0], v[1]), a = deg * Math.PI / 180; v = [side * L * Math.cos(a), L * Math.sin(a)]; }
         const fx = o[0] - v[0] * s, fy = o[1] - v[1] * s;
         el("line", {x1: o[0], y1: o[1], x2: fx, y2: fy, class: "bar " + cls});
         el("circle", {cx: fx, cy: fy, r: 7, class: "dot " + cls});
