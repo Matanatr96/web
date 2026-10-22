@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 from pathlib import Path
 
 import numpy as np
@@ -24,7 +25,7 @@ WORDS = {"contact_height": ("higher", "lower"), "finish_height": ("higher", "low
          "lean": ("further right", "further left"),
          "toss_straight": ("straighter", "more bent"), "trunk_lean": ("more tilted", "more upright"),
          "hips_over": ("further to the hitting side", "further to the toss side"), "finish_arm": ("higher", "lower"), "toss_tilt": ("further in", "further out"),
-         "trophy_tilt": ("more tilted", "less tilted"), "shoulder_width": ("more", "less", "")}   # (higher, lower, verb)
+         "trophy_tilt": ("more tilted", "less tilted"), "shoulder_width": ("more", "less", ""), "finish_open": ("more", "less", "")}   # (higher, lower, verb)
 # who the finding sentence is about, where the row's name reads badly there ("Peter's trunk is 5° more tilted")
 SUBJ = {"toss_straight": ("toss arm", "is"), "toss_tilt": ("toss arm", "leans"), "trophy_tilt": ("shoulders at the trophy", "are"),
         "trunk_lean": ("trunk", "is"), "hips_over": ("hips", "are"), "finish_arm": ("finish arm", "is"),
@@ -38,6 +39,10 @@ SAY = {
     "shoulder_coil": "How far he turns his shoulders away from the net before the forward swing: 90° is side-on, more "
                      "is turned past side-on.",
     "hip_coil": "How far he turns his hips away from the net before the forward swing: 90° is side-on.",
+    "takeback_turn": "How far his shoulders are turned away from the net when the forward swing starts: 90° is side-on, "
+                     "more is turned past side-on.",
+    "finish_open": "How far his shoulders have turned toward the net 0.3 s after contact: 0° side-on, 90° square to the "
+                   "net, over 90° past square.",
     "separation": "How much further the shoulders turn than the hips, at the shoulders' most-turned moment.",
     "takeback": "Where the hitting wrist is, out to the side, at the end of the take-back: the moment it stops going back "
                 "and the forward swing starts.",
@@ -90,7 +95,8 @@ def picks(project: str, players: list[str]) -> dict[str, dict]:
         calm = s["ctx"][:, 2] <= np.nanquantile(s["ctx"][:, 2], 0.6) if k != "serve" else deuce(project, s)
         def nearest(sel, target, n=1):
             idx = np.flatnonzero(sel)
-            near = [int(j) for j in idx[np.argsort(np.nansum(((f[idx] - target) / within) ** 2, 1))][:n]]
+            order = (int(j) for j in idx[np.argsort(np.nansum(((f[idx] - target) / within) ** 2, 1))])
+            near = [j for j in order if lit(project, k, j)][:n] if n > 1 else [next(j for j in order if lit(project, k, j))]
             return near if n > 1 else near[0]
         ok = np.isin(pl, [p for p in players if p not in UNSURE]) & (q >= np.nanmedian(q)) & calm
         out[k] = {"avg": nearest(ok, np.median(np.stack(list(meds.values())), 0)),
@@ -135,6 +141,33 @@ def guest_picks(project: str, players: list[str], extra: dict) -> dict[str, dict
 
 SIX = 6
 EXAMPLES = 5    # clips per player and stroke, to flip through
+LIT = 80        # the court round a clip's player at least this bright (0-255): not in a stand's shade, where a player
+                # turns near black (the picks' court here: 101 and up; the shaded ones: 38-65)
+
+
+@lru_cache(maxsize=None)
+def lit(project: str, k: str, i: int) -> bool:
+    """Stroke i of kind k (an index into its strokes npz) well lit: the court round the player's feet at contact, in
+    the frame the clip shows, at least LIT bright. A dark shirt doesn't count against it; a stand's shade does."""
+    import cv2
+    from dsa.pages.profiles_report import MIRROR, strokes
+
+    s, meta, pose = strokes(project, k)
+    h = int(s["hit"][i])
+    m, p = meta[h], pose[h].copy()
+    if m["lefty"]:                                     # back to the picture: hits.npz mirrors left-handers
+        p = p[:, MIRROR]
+        p[..., 0] = -p[..., 0]
+    q = p[int(np.argmin(abs(np.linspace(-0.9, 0.6, len(p))))), :, :2]
+    d = ROOT_PROJECTS / project / m["video"]
+    cap = cv2.VideoCapture(str(d / "kept.mp4" if (d / "kept.mp4").exists() else d / "source.mp4"))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, m["frame"])
+    ok, img = cap.read()
+    if not ok or not np.isfinite(q).any():
+        return True
+    tall, feet, cx = np.nanmax(q[:, 1]) - np.nanmin(q[:, 1]), np.nanmax(q[11:13, 1]), np.nanmean(q[:, 0])
+    y0, y1, x0, x1 = int(feet - 0.15 * tall), int(feet + 0.25 * tall), int(cx - 0.6 * tall), int(cx + 0.6 * tall)
+    return float(cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)[max(0, y0):y1, max(0, x0):x1].mean()) >= LIT
 
 
 def deuce(project: str, s: dict) -> np.ndarray:
@@ -159,7 +192,7 @@ def travel(pose: np.ndarray) -> float:
 
 def videos(project: str, players: list[str], out_dir: Path, make: bool, extra: dict | None = None) -> dict[str, dict]:
     """The clips ([file name, label]) per kind: avg, and a list per player (and each of ours, extra), most typical
-    first; rendered if make or missing. A player's first clip keeps the name it had when there was only one."""
+    first; rendered if make or missing. Each file is named for the stroke it shows."""
     from dsa.pages.exemplars import single
     from dsa.pages.profiles_report import label_of, load, stroke
 
@@ -171,8 +204,10 @@ def videos(project: str, players: list[str], out_dir: Path, make: bool, extra: d
     for k, c in chosen.items():
         win = res[k]["win"]
         def clip(i, name, src=project):
-            path = out_dir / f"ex_{k}_{name}.mp4"
             st = stroke(src, {"kind": k, "name": "", "j": 0, "unit": ""}, i)
+            # the stroke shown is in the name: a new pick (the traits shown changed) is a new file, never an old video
+            # under a new label, and nothing cached under an old name goes stale
+            path = out_dir / f"ex_{k}_{name}_{st['video']}_{st['frame']}.mp4"
             st.pop("value_text", None)
             st["project"] = src
             if make or not path.exists():
@@ -396,7 +431,7 @@ JS = r"""
   function when(n, K, mo) {
     const c = fi(K, 0);
     return ({shoulder_coil: [null, mo.coil], hip_coil: [null, mo.hipcoil], separation: [null, mo.coil],
-      takeback: [fi(K, -0.6), mo.fwd], swing_time: [mo.fwd, c], wrist_speed: [fi(K, -0.15), fi(K, 0.1)],
+      takeback: [fi(K, -0.6), mo.fwd], takeback_turn: [null, mo.fwd], finish_open: [null, fi(K, 0.3)], swing_time: [mo.fwd, c], wrist_speed: [fi(K, -0.15), fi(K, 0.1)],
       finish_height: [null, fi(K, 0.3)], finish_arm: [null, fi(K, 0.3)], finish_side: [null, fi(K, 0.3)], head_still: [fi(K, -0.1), fi(K, 0.1)],
       knee_bend: [null, fi(K, -0.15)], toss_arm: [null, mo.toss], toss_straight: [null, mo.toss], toss_tilt: [null, mo.toss], trophy_tilt: [null, mo.toss],
       trophy_time: [mo.toss, c], into_court: [null, fi(K, 0.4)]})[n] || [null, c];
@@ -436,7 +471,7 @@ JS = r"""
                           el("line", {x1: X(q[2]), y1: Y(q[2]), x2: X(q[6]), y2: Y(q[6]), class: c, "stroke-width": 4}); },
       toss_tilt: () => { el("line", {x1: X(q[1]), x2: X(q[1]), y1: Y(q[1]), y2: Y([0, q[1][1] + 1.6]), class: "ref"});
                          el("line", {x1: X(q[1]), y1: Y(q[1]), x2: X(q[5]), y2: Y(q[5]), class: c, "stroke-width": 4}); },
-      shoulder_width: () => width(1, 2), shoulder_coil: () => width(1, 2), hip_coil: () => width(7, 8),
+      shoulder_width: () => width(1, 2), takeback_turn: () => width(1, 2), finish_open: () => width(1, 2), shoulder_coil: () => width(1, 2), hip_coil: () => width(7, 8),
       separation: () => { width(1, 2); width(7, 8); }, elbow_angle: () => arc(2, 4, 6),
       knee_bend: () => { arc(7, 9, 11); arc(8, 10, 12); }, shoulder_tilt: tilt, trophy_tilt: tilt,
       stance_m: feet, stance_side_m: feet, stance_fwd_m: feet, stance_angle: feet, into_court: feet,
@@ -484,7 +519,9 @@ JS = r"""
       el("text", {x: 160, y: 22, "text-anchor": "middle", class: "note"}, "from above, net ↑");
       el("circle", {cx: o[0], cy: o[1], r: 7, class: "dot all"});
       // on the stance angle, the line is turned to the median angle: the angle of the median offsets can be far off it
-      const side = Math.sign((st.rest?.[who] || st[who] || [1])[0]) || 1;
+      // over 90° the front foot is out to its own side (open), under 90° across the body (closed): seen from behind,
+      // a right-hander's forehand front foot (the left) opens to the left, his backhand's (the right) to the right
+      const side = m.k === "backhand" ? 1 : -1;
       [[who, "me", st[who], m.meds[who]], [r.lab, "all", r.feet, r.med]].forEach(([lab, cls, v, deg]) => {
         if (!v || v[0] == null) return;
         if (m.n === "stance_angle" && deg != null) { const L = Math.hypot(v[0], v[1]), a = deg * Math.PI / 180; v = [side * L * Math.cos(a), L * Math.sin(a)]; }
@@ -492,6 +529,26 @@ JS = r"""
         el("line", {x1: o[0], y1: o[1], x2: fx, y2: fy, class: "bar " + cls});
         el("circle", {cx: fx, cy: fy, r: 7, class: "dot " + cls});
         el("text", {x: fx - 12, y: fy + 4, "text-anchor": "end", class: "nm " + cls}, lab);
+      });
+      el("text", {x: 30, y: 296, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);
+      el("text", {x: 30, y: 314, class: "val all"}, `${r.low} ${r.val}`);
+      return;
+    }
+    // a turn, from above with the net up: the shoulder (or hip) line at each one's median angle, the hitting side dotted.
+    // Drawn from the number itself: widths on the average pose can point the other way
+    const TURN = {hip_coil: "hips", shoulder_coil: "shoulders", takeback_turn: "shoulders", shoulder_width: "shoulders", finish_open: "shoulders"};
+    if (TURN[m.n]) {
+      const o = [160, 150], L = 95, sg = m.k === "backhand" ? -1 : 1, open = m.n === "shoulder_width" || m.n === "finish_open";
+      el("line", {x1: 40, x2: 280, y1: o[1], y2: o[1], class: "ref"});
+      el("text", {x: 280, y: o[1] - 8, "text-anchor": "end", class: "note"}, "square to the net");
+      el("text", {x: 160, y: 22, "text-anchor": "middle", class: "note"}, `${TURN[m.n]} from above, net ↑`);
+      [[who, "me", m.meds[who]], [r.lab, "all", r.med]].forEach(([lab, cls, v]) => {
+        if (v == null) return;
+        const a = (open ? 90 - v : v) * Math.PI / 180, dx = sg * L * Math.cos(a), dy = L * Math.sin(a);   // turning away from the net takes the hitting side back, down the page
+        el("line", {x1: o[0] - dx, y1: o[1] - dy, x2: o[0] + dx, y2: o[1] + dy, class: "bar " + cls});
+        el("circle", {cx: o[0] + dx, cy: o[1] + dy, r: 7, class: "dot " + cls});
+        const e = cls === "me" ? 1 : -1;   // his name at the hitting end, the others' at the far end, so close lines don't collide
+        el("text", {x: o[0] + e * (dx + 12 * sg), y: o[1] + e * dy + 4, "text-anchor": e * sg > 0 ? "start" : "end", class: "nm " + cls}, lab);
       });
       el("text", {x: 30, y: 296, class: "val me"}, `${who} ${m.vals[who] ?? "–"}`);
       el("text", {x: 30, y: 314, class: "val all"}, `${r.low} ${r.val}`);

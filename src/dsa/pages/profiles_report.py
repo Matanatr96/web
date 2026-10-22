@@ -30,7 +30,7 @@ KINDS = ["serve", "forehand", "backhand"]
 WORDS = dict(enumerate("zero one two three four five six seven eight nine ten eleven twelve".split()))
 UNIT = {"deg": "°", "s": " s", "m": " m", "m/s": " m/s", "share": "", "torso": " torsos", "torso/s": " torsos/s"}
 # the moment each stroke measure is taken (s from contact), for the pose figure and the video's hold
-MOMENT = {"finish_height": 0.3, "finish_side": 0.3, "finish_arm": 0.3, "knee_bend": -0.15, "takeback": -0.2, "shoulder_coil": -0.35,
+MOMENT = {"finish_open": 0.3, "finish_height": 0.3, "finish_side": 0.3, "finish_arm": 0.3, "knee_bend": -0.15, "takeback": -0.2, "shoulder_coil": -0.35,
           "hip_coil": -0.35, "separation": -0.35, "into_court": 0.4, "toss_arm": "toss", "toss_straight": "toss", "toss_tilt": "toss", "trophy_time": "toss",
           "trophy_tilt": "toss"}
 SHORT = {"contact_height": "contact height", "contact_side": "contact out to side", "elbow_angle": "elbow at contact",
@@ -52,17 +52,17 @@ WHY = {"separation": "Seen from behind, the two hip points are close together an
        "elbow_angle": "A forearm pointing at the net is foreshortened and looks bent.",
        "stance_m": "Depth on the court is squashed when seen from behind.",
        "stance_fwd_m": "Depth on the court is squashed when seen from behind.",
-       "finish_open": None, "takeback_turn": None}
-WHY_BY = {"backhand": {"shoulder_width": "The players' order hardly repeats from one half of their matches to the other.",
-                       "takeback": "The forward swing's start, which it is measured at, is often at the edge of its search.",
-                       "swing_time": "The forward swing's start is often at the edge of its search.",
-                       "finish_arm": "Finish height and finish out to side are shown directly instead.",
+       "takeback_turn": "Taken as the forward swing starts, after the shoulders have begun to unwind: shoulder turn, at "
+                        "its most turned, is shown instead."}
+# forehand and backhand show the same traits (Peter, 2026-10-22): the backhand's shoulders open, take-back and swing
+# time, once left out as unsteady, repeat across random halves of each pro's matches as well as the forehand's do
+# (rank correlation 0.77-0.82), and its forward swing starts at the edge of its search in only 9% of strokes
+WHY_BY = {"backhand": {"finish_height": "Mostly the arm's angle at the finish (it explains 72% of it between players): "
+                                        "finish arm height is shown instead.",
                        "stance_side_m": "Width alone misreads a stance stepping toward the net; stance angle is shown "
                                         "instead."},
           "forehand": {"finish_height": "Mostly the arm's angle at the finish (it explains 93% of it between players): "
-                                        "finish arm height is shown instead.",
-                       "finish_side": "Mostly the arm's angle at the finish (it explains 78% of it between players): "
-                                      "finish arm height is shown instead."},
+                                        "finish arm height is shown instead."},
           "serve": {"toss_arm": "It mixes how straight the arm is, how far it leans in, how far it points toward the net "
                                 "(unseen from behind) and how high the shoulder lifts: toss arm straightness and toss arm "
                                 "in over head are shown instead.",
@@ -71,14 +71,19 @@ UNRELIABLE = set(WHY)
 UNRELIABLE_BY = {k: set(v) for k, v in WHY_BY.items()}
 # the rows of a stroke, phase by phase; a measure not listed goes last
 PHASES = {"serve": [["toss_straight", "toss_tilt", "trophy_tilt", "trophy_time"], ["reach", "trunk_lean", "hips_over"]],
-          "forehand": [["takeback", "swing_time", "stance_angle"], ["contact_side", "shoulder_width", "head_still"],
-                       ["finish_arm", "finish_height", "finish_side"]],
-          "backhand": [["takeback", "swing_time", "stance_angle"], ["contact_side", "shoulder_width", "head_still"],
-                       ["finish_arm", "finish_height", "finish_side"]]}
+          "forehand": [["takeback", "shoulder_coil", "hip_coil", "swing_time", "stance_angle"],
+                       ["contact_height", "contact_side", "shoulder_width", "head_still"],
+                       ["finish_arm", "finish_side", "finish_open"]],
+          "backhand": [["takeback", "shoulder_coil", "hip_coil", "swing_time", "stance_angle"],
+                       ["contact_height", "contact_side", "shoulder_width", "head_still"],
+                       ["finish_arm", "finish_side", "finish_open"]]}
 CAMERA_MAX = 0.10      # a measure is left out when the camera explains this share of a player's stroke-to-stroke spread
 # kept anyway: the stance angle's share is mostly the pose model's confidence, which a front foot stepping
 # across (one ankle hidden behind the other from behind) lowers itself, not the camera's zoom, angle or tilt
 CAMERA_OK = {("forehand", "stance_angle"), ("backhand", "stance_angle")}
+# kept by hand to look at (Peter, 2026-10-22), on both strokes so they show the same traits: the camera explains up
+# to 19% of these (shoulder turn at its most turned: nearly side-on, where a narrow width reads as a large angle)
+CAMERA_OK |= {(k, n) for k in ("forehand", "backhand") for n in ("contact_height", "shoulder_coil", "finish_open", "hip_coil")}
 BONES = [(1, 2), (1, 3), (3, 5), (2, 4), (4, 6), (1, 7), (2, 8), (7, 8), (7, 9), (9, 11), (8, 10), (10, 12)]
 DIRECTIONS = {"CC": "cross-court", "DL": "down the line", "IO": "inside-out", "II": "inside-in", "DM": "down the middle",
               "T": "down the T", "W": "out wide", "B": "into the body"}
@@ -251,6 +256,10 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
                        f'text-anchor="end">{SHORT.get(n, n)}</text>')
             for c, p in enumerate(players):
                 if p not in zs[k, n]:
+                    if p in extra:         # not measured on our phone footage: a clear square, so the gap reads as one
+                        out.append(f'<rect class="na" x="{cx(c) + 1.5}" y="{y + 1.5}" width="{cw - 3}" height="{rh - 3}" '
+                                   f'rx="2"><title>{label_of(p, extra)}, {k} {SHORT.get(n, n)}: not measured on our phone '
+                                   f'footage</title></rect>')
                     continue
                 z = zs[k, n][p]
                 a = min(abs(z) / 1.5, 1)
@@ -268,15 +277,15 @@ def heatmap(project: str, players: list[str], extra: dict | None = None) -> tupl
             tx = (x1 + x2) / 2 if anchor == "middle" else x2
             out.append(f'<path class="bracket" d="M{x1} {yb - 6}V{yb}H{x2}V{yb - 6}"/>'
                        f'<text x="{tx:.0f}" y="{yb + 16}" class="grouplab" text-anchor="{anchor}">{name}</text>')
-    out.append(legend(left, y + 18 + (GROUPS_H if extra else 0), cw))
+    out.append(legend(left, y + 18 + (GROUPS_H if extra else 0), cw, bool(extra)))
     return "".join(out) + "</svg>", players, order
 
 
-LEGEND_H = 90
+LEGEND_H = 116
 GROUPS_H = 34          # room under the squares for the pros / ours brackets
 
 
-def legend(x: float, y: float, cw: float) -> str:
+def legend(x: float, y: float, cw: float, na: bool = False) -> str:
     """The colour key under the squares: z from -1.5 or less to 1.5 or more (full colour), and what z is."""
     zs = [-1.5, -1, -0.5, 0, 0.5, 1, 1.5]
     out = []
@@ -291,6 +300,9 @@ def legend(x: float, y: float, cw: float) -> str:
     out.append(f'<text x="0" y="{y + 14}" class="hrow">z score</text>'
                f'<text x="0" y="{y + cw + 34}" class="hrow" id="zdef">z: his median minus the others\', in units of how</text>'
                f'<text x="0" y="{y + cw + 50}" class="hrow">much one player\'s strokes vary from stroke to stroke</text>')
+    if na:
+        out.append(f'<rect class="na" x="{x + 0.5:.1f}" y="{y + cw + 62.5}" width="{cw - 3}" height="{cw - 3}" rx="2"/>'
+                   f'<text x="{x + cw + 8:.0f}" y="{y + cw + 76}" class="hrow" text-anchor="start">not measured on our phone footage</text>')
     return "".join(out)
 
 
@@ -300,11 +312,16 @@ def legend(x: float, y: float, cw: float) -> str:
 # than TV. low: on the court surface (mapped through its lines) or a timing; medium: left-right in the picture, or an
 # angle from upright seen from behind (in torso lengths, which a camera looking down shortens: measured and corrected
 # for the phone, dsa.measure.profiles.foreshortening); high: up-down in the picture (height mixes with depth toward the
-# net) or an angle in the picture (an arm toward the net foreshortens differently from each height): left out for ours
+# net) or an angle in the picture (an arm toward the net foreshortens differently from each height): left out for ours.
+# The hips' turns are high too: a turn is read from the line's width across the picture (dsa.measure.technique.turn),
+# which assumes a camera looking straight down the court; the phone, off to one side, sees the court at a slant, so a
+# hip line pointing at the net still looks wide (Peter's hips side-on read 50-60 degrees). The shoulders, twice as far
+# apart and steadier, are kept (Peter, 2026-10-22), though the slant shortens their turn too
 SENS = {"stance_m": "low", "stance_side_m": "low", "stance_fwd_m": "low", "stance_angle": "low", "swing_time": "low",
         "trophy_time": "low", "into_court": "low",
-        "contact_side": "medium", "takeback": "medium", "finish_side": "medium", "shoulder_width": "medium",
-        "shoulder_coil": "medium", "hip_coil": "medium", "separation": "medium", "head_still": "medium",
+        "contact_side": "medium", "takeback": "medium", "finish_side": "medium", "head_still": "medium",
+        "shoulder_width": "medium", "shoulder_coil": "medium", "takeback_turn": "medium", "finish_open": "medium",
+        "hip_coil": "high", "separation": "high",
         "lean": "medium", "trunk_lean": "medium", "hips_over": "medium", "toss_tilt": "medium", "finish_arm": "medium",
         "contact_height": "high", "finish_height": "high", "reach": "high", "toss_arm": "high", "elbow_angle": "high", "toss_straight": "high",
         "knee_bend": "high", "shoulder_tilt": "high", "trophy_tilt": "high", "wrist_speed": "high"}
@@ -349,7 +366,7 @@ def stroke(project: str, f: dict, i: int) -> dict:
     hz = round((p.shape[0] - 1) / (GRID[-1] - GRID[0]))
     zero = int(round(-GRID[0] * hz))
     t = MOMENT.get(f["name"], 0.0)
-    phase = {"takeback": "fwd", "shoulder_coil": "coil", "separation": "coil", "hip_coil": "hipcoil"}.get(f["name"])
+    phase = {"takeback": "fwd", "takeback_turn": "fwd", "shoulder_coil": "coil", "separation": "coil", "hip_coil": "hipcoil"}.get(f["name"])
     if phase and f["kind"] != "serve":           # this stroke's own phase, not a fixed time
         tt = np.round(np.linspace(GRID[0], GRID[-1], len(p)), 4)
         t = float(tt[phases(normalise(p[None]), tt)[phase][0]])
@@ -770,6 +787,7 @@ PAGE = """<!doctype html>
       font-size: 12.5px; color: var(--muted); margin-top: 6px; }
   }
   svg.heat .divider { stroke: var(--ink); stroke-width: 1.5; }
+  svg.heat .na { fill: none; stroke: var(--muted); stroke-width: 1; stroke-dasharray: 2 2; }
   svg.heat .bracket { fill: none; stroke: var(--muted); stroke-width: 1.2; }
   svg.heat .grouplab { font-size: 12.5px; font-weight: 600; fill: var(--ink); }
   figure { margin: 12px 0 0; }
