@@ -72,7 +72,4 @@ schemes:
   TennisVision:
     build:
       targets:
-        TennisVision: all
-    test:
-      targets:
-        - package: CourtGeometry/CourtGeometryTests
+        TennisVision: [run, archive]
