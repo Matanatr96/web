@@ -26,6 +26,16 @@ dependencies = [
 [project.optional-dependencies]
 cloud = ["modal==1.5.5"]
 dev = ["pytest>=8"]
+# Line calls, shot speed, rally/match scoring and the per-rally Modal API (dsa.physics, dsa.gpu.rally_api).
+# opencv/scipy are already core deps (opencv-python, scipy above); opencv-python-headless is used only
+# inside the Modal image (volume.py) so the two cv2 wheels never clobber each other in one venv.
+tennis = [
+    "catboost==1.2.*",
+    "fastapi>=0.115",
+    "httpx>=0.27",
+    "av>=12",
+    "scipy>=1.11",
+]
 
 [build-system]
 requires = ["setuptools>=68"]

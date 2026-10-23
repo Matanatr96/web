@@ -1,0 +1,620 @@
+{
+ "version": 1,
+ "conventions": {
+  "frame": "metres, origin at the net centre, X right (from the near baseline), Y to the far baseline",
+  "margin_m": "max over the region's edges of the excess outside it (positive = out)",
+  "call": "out if margin > 2 sigma, in if margin < -2 sigma, else close; unknown without xy",
+  "depth_zone": "net (bounce on the hitter's half), out_long / out_wide (larger excess wins), short (|Y| <= 6.40), deep"
+ },
+ "cases": [
+  {
+   "name": "centre, deep, well in",
+   "xy": [
+    0.0,
+    9.0
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -2.885,
+    "depth_zone": "deep"
+   }
+  },
+  {
+   "name": "2 cm past the far baseline is close at sigma 2 cm",
+   "xy": [
+    1.0,
+    11.905
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "close",
+    "margin_m": 0.02,
+    "depth_zone": "out_long"
+   }
+  },
+  {
+   "name": "6.5 cm long is out",
+   "xy": [
+    1.0,
+    11.95
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 0.065,
+    "depth_zone": "out_long"
+   }
+  },
+  {
+   "name": "6.5 cm inside the singles sideline is in",
+   "xy": [
+    4.05,
+    3.0
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -0.065,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "near baseline, 1 cm in: close",
+   "xy": [
+    -2.0,
+    -11.875
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "close",
+    "margin_m": -0.01,
+    "depth_zone": "deep"
+   }
+  },
+  {
+   "name": "doubles alley: in for doubles",
+   "xy": [
+    5.0,
+    8.0
+   ],
+   "sigma_m": 0.03,
+   "region": "doubles",
+   "doubles": true,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -0.485,
+    "depth_zone": "deep"
+   }
+  },
+  {
+   "name": "doubles alley: out for singles",
+   "xy": [
+    5.0,
+    8.0
+   ],
+   "sigma_m": 0.03,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 0.885,
+    "depth_zone": "out_wide"
+   }
+  },
+  {
+   "name": "past the corner: the larger excess",
+   "xy": [
+    4.2,
+    12.0
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 0.115,
+    "depth_zone": "out_long"
+   }
+  },
+  {
+   "name": "wide, not long",
+   "xy": [
+    4.4,
+    11.9
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 0.285,
+    "depth_zone": "out_wide"
+   }
+  },
+  {
+   "name": "serve into the far deuce box",
+   "xy": [
+    -2.0,
+    5.0
+   ],
+   "sigma_m": 0.03,
+   "region": "serve_deuce_far",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -1.4,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "serve into the wrong box",
+   "xy": [
+    1.0,
+    5.0
+   ],
+   "sigma_m": 0.03,
+   "region": "serve_deuce_far",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 1.0,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "serve 5 cm long",
+   "xy": [
+    -1.0,
+    6.45
+   ],
+   "sigma_m": 0.02,
+   "region": "serve_deuce_far",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "out",
+    "margin_m": 0.05,
+    "depth_zone": "deep"
+   }
+  },
+  {
+   "name": "serve on the centre line is close",
+   "xy": [
+    0.01,
+    3.0
+   ],
+   "sigma_m": 0.02,
+   "region": "serve_deuce_far",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "close",
+    "margin_m": 0.01,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "serve into the near ad box",
+   "xy": [
+    -1.0,
+    -3.0
+   ],
+   "sigma_m": 0.02,
+   "region": "serve_ad_near",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -1.0,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "serve into the near deuce box",
+   "xy": [
+    2.0,
+    -6.0
+   ],
+   "sigma_m": 0.05,
+   "region": "serve_deuce_near",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "in",
+    "margin_m": -0.4,
+    "depth_zone": "short"
+   }
+  },
+  {
+   "name": "netted: bounced on the hitter's own side",
+   "xy": [
+    0.0,
+    -3.0
+   ],
+   "sigma_m": 0.02,
+   "region": "singles",
+   "doubles": false,
+   "hitter": "near",
+   "expect": {
+    "call": "in",
+    "margin_m": -4.115,
+    "depth_zone": "net"
+   }
+  },
+  {
+   "name": "no contact point",
+   "xy": null,
+   "sigma_m": null,
+   "region": "singles",
+   "doubles": false,
+   "hitter": null,
+   "expect": {
+    "call": "unknown",
+    "margin_m": null,
+    "depth_zone": "unknown"
+   }
+  }
+ ],
+ "homography": [
+  {
+   "name": "H0: ground plane at [0.0, 0.0]",
+   "plane_z": 0.0,
+   "H": [
+    [
+     -0.01520806836,
+     -0.0,
+     14.599745626014
+    ],
+    [
+     -0.0,
+     0.068454935622,
+     -29.755364806867
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    960.0,
+    434.670846
+   ],
+   "xy": [
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "H0: ground plane at [4.115, 11.885]",
+   "plane_z": 0.0,
+   "H": [
+    [
+     -0.01520806836,
+     -0.0,
+     14.599745626014
+    ],
+    [
+     -0.0,
+     0.068454935622,
+     -29.755364806867
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    1082.349641,
+    356.16512
+   ],
+   "xy": [
+    4.115,
+    11.885
+   ]
+  },
+  {
+   "name": "H0: ground plane at [-5.485, -11.885]",
+   "plane_z": 0.0,
+   "H": [
+    [
+     -0.01520806836,
+     -0.0,
+     14.599745626014
+    ],
+    [
+     -0.0,
+     0.068454935622,
+     -29.755364806867
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    6.517915,
+    893.66207
+   ],
+   "xy": [
+    -5.485,
+    -11.885
+   ]
+  },
+  {
+   "name": "H0: ground plane at [1.5, 6.4]",
+   "plane_z": 0.0,
+   "H": [
+    [
+     -0.01520806836,
+     -0.0,
+     14.599745626014
+    ],
+    [
+     -0.0,
+     0.068454935622,
+     -29.755364806867
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    1015.147862,
+    382.396732
+   ],
+   "xy": [
+    1.5,
+    6.4
+   ]
+  },
+  {
+   "name": "Hr: ball-centre plane z = 0.033 m at [0.0, 0.0]",
+   "plane_z": 0.033,
+   "H": [
+    [
+     -0.015064678002,
+     -0.0,
+     14.46209088154
+    ],
+    [
+     -0.0,
+     0.068405364807,
+     -29.620957081545
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    960.0,
+    433.020965
+   ],
+   "xy": [
+    0.0,
+    0.0
+   ]
+  },
+  {
+   "name": "Hr: ball-centre plane z = 0.033 m at [4.115, 11.885]",
+   "plane_z": 0.033,
+   "H": [
+    [
+     -0.015064678002,
+     -0.0,
+     14.46209088154
+    ],
+    [
+     -0.0,
+     0.068405364807,
+     -29.620957081545
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    1082.401539,
+    355.166072
+   ],
+   "xy": [
+    4.115,
+    11.885
+   ]
+  },
+  {
+   "name": "Hr: ball-centre plane z = 0.033 m at [-5.485, -11.885]",
+   "plane_z": 0.033,
+   "H": [
+    [
+     -0.015064678002,
+     -0.0,
+     14.46209088154
+    ],
+    [
+     -0.0,
+     0.068405364807,
+     -29.620957081545
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    4.148416,
+    889.144738
+   ],
+   "xy": [
+    -5.485,
+    -11.885
+   ]
+  },
+  {
+   "name": "Hr: ball-centre plane z = 0.033 m at [1.5, 6.4]",
+   "plane_z": 0.033,
+   "H": [
+    [
+     -0.015064678002,
+     -0.0,
+     14.46209088154
+    ],
+    [
+     -0.0,
+     0.068405364807,
+     -29.620957081545
+    ],
+    [
+     0.0,
+     -0.004077253219,
+     1.0
+    ]
+   ],
+   "uv": [
+    1015.176791,
+    381.175015
+   ],
+   "xy": [
+    1.5,
+    6.4
+   ]
+  }
+ ],
+ "subframe": [
+  {
+   "name": "60 fps, contact 7 ms after the last sample",
+   "pre": [
+    [
+     0.45,
+     902.28,
+     483.6296
+    ],
+    [
+     0.466667,
+     901.613333,
+     488.147378
+    ],
+    [
+     0.483333,
+     900.946667,
+     492.887378
+    ],
+    [
+     0.5,
+     900.28,
+     497.8496
+    ]
+   ],
+   "post": [
+    [
+     0.516667,
+     899.613333,
+     497.5147
+    ],
+    [
+     0.533333,
+     898.946667,
+     493.361367
+    ],
+    [
+     0.55,
+     898.28,
+     489.3747
+    ],
+    [
+     0.566667,
+     897.613333,
+     485.5547
+    ]
+   ],
+   "t_star": 0.507,
+   "uv_star": [
+    900.0,
+    500.0
+   ]
+  },
+  {
+   "name": "30 fps, contact mid-gap",
+   "pre": [
+    [
+     1.166667,
+     1197.5,
+     484.0
+    ],
+    [
+     1.2,
+     1198.333333,
+     488.888889
+    ],
+    [
+     1.233333,
+     1199.166667,
+     494.222222
+    ],
+    [
+     1.266667,
+     1200.0,
+     500.0
+    ]
+   ],
+   "post": [
+    [
+     1.3,
+     1200.833333,
+     495.166667
+    ],
+    [
+     1.333333,
+     1201.666667,
+     490.666667
+    ],
+    [
+     1.366667,
+     1202.5,
+     486.5
+    ],
+    [
+     1.4,
+     1203.333333,
+     482.666667
+    ]
+   ],
+   "t_star": 1.266667,
+   "uv_star": [
+    1200.0,
+    500.0
+   ]
+  }
+ ]
+}

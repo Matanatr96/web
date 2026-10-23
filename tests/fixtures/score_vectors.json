@@ -1,0 +1,456 @@
+{
+ "version": 1,
+ "cases": [
+  {
+   "name": "first point",
+   "config": {},
+   "points": "M",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     0
+    ],
+    "points": "15-0",
+    "server": "me",
+    "side": "ad",
+    "display": "0-0 15-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "love game: the receiver serves next",
+   "config": {},
+   "points": "MMMM",
+   "expect": {
+    "sets": [],
+    "games": [
+     1,
+     0
+    ],
+    "points": "0-0",
+    "server": "opp",
+    "side": "deuce",
+    "display": "1-0 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "deuce",
+   "config": {},
+   "points": "MMMOOO",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     0
+    ],
+    "points": "40-40",
+    "server": "me",
+    "side": "deuce",
+    "display": "0-0 40-40",
+    "winner": null
+   }
+  },
+  {
+   "name": "advantage receiver",
+   "config": {},
+   "points": "MMMOOOO",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     0
+    ],
+    "points": "40-AD",
+    "server": "me",
+    "side": "ad",
+    "display": "0-0 40-AD",
+    "winner": null
+   }
+  },
+  {
+   "name": "two deuces then game",
+   "config": {},
+   "points": "MMMOOOMOMM",
+   "expect": {
+    "sets": [],
+    "games": [
+     1,
+     0
+    ],
+    "points": "0-0",
+    "server": "opp",
+    "side": "deuce",
+    "display": "1-0 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "no-ad deciding point",
+   "config": {
+    "no_ad": true
+   },
+   "points": "MMMOOOO",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     1
+    ],
+    "points": "0-0",
+    "server": "opp",
+    "side": "deuce",
+    "display": "0-1 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "no-ad at 40-40 shows 40-40",
+   "config": {
+    "no_ad": true
+   },
+   "points": "MMMOOO",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     0
+    ],
+    "points": "40-40",
+    "server": "me",
+    "side": "deuce",
+    "display": "0-0 40-40",
+    "winner": null
+   }
+  },
+  {
+   "name": "opponent serves first",
+   "config": {
+    "first_server": "opp"
+   },
+   "points": "OOOO",
+   "expect": {
+    "sets": [],
+    "games": [
+     0,
+     1
+    ],
+    "points": "0-0",
+    "server": "me",
+    "side": "deuce",
+    "display": "0-1 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "set 6-4",
+   "config": {},
+   "points": "MMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMMMMM",
+   "expect": {
+    "sets": [
+     [
+      6,
+      4
+     ]
+    ],
+    "games": [
+     0,
+     0
+    ],
+    "points": "0-0",
+    "server": "me",
+    "side": "deuce",
+    "display": "6-4 0-0 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "7-5 set (no tiebreak at 6-5)",
+   "config": {},
+   "points": "MMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMMMMM",
+   "expect": {
+    "sets": [
+     [
+      7,
+      5
+     ]
+    ],
+    "games": [
+     0,
+     0
+    ],
+    "points": "0-0",
+    "server": "me",
+    "side": "deuce",
+    "display": "7-5 0-0 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "tiebreak at 6-6, mid-way (3 points: server rotates after the first)",
+   "config": {},
+   "points": "MMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMO",
+   "expect": {
+    "sets": [],
+    "games": [
+     6,
+     6
+    ],
+    "points": "2-1",
+    "server": "me",
+    "side": "ad",
+    "display": "6-6 2-1",
+    "winner": null
+   }
+  },
+  {
+   "name": "tiebreak won 7-5: the first tiebreak receiver serves the next set",
+   "config": {},
+   "points": "MMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMMMOOOOMMOOMMOOMOMM",
+   "expect": {
+    "sets": [
+     [
+      7,
+      6
+     ]
+    ],
+    "games": [
+     0,
+     0
+    ],
+    "points": "0-0",
+    "server": "opp",
+    "side": "deuce",
+    "display": "7-6 0-0 0-0",
+    "winner": null
+   }
+  },
+  {
+   "name": "match 6-0 6-0",
+   "config": {},
+   "points": "MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMM",
+   "expect": {
+    "sets": [
+     [
+      6,
+      0
+     ],
+     [
+      6,
+      0
+     ]
+    ],
+    "games": [
+     0,
+     0
+    ],
+    "points": "0-0",
+    "server": "me",
+    "side": "deuce",
+    "display": "6-0 6-0",
+    "winner": "me"
+   }
+  },
+  {
+   "name": "match tiebreak to 10 instead of a third set",
+   "config": {
+    "match_tiebreak": true
+   },
+   "points": "MMMMMMMMMMMMMMMMMMMMMMMMOOOOOOOOOOOOOOOOOOOOOOOOMOMOMOMOMOMOMOMOMM",
+   "expect": {
+    "sets": [
+     [
+      6,
+      0
+     ],
+     [
+      0,
+      6
+     ],
+     [
+      1,
+      0
+     ]
+    ],
+    "games": [
+     0,
+     0
+    ],
+    "points": "0-0",
+    "server": "opp",
+    "side": "deuce",
+    "display": "6-0 0-6 1-0",
+    "winner": "me"
+   }
+  }
+ ],
+ "rally": [
+  {
+   "name": "all in",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 1.2,
+     "call": "in",
+     "depth_zone": "short"
+    },
+    {
+     "t_hit_s": 2.4,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 3.6,
+     "call": "in",
+     "depth_zone": "deep"
+    }
+   ],
+   "expect": {
+    "shot_count": 4,
+    "in_streak": 4,
+    "played_on_after_out": false,
+    "deep_pct": 75.0
+   }
+  },
+  {
+   "name": "played on after an out ball",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 1.3,
+     "call": "out",
+     "depth_zone": "out_long"
+    },
+    {
+     "t_hit_s": 2.5,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 3.7,
+     "call": "in",
+     "depth_zone": "short"
+    }
+   ],
+   "expect": {
+    "shot_count": 4,
+    "in_streak": 1,
+    "played_on_after_out": true,
+    "deep_pct": 50.0
+   }
+  },
+  {
+   "name": "ends on an out ball",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 1.1,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 2.2,
+     "call": "out",
+     "depth_zone": "out_wide"
+    }
+   ],
+   "expect": {
+    "shot_count": 3,
+    "in_streak": 2,
+    "played_on_after_out": false,
+    "deep_pct": 66.7
+   }
+  },
+  {
+   "name": "unknown and close keep the streak",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "unknown",
+     "depth_zone": "unknown"
+    },
+    {
+     "t_hit_s": 1.0,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 2.0,
+     "call": "close",
+     "depth_zone": "short"
+    },
+    {
+     "t_hit_s": 3.0,
+     "call": "out",
+     "depth_zone": "out_long"
+    },
+    {
+     "t_hit_s": 4.0,
+     "call": "in",
+     "depth_zone": "deep"
+    }
+   ],
+   "expect": {
+    "shot_count": 5,
+    "in_streak": 3,
+    "played_on_after_out": true,
+    "deep_pct": 50.0
+   }
+  },
+  {
+   "name": "a single feed",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "in",
+     "depth_zone": "deep"
+    }
+   ],
+   "expect": {
+    "shot_count": 1,
+    "in_streak": 1,
+    "played_on_after_out": false,
+    "deep_pct": 100.0
+   }
+  },
+  {
+   "name": "out ball not returned within 3.5 s",
+   "shots": [
+    {
+     "t_hit_s": 0.0,
+     "call": "in",
+     "depth_zone": "deep"
+    },
+    {
+     "t_hit_s": 1.0,
+     "call": "out",
+     "depth_zone": "out_long"
+    },
+    {
+     "t_hit_s": 5.0,
+     "call": "in",
+     "depth_zone": "deep"
+    }
+   ],
+   "expect": {
+    "shot_count": 3,
+    "in_streak": 1,
+    "played_on_after_out": false,
+    "deep_pct": 66.7
+   }
+  }
+ ]
+}

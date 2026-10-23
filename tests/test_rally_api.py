@@ -1,0 +1,293 @@
+"""The tennis-rally Modal app's logic without Modal: upload jobs, HTTP Range clips, auth, rally segmentation,
+one rally's shots and the idempotent webhook client."""
+import hashlib
+import json
+import sys
+import uuid
+from pathlib import Path
+
+import httpx
+import numpy as np
+import pytest
+from fastapi.testclient import TestClient
+
+from dsa.gpu import rally_api as RA
+
+sys.path.insert(0, str(Path(__file__).parent / "physics"))
+from synth import rally, true_camera  # noqa: E402
+
+SECRET, NOW = "s3cret", 1_800_000_000
+MID = str(uuid.UUID(int=0x1234))
+
+
+@pytest.fixture
+def api(tmp_path, monkeypatch):
+    monkeypatch.setattr(RA, "PART_SIZE", 1024)
+    spawned = []
+    app = RA.create_app(tmp_path, SECRET, spawn=lambda kind, payload: spawned.append((kind, payload)),
+                        now=lambda: NOW)
+    return TestClient(app), tmp_path, spawned
+
+
+def tok(scope=MID, exp=NOW + 3600, secret=SECRET):
+    return {"X-Job-Token": RA.mint_token(secret, scope, exp)}
+
+
+def job(size, **kw):
+    return {"match_id": MID, "source": "web", "size_bytes": size, "court": {"size": [1920, 1080]}} | kw
+
+
+# --- auth -----------------------------------------------------------------------------------------------------
+
+def test_tokens_are_scoped_and_expire():
+    t = RA.mint_token(SECRET, MID, NOW + 10)
+    assert RA.verify_token(SECRET, t, MID, NOW)
+    assert not RA.verify_token(SECRET, t, str(uuid.uuid4()), NOW)            # another match
+    assert not RA.verify_token(SECRET, t, MID, NOW + 11)                     # expired
+    assert not RA.verify_token("other", t, MID, NOW)                         # another secret
+    assert not RA.verify_token(SECRET, t[:-1] + ("0" if t[-1] != "0" else "1"), MID, NOW)
+    assert not RA.verify_token(SECRET, "garbage", MID, NOW)
+    assert RA.verify_token(SECRET, RA.mint_token(SECRET, "any", NOW + 10), MID, NOW)  # the iOS device token
+
+
+def test_job_routes_fail_closed(api, tmp_path):
+    client, _, _ = api
+    assert client.post("/jobs", json=job(10)).status_code == 401
+    assert client.post("/jobs", json=job(10), headers={"X-Job-Token": "x.1.y"}).status_code == 403
+    assert client.post("/jobs", json=job(10), headers=tok(exp=NOW - 1)).status_code == 403
+    assert client.post("/jobs", json=job(10), headers=tok(scope=str(uuid.uuid4()))).status_code == 403
+    unset = TestClient(RA.create_app(tmp_path / "x", None))
+    assert unset.post("/jobs", json=job(10), headers=tok()).status_code == 503
+    assert client.post("/jobs", json=job(10) | {"source": "fax"}, headers=tok()).status_code == 422
+
+
+# --- uploads --------------------------------------------------------------------------------------------------
+
+def test_upload_resume_and_commit_a_session(api):
+    client, root, spawned = api
+    data = bytes(range(256)) * 10                                            # 2560 bytes: 3 parts of 1024
+    r = client.post("/jobs", json=job(len(data), session_type="rally"), headers=tok())
+    assert r.status_code == 201
+    assert r.json() == {"job_id": MID, "match_id": MID, "rally_idx": None, "part_size": 1024, "parts_expected": 3,
+                        "status": "uploading", "size_bytes": 2560, "received_parts": []}
+    again = client.post("/jobs", json=job(len(data), session_type="rally"), headers=tok())
+    assert again.status_code == 200 and again.json()["job_id"] == MID                    # idempotent
+    assert client.post("/jobs", json=job(999), headers=tok()).status_code == 409         # a different file
+
+    put = lambda n, body, **h: client.put(f"/jobs/{MID}/parts/{n}", content=body, headers=tok() | h)  # noqa: E731
+    assert put(0, data[:1000]).status_code == 400                            # short part
+    assert put(3, data[:10]).status_code == 400                              # past the end
+    assert put(0, data[:1024], **{"X-Part-Sha256": "0" * 64}).status_code == 400
+    assert put(2, data[2048:], **{"X-Part-Sha256": hashlib.sha256(data[2048:]).hexdigest()}).status_code == 200
+    assert put(0, data[:1024]).json()["received_parts"] == [0, 2]
+    assert put(0, data[:1024]).status_code == 200                            # a retried part overwrites itself
+    assert client.get(f"/jobs/{MID}", headers=tok()).json()["received_parts"] == [0, 2]   # resume from part 1
+    early = client.post(f"/jobs/{MID}/commit", headers=tok())
+    assert early.status_code == 409 and early.json()["missing"] == [1]
+    put(1, data[1024:2048])
+    done = client.post(f"/jobs/{MID}/commit", json={"sha256": hashlib.sha256(data).hexdigest()}, headers=tok())
+    assert done.status_code == 200 and done.json()["status"] == "processing"
+    assert (root / MID / "source.mp4").read_bytes() == data
+    assert not (root / MID / "jobs/session/parts").exists()
+    assert spawned == [("segment_match", {"match_id": MID, "path": f"{MID}/source.mp4", "session_type": "rally",
+                                          "court": {"size": [1920, 1080]}, "doubles": False, "source": "web",
+                                          "biomech": False})]
+    assert client.post(f"/jobs/{MID}/commit", headers=tok()).json()["status"] == "processing"
+    assert len(spawned) == 1                                                 # committing twice is a no-op
+    assert client.get(f"/jobs/{MID}", headers=tok()).json()["received_parts"] == [0, 1, 2]
+    assert put(0, data[:1024]).status_code == 409
+
+
+def test_commit_checks_the_whole_file(api):
+    client, _, spawned = api
+    client.post("/jobs", json=job(5), headers=tok())
+    client.put(f"/jobs/{MID}/parts/0", content=b"abcde", headers=tok())
+    bad = client.post(f"/jobs/{MID}/commit", json={"sha256": "1" * 64}, headers=tok())
+    assert bad.status_code == 400 and spawned == []
+
+
+def test_an_ios_rally_clip_is_its_own_job(api):
+    client, root, spawned = api
+    body = job(700, source="ios", rally_idx=3, content_type="video/quicktime", start_s=81.5, session_type="match")
+    r = client.post("/jobs", json=body, headers=tok(scope="any"))
+    assert r.status_code == 201 and r.json()["job_id"] == f"{MID}.r3"
+    client.put(f"/jobs/{MID}.r3/parts/0", content=b"\0" * 700, headers=tok(scope="any"))
+    assert client.post(f"/jobs/{MID}.r3/commit", headers=tok(scope="any")).status_code == 200
+    assert (root / MID / "uploads/rally-3.mov").stat().st_size == 700
+    kind, payload = spawned[0]
+    assert kind == "process_rally" and payload["rally_idx"] == 3 and payload["start_s"] == 81.5
+    assert payload["session_type"] == "match" and payload["path"] == f"{MID}/uploads/rally-3.mov"
+    assert client.get("/jobs/not-a-job", headers=tok()).status_code == 404
+    assert client.get(f"/jobs/{uuid.uuid4()}", headers=tok()).status_code == 404
+
+
+# --- rally clips over HTTP Range ------------------------------------------------------------------------------
+
+@pytest.fixture
+def clip(api):
+    client, root, _ = api
+    data = bytes(range(250)) * 4                                             # 1000 bytes
+    (root / MID / "rallies").mkdir(parents=True)
+    (root / MID / "rallies/7.mp4").write_bytes(data)
+    return client, data
+
+
+def test_clip_full_and_partial_content(clip):
+    client, data = clip
+    r = client.get(f"/clips/{MID}/7.mp4")
+    assert r.status_code == 200 and r.content == data
+    assert r.headers["accept-ranges"] == "bytes" and r.headers["content-type"] == "video/mp4"
+    assert r.headers["cache-control"] == "public, max-age=31536000, immutable"
+    assert r.headers["content-length"] == "1000"
+    for rng, (a, b) in {"bytes=0-1": (0, 1), "bytes=100-199": (100, 199), "bytes=990-": (990, 999),
+                        "bytes=-5": (995, 999), "bytes=900-5000": (900, 999)}.items():
+        p = client.get(f"/clips/{MID}/7.mp4", headers={"Range": rng})       # Safari probes with bytes=0-1
+        assert p.status_code == 206, rng
+        assert p.headers["content-range"] == f"bytes {a}-{b}/1000"
+        assert p.headers["content-length"] == str(b - a + 1) and p.content == data[a:b + 1]
+
+
+def test_clip_edge_cases(clip):
+    client, data = clip
+    bad = client.get(f"/clips/{MID}/7.mp4", headers={"Range": "bytes=1000-"})
+    assert bad.status_code == 416 and bad.headers["content-range"] == "bytes */1000"
+    assert client.get(f"/clips/{MID}/7.mp4", headers={"Range": "bytes=-0"}).status_code == 416
+    assert client.get(f"/clips/{MID}/7.mp4", headers={"Range": "bytes=0-1,5-6"}).status_code == 200  # ignored
+    assert client.get(f"/clips/{MID}/7.mp4", headers={"Range": "items=0-1"}).status_code == 200
+    head = client.head(f"/clips/{MID}/7.mp4", headers={"Range": "bytes=0-9"})
+    assert head.status_code == 206 and head.headers["content-length"] == "10" and head.content == b""
+    etag = client.get(f"/clips/{MID}/7.mp4").headers["etag"]
+    assert client.get(f"/clips/{MID}/7.mp4", headers={"If-None-Match": etag}).status_code == 304
+    assert client.get(f"/clips/{MID}/8.mp4").status_code == 404
+    assert client.get("/clips/not-a-uuid/7.mp4").status_code == 404
+    assert client.get(f"/clips/{MID}/..%2F..%2Fsecret.mp4").status_code == 404
+    assert client.get(f"/clips/{MID}/7.mov").status_code == 404
+
+
+# --- rallies from ball events ---------------------------------------------------------------------------------
+
+def ev(*items):
+    return [{"t": t, "kind": k} | ({"call": c} if c else {}) for t, k, c in items]
+
+
+def test_rally_mode_plays_on_after_an_out_ball():
+    e = ev((10.0, "hit", None), (10.8, "bounce", "in"), (11.2, "hit", None), (12.0, "bounce", "out"),
+           (12.4, "hit", None), (13.1, "bounce", "in"), (13.5, "hit", None), (14.3, "bounce", "in"))
+    r = RA.segment_rallies(e, "rally")
+    assert [(x["hits"], x["start_s"], x["end_s"]) for x in r] == [(4, 8.5, 16.3)]
+    m = RA.segment_rallies(e, "match")                                       # match mode: the out ends the point
+    assert [x["hits"] for x in m] == [2, 2]
+
+
+def test_rallies_split_on_gaps_nets_double_bounces_and_lost_tracks():
+    e = ev((1.0, "hit", None), (1.8, "bounce", "in"), (2.2, "hit", None),
+           (7.0, "hit", None), (7.6, "net", None),                           # > 3.5 s gap, then into the net
+           (8.5, "hit", None), (9.2, "bounce", "in"), (9.9, "bounce", "in"),  # a quick re-feed (E3); not returned
+           (10.6, "hit", None), (11.0, "break", None), (11.5, "hit", None))
+    r = RA.segment_rallies(e, "rally", duration=12.0)
+    assert [x["hits"] for x in r] == [2, 1, 1, 1, 1]
+    assert r[0]["start_s"] == 0.0 and r[-1]["end_s"] == 12.0                 # clamped to the video
+    assert RA.segment_rallies([], "rally") == []
+    assert RA.segment_rallies(ev((3.0, "bounce", "in")), "rally") == []      # no hit, no rally
+
+
+# --- one rally's shots ----------------------------------------------------------------------------------------
+
+def test_analyse_track_turns_a_rally_into_shots():
+    cal = true_camera()
+    track, events, xyz = rally(np.random.default_rng(31), cal, noise_px=0.3)
+    shots, evs = RA.analyse_track(track, cal, "rally")
+    bounces = [e for e in events if e[1] == "bounce"]
+    hits = [e for e in events if e[1] == "hit"]
+    assert len(shots) == 1 + len(hits) == 3                                 # the feed the track starts with + 2
+    assert shots[0]["stroke"] == "feed" and [s["hitter"] for s in shots] == ["near", "far", "near"]
+    for s, (te, _, p) in zip(shots, bounces):
+        assert s["call"] == "in" and s["depth_zone"] == "deep" and s["sigma_m"] > 0
+        assert abs(s["t_bounce_s"] - te) < 0.01 and np.hypot(s["bounce_x"] - p[0], s["bounce_y"] - p[1]) < 0.15
+        assert 20 < s["speed_mph"] < 120 and 0 < s["net_clearance_m"] < 3
+    assert abs(shots[2]["t_hit_s"] - hits[1][0]) < 0.05
+    assert shots[2]["call"] == "unknown" and shots[2]["depth_zone"] == "unknown"        # no bounce in the clip
+    assert set(shots[0]) == {"shot_idx", "hitter", "t_hit_s", "hit_x", "hit_y", "stroke", "direction",
+                             "depth_zone", "t_bounce_s", "bounce_x", "bounce_y", "speed_mph", "net_clearance_m",
+                             "call", "margin_m", "sigma_m"}
+    m, _ = RA.analyse_track(track, cal, "match")
+    assert m[0]["stroke"] == "serve"                                         # judged against a service box
+    assert RA.analyse_track(track[:, :] * [1, 0, 1, 1, 1], cal) == ([], [])  # no ball, no shots
+
+
+def test_serve_boxes_follow_the_server():
+    assert RA._serve_region("near", 1.0) == "deuce_far" and RA._serve_region("near", -1.0) == "ad_far"
+    assert RA._serve_region("far", -1.0) == "deuce_near" and RA._serve_region("far", 1.0) == "ad_near"
+    assert RA._direction(2.0, -3.0) == "cross" and RA._direction(2.0, 3.0) == "dtl"
+    assert RA._direction(2.0, 0.5) == "middle" and RA._direction(None, 1.0) is None
+
+
+# --- the webhook ----------------------------------------------------------------------------------------------
+
+def test_webhook_retries_with_one_idempotency_key():
+    seen, codes = [], [500, 503, 200]
+
+    def handler(req):
+        seen.append((req.headers["authorization"], req.headers["idempotency-key"], json.loads(req.content)))
+        return httpx.Response(codes[len(seen) - 1])
+
+    sleeps = []
+    client = httpx.Client(transport=httpx.MockTransport(handler))
+    event = {"type": "rally.ready", "match_id": MID, "rally": {"rally_idx": 2}, "shots": []}
+    assert RA.send_webhook("https://x/api/tennis/webhook", "hook", event, client, sleep=sleeps.append) == 200
+    assert len(seen) == 3 and sleeps == [0.5, 1.0]
+    assert {s[1] for s in seen} == {RA.event_id(event)} and seen[0][0] == "Bearer hook"
+    assert seen[0][2] == seen[2][2] == {"event_id": RA.event_id(event)} | event
+    assert RA.event_id(event) == RA.event_id(dict(event))                   # replays dedupe on the receiver
+    assert RA.event_id(event) != RA.event_id(event | {"rally": {"rally_idx": 3}})
+
+
+def test_webhook_does_not_retry_a_4xx_and_fails_closed():
+    calls = []
+    client = httpx.Client(transport=httpx.MockTransport(lambda r: calls.append(r) or httpx.Response(401)))
+    event = {"type": "match.status", "match_id": MID, "status": "processing"}
+    assert RA.send_webhook("https://x", "hook", event, client, sleep=lambda s: None) == 401 and len(calls) == 1
+    with pytest.raises(RuntimeError):
+        RA.send_webhook("https://x", None, event, client)
+    with pytest.raises(RuntimeError):
+        RA.send_webhook(None, "hook", event, client)
+
+    def down(req):
+        raise httpx.ConnectError("down", request=req)
+
+    flaky = httpx.Client(transport=httpx.MockTransport(down))
+    assert RA.send_webhook("https://x", "hook", event, flaky, retries=2, sleep=lambda s: None) == 0
+
+
+def test_decode_and_cut_a_clip(tmp_path):
+    """PyAV decode with presentation timestamps, and the 720p faststart clip /clips serves."""
+    import shutil
+
+    import cv2
+
+    src = str(tmp_path / "src.mp4")
+    w = cv2.VideoWriter(src, cv2.VideoWriter_fourcc(*"mp4v"), 30, (320, 240))
+    for i in range(60):
+        w.write(np.full((240, 320, 3), 4 * i, np.uint8))
+    w.release()
+    got = list(RA.decode(src, 0.5, 1.0))
+    assert [round(t, 3) for t, _ in got] == [round(k / 30, 3) for k in range(15, 31)]
+    assert got[0][1].shape == (240, 320, 3)
+    if shutil.which("ffmpeg") is None:
+        pytest.skip("ffmpeg not installed (the Modal image has it)")
+    dest = tmp_path / "rallies/0.mp4"
+    RA.cut_clip(src, str(dest), 0.5, 1.5, height=120)
+    clip = list(RA.decode(str(dest)))
+    assert clip[0][1].shape[0] == 120 and 25 <= len(clip) <= 32
+    assert b"moov" in dest.read_bytes()[:4096]                               # +faststart: index first
+
+
+def test_calibration_from_uploader_taps():
+    cal = true_camera()
+    from dsa.physics.homography import COURT_M, NET_POSTS_M, project
+    court = {"size": [1920, 1080], "court_px": project(cal, COURT_M[:4]).tolist(),
+             "posts_px": project(cal, NET_POSTS_M).tolist()}
+    est = RA.calibration(court)
+    assert np.allclose(est.Hr, cal.Hr, atol=1e-4 * np.abs(cal.Hr).max())
+    again = RA.calibration(est.to_json())
+    assert np.allclose(again.Hr, est.Hr)

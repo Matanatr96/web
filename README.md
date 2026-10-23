@@ -39,6 +39,9 @@ src/dsa/
   measure/   step 5-6: shots, technique, movement, syllables (Modal T4), profiles (players compared)
   pages/     what people look at: render (overlay videos), quiz, technique_report, movement_report
              (+ movement_explorer.js), clips, exemplars, serve (local server)
+  physics/   line calls and shot speed from one fixed phone: homography (H0 ground, Hr ball plane), bounce_and_linecall
+             (WASB step=3 track, hit vs bounce, sub-frame contact, 2-sigma calls, depth zones), ballistics (3D drag),
+             scorekeeper (rally streaks, match score); served per rally by gpu/rally_api.py (Modal app tennis-rally)
   batch.py   every video of a project through every step
   paths.py   where everything lives, the same on the laptop and on Modal (docs/STORAGE.md)
   video.py, opus.py   decoding and cutting; cached Opus calls
