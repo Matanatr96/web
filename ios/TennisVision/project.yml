@@ -1,0 +1,78 @@
+# XcodeGen spec — `cd ios/TennisVision && xcodegen generate && open TennisVision.xcodeproj`
+# Targets: TennisVision (iOS 17+), TennisVisionWatch (watchOS 10+, embedded), both linking the pure local
+# `CourtGeometry` Swift package, whose XCTest suite also runs headless with `swift test` (macOS or Linux).
+name: TennisVision
+options:
+  bundleIdPrefix: com.thelastmattapalli
+  deploymentTarget:
+    iOS: "17.0"
+    watchOS: "10.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    MARKETING_VERSION: "0.1.0"
+    CURRENT_PROJECT_VERSION: "1"
+configFiles:
+  Debug: Config/Base.xcconfig
+  Release: Config/Base.xcconfig
+packages:
+  CourtGeometry:
+    path: CourtGeometry
+targets:
+  TennisVision:
+    type: application
+    platform: iOS
+    sources:
+      - path: App
+      - path: Resources/wasb_fp16.mlpackage   # from tools/convert_wasb_coreml.py; Xcode compiles it to .mlmodelc
+        optional: true
+    dependencies:
+      - package: CourtGeometry
+      - target: TennisVisionWatch
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleDisplayName: TennisVision
+        NSCameraUsageDescription: Records rallies at 1080p60 and calls lines live.
+        NSMicrophoneUsageDescription: Listens for racket hits to wake the line caller between rallies.
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
+        UIRequiresFullScreen: true
+        UILaunchScreen: {}
+        ModalBaseURL: $(MODAL_BASE_URL)
+        ModalJobToken: $(MODAL_JOB_TOKEN)
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thelastmattapalli.tennisvision
+  TennisVisionWatch:
+    type: application
+    platform: watchOS
+    sources:
+      - path: Watch
+    dependencies:
+      - package: CourtGeometry
+      - sdk: HealthKit.framework
+    entitlements:
+      path: Watch/TennisVisionWatch.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+    info:
+      path: Watch/Info.plist
+      properties:
+        CFBundleDisplayName: TennisVision
+        WKApplication: true
+        WKCompanionAppBundleIdentifier: com.thelastmattapalli.tennisvision
+        WKBackgroundModes: [workout-processing]
+        NSHealthShareUsageDescription: Shows heart rate during your tennis workout.
+        NSHealthUpdateUsageDescription: Saves your tennis sessions as workouts.
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.thelastmattapalli.tennisvision.watchkitapp
+schemes:
+  TennisVision:
+    build:
+      targets:
+        TennisVision: all
+    test:
+      targets:
+        - package: CourtGeometry/CourtGeometryTests

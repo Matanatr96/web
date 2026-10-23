@@ -1,0 +1,7 @@
+// Tracked defaults. Put real values in the untracked Secrets.xcconfig next to this file, e.g.:
+//   MODAL_BASE_URL = https:/$()/<workspace>--tennis-rally-api.modal.run
+//   MODAL_JOB_TOKEN = any.<exp>.<hex hmac>
+// (`//` starts an xcconfig comment, hence `/$()/`.) Without a token, rally clips are kept on the phone.
+MODAL_BASE_URL =
+MODAL_JOB_TOKEN =
+#include? "Secrets.xcconfig"

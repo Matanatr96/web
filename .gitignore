@@ -6,7 +6,10 @@
 *.mkv
 *.webm
 __pycache__/
+*.pyc
 .pytest_cache/
+.build/
+ios/TennisVision/Config/Secrets.xcconfig
 *.egg-info/
 .env/
 .env
