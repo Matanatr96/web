@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { toggleRallyBookmark } from "@/app/tennis/actions";
-import TennisCourtMinimap from "@/components/tennis-court-minimap";
+import TennisCourtMinimap, {
+  TennisClipPlayer,
+  TennisStatusPoller,
+} from "@/components/tennis-court-minimap";
 import { isAdmin } from "@/lib/auth";
 import {
   formatScore,
@@ -9,6 +12,7 @@ import {
   resolveClipUrl,
   summarizeSession,
   type TennisShot,
+  toClipLocalTimeS,
 } from "@/lib/tennis";
 
 export const dynamic = "force-dynamic";
@@ -19,6 +23,8 @@ type Props = {
     filter?: string;
     rally?: string;
     hide1?: string;
+    shot?: string;
+    slowmo?: string;
   }>;
 };
 
@@ -63,6 +69,7 @@ export default async function TennisSessionDetailPage({
     sessionType: detail.sessionType,
     rallies: detail.rallies,
     points: detail.points,
+    doubles: detail.doubles,
     hideOneShotFeeds,
     biomechTraits: detail.stats.biomechTraits,
     coachNotes: detail.stats.coachNotes,
@@ -82,15 +89,38 @@ export default async function TennisSessionDetailPage({
     return true;
   });
 
-  const selectedRallyIdx =
-    resolvedSearch.rally !== undefined
+  const explicitRallyIdx =
+    resolvedSearch.rally !== undefined && Number.isFinite(Number(resolvedSearch.rally))
       ? Number(resolvedSearch.rally)
-      : (filteredRallies[0]?.rallyIdx ?? detail.rallies[0]?.rallyIdx ?? null);
+      : null;
+
+  const selectedRallyIdx =
+    explicitRallyIdx !== null
+      ? explicitRallyIdx
+      : (filteredRallies[0]?.rallyIdx ?? null);
 
   const activeRally =
-    detail.rallies.find((r) => r.rallyIdx === selectedRallyIdx) ??
-    filteredRallies[0] ??
-    null;
+    explicitRallyIdx !== null
+      ? (filteredRallies.find((r) => r.rallyIdx === explicitRallyIdx) ??
+         detail.rallies.find((r) => r.rallyIdx === explicitRallyIdx) ??
+         null)
+      : (filteredRallies[0] ?? null);
+
+  const selectedShotIdx =
+    resolvedSearch.shot !== undefined && Number.isFinite(Number(resolvedSearch.shot))
+      ? Number(resolvedSearch.shot)
+      : null;
+
+  const activeShot =
+    activeRally && selectedShotIdx !== null
+      ? (activeRally.shots.find((s) => s.shotIdx === selectedShotIdx) ?? null)
+      : null;
+
+  const clipSeekTimeS =
+    activeRally && activeShot
+      ? toClipLocalTimeS(activeShot.tBounceS ?? activeShot.tHitS, activeRally.startS)
+      : null;
+  const playbackRate = resolvedSearch.slowmo === "1" ? 0.25 : 1;
 
   const allShots: TennisShot[] = detail.rallies.flatMap((r) => r.shots);
   const minimapShots = activeRally ? activeRally.shots : allShots;
@@ -106,6 +136,9 @@ export default async function TennisSessionDetailPage({
     : null;
 
   const isRallyMode = detail.sessionType === "rally";
+  const rallyStartByIdx = new Map<number, number>(
+    detail.rallies.map((r) => [r.rallyIdx, r.startS]),
+  );
 
   return (
     <article>
@@ -136,11 +169,14 @@ export default async function TennisSessionDetailPage({
               {detail.title ?? (isRallyMode ? "Cooperative Rally Session" : "Scored Match")}
             </h1>
           </div>
-          <p className="mt-1 text-sm text-stone-500">
-            Played on {detail.playedOn} · Source: {detail.source.toUpperCase()} · Status:{" "}
-            <span className="font-medium text-stone-700 dark:text-stone-300">
-              {detail.status}
+          <p className="mt-1 text-sm text-stone-500 flex flex-wrap items-center">
+            <span>
+              Played on {detail.playedOn} · Source: {detail.source.toUpperCase()} · Status:{" "}
+              <span className="font-medium text-stone-700 dark:text-stone-300">
+                {detail.status}
+              </span>
             </span>
+            <TennisStatusPoller status={detail.status} />
           </p>
         </div>
 
@@ -328,13 +364,10 @@ export default async function TennisSessionDetailPage({
 
                 {/* Modal HTTP Byte-Range 720p Clip Stream */}
                 {clipSrc ? (
-                  <video
-                    key={clipSrc}
+                  <TennisClipPlayer
                     src={clipSrc}
-                    controls
-                  playsInline
-                  preload="metadata"
-                    className="w-full aspect-video rounded-md bg-stone-950 border border-stone-800"
+                    seekToS={clipSeekTimeS}
+                    playbackRate={playbackRate}
                   />
                 ) : (
                   <div className="flex w-full aspect-video items-center justify-center rounded-md bg-stone-950 text-xs text-stone-400">
@@ -362,8 +395,22 @@ export default async function TennisSessionDetailPage({
                       </thead>
                       <tbody className="divide-y divide-stone-100 dark:divide-stone-800 tabular-nums">
                         {activeRally.shots.map((s) => (
-                          <tr key={s.shotIdx}>
-                            <td className="py-1.5 pr-3 font-medium">{s.shotIdx + 1}</td>
+                          <tr
+                            key={s.shotIdx}
+                            className={
+                              selectedShotIdx === s.shotIdx
+                                ? "bg-emerald-50/70 dark:bg-emerald-950/30"
+                                : undefined
+                            }
+                          >
+                            <td className="py-1.5 pr-3 font-medium">
+                              <Link
+                                href={`/tennis/${detail.id}?filter=${activeFilter}&rally=${activeRally.rallyIdx}&shot=${s.shotIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`}
+                                className="hover:underline"
+                              >
+                                {s.shotIdx + 1}
+                              </Link>
+                            </td>
                             <td className="py-1.5 pr-3 uppercase text-stone-500">
                               {s.hitter ?? "—"}
                             </td>
@@ -493,6 +540,7 @@ export default async function TennisSessionDetailPage({
               shots={minimapShots}
               doubles={detail.doubles}
               showDeepZones={true}
+              activeShotIdx={selectedShotIdx}
             />
           </div>
 
@@ -504,7 +552,7 @@ export default async function TennisSessionDetailPage({
             <p className="text-xs text-stone-400 mb-3">
               Sub-frame parabola <span className="font-mono">t*</span> on the{" "}
               <span className="font-mono">Z = 0.033m</span> ball-radius plane with{" "}
-              <span className="font-mono">±2σ</span> Jacobian uncertainty gate.
+              <span className="font-mono">±2σ</span> Jacobian uncertainty gate. Click a call to seek the clip and replay at <span className="font-mono">0.25×</span>.
             </p>
             {hawkEyeCalls.length === 0 ? (
               <p className="text-xs text-stone-500 italic">
@@ -517,30 +565,46 @@ export default async function TennisSessionDetailPage({
                     c.marginM !== null ? (c.marginM * 100).toFixed(1) : "0.0";
                   const twoSigmaCm =
                     c.sigmaM !== null ? (c.sigmaM * 2 * 100).toFixed(1) : "6.0";
+                  const rStartS = rallyStartByIdx.get(c.rallyIdx) ?? 0;
+                  const clipBounceS = toClipLocalTimeS(c.tBounceS, rStartS);
+                  const isActiveChallenge =
+                    activeRally?.rallyIdx === c.rallyIdx &&
+                    selectedShotIdx === c.shotIdx &&
+                    resolvedSearch.slowmo === "1";
+
                   return (
-                    <li
-                      key={`chal-${c.rallyIdx}-${c.shotIdx}`}
-                      className="py-2.5 flex items-center justify-between gap-2"
-                    >
-                      <div>
-                        <div className="font-medium">
-                          Rally #{c.rallyIdx + 1} · Shot #{c.shotIdx + 1} (
-                          {(c.stroke ?? "shot").toUpperCase()})
-                        </div>
-                        <div className="text-stone-400 tabular-nums">
-                          t* = {c.tBounceS !== null ? `${c.tBounceS.toFixed(3)}s` : "—"} · Margin:{" "}
-                          {marginCm} cm (±{twoSigmaCm} cm 2σ)
-                        </div>
-                      </div>
-                      <span
-                        className={`rounded px-2 py-0.5 font-semibold uppercase ${
-                          c.call === "close"
-                            ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-                            : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
+                    <li key={`chal-${c.rallyIdx}-${c.shotIdx}`} className="py-1.5">
+                      <Link
+                        href={`/tennis/${detail.id}?filter=${activeFilter}&rally=${c.rallyIdx}&shot=${c.shotIdx}&slowmo=1&hide1=${hideOneShotFeeds ? "1" : "0"}`}
+                        className={`flex items-center justify-between gap-2 rounded-md p-2 transition ${
+                          isActiveChallenge
+                            ? "border border-amber-400 bg-amber-50/60 dark:bg-amber-950/30"
+                            : "hover:bg-stone-50 dark:hover:bg-stone-800/60"
                         }`}
                       >
-                        {c.call}
-                      </span>
+                        <div>
+                          <div className="font-medium">
+                            Rally #{c.rallyIdx + 1} · Shot #{c.shotIdx + 1} (
+                            {(c.stroke ?? "shot").toUpperCase()})
+                          </div>
+                          <div className="text-stone-400 tabular-nums">
+                            t* = {clipBounceS !== null ? `${clipBounceS.toFixed(3)}s` : "—"} · Margin:{" "}
+                            {marginCm} cm (±{twoSigmaCm} cm 2σ)
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-[10px] font-mono text-stone-500">0.25× →</span>
+                          <span
+                            className={`rounded px-2 py-0.5 font-semibold uppercase ${
+                              c.call === "close"
+                                ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                                : "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
+                            }`}
+                          >
+                            {c.call}
+                          </span>
+                        </div>
+                      </Link>
                     </li>
                   );
                 })}

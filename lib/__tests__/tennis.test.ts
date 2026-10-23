@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   applyHomography,
+  applyWebhookEvent,
   classifyDepthZone,
   classifyDirection,
   computeHomography4pt,
@@ -8,16 +9,20 @@ import {
   courtToSvg,
   formatScore,
   getOuterCourtCornersM,
+  getTennisMatch,
+  getUploadResumeKey,
   invertHomography,
   isValidUuid,
   parseWebhookEvent,
   type Point2D,
   type Quad,
   resolveClipUrl,
+  scaleCalibrationPoints,
   signModalJobToken,
   summarizeSession,
   type TennisRally,
   type TennisShot,
+  toClipLocalTimeS,
   toModalCourtJson,
   validateCourtCalibration,
   verifyWebhookAuth,
@@ -261,14 +266,20 @@ describe("courtToSvg", () => {
 });
 
 describe("classifyDirection", () => {
-  it("labels cross-court, down-the-line, and middle shots", () => {
+  it("labels cross-court, down-the-line, and middle shots (matching Python 4.115 / 3 threshold)", () => {
     expect({
       cross: classifyDirection(3.2, -11.5, -3.1, 9.8),
       dtl: classifyDirection(3.2, -11.5, 3.0, 10.2),
-      middleBounce: classifyDirection(3.2, -11.5, 0.4, 8.5),
-      middleHit: classifyDirection(0.2, -11.5, 2.8, 9.0),
+      middleBounce: classifyDirection(3.2, -11.5, 1.2, 8.5),
+      outsideMiddleBounce: classifyDirection(0.2, -11.5, 2.8, 9.0),
       didNotCross: classifyDirection(3.2, -11.5, -3.0, -5.0),
-    }).toEqual({ cross: "cross", dtl: "dtl", middleBounce: "middle", middleHit: "middle", didNotCross: "middle" });
+    }).toEqual({
+      cross: "cross",
+      dtl: "dtl",
+      middleBounce: "middle",
+      outsideMiddleBounce: "dtl",
+      didNotCross: "middle",
+    });
   });
 });
 
@@ -307,12 +318,50 @@ describe("classifyDepthZone", () => {
 });
 
 describe("computeInStreak", () => {
-  it("counts in/close calls before the first out and skips unknown calls", () => {
+  it("counts in/close/unknown calls before the first out (matching Python/Swift)", () => {
     expect({
       mixed: computeInStreak([{ call: "in" }, { call: "unknown" }, { call: "close" }, { call: "out" }, { call: "in" }]),
       outFirst: computeInStreak([{ call: "out" }, { call: "in" }]),
       empty: computeInStreak([]),
-    }).toEqual({ mixed: 2, outFirst: 0, empty: 0 });
+    }).toEqual({ mixed: 3, outFirst: 0, empty: 0 });
+  });
+});
+
+describe("calibration & clip-time helpers", () => {
+  it("scales screenshot calibration points to native video resolution", () => {
+    expect({
+      scaled: scaleCalibrationPoints(
+        [
+          [520, 1920],
+          [3320, 1920],
+        ],
+        [3840, 2160],
+        [1920, 1080],
+      ),
+      sameSize: scaleCalibrationPoints([[260, 960]], [1920, 1080], [1920, 1080]),
+    }).toEqual({
+      scaled: [
+        [260, 960],
+        [1660, 960],
+      ],
+      sameSize: [[260, 960]],
+    });
+  });
+
+  it("builds deterministic localStorage upload resume keys and converts timestamps to clip-local seconds", () => {
+    expect({
+      key: getUploadResumeKey({ name: "rally.mov", size: 1048576, lastModified: 1700000000000 }),
+      sessionGlobal: toClipLocalTimeS(14.25, 12.5),
+      alreadyLocal: toClipLocalTimeS(1.75, 12.5),
+      zeroStart: toClipLocalTimeS(2.1, 0),
+      missing: toClipLocalTimeS(null, 12.5),
+    }).toEqual({
+      key: "tennis_upload_v1:rally.mov:1048576:1700000000000",
+      sessionGlobal: 1.75,
+      alreadyLocal: 1.75,
+      zeroStart: 2.1,
+      missing: null,
+    });
   });
 });
 
@@ -368,11 +417,29 @@ describe("summarizeSession", () => {
     });
   });
 
-  it("includes 1-shot feeds in the average when asked", () => {
+  it("includes 1-shot feeds in the average when asked and uses doubles sidelines when recomputing depth zones", () => {
     const s = summarizeSession({ sessionType: "rally", rallies: rallyModeRallies, hideOneShotFeeds: false });
-    expect({ qualifyingRallies: s.qualifyingRallies, avgRallyLength: s.avgRallyLength }).toEqual({
+    const doublesAlleyRally = [
+      rally({
+        rallyIdx: 0,
+        shotCount: 2,
+        shots: [
+          shot({ rallyIdx: 0, shotIdx: 0, stroke: "fh", bounceX: 4.8, bounceY: 9.2, depthZone: null, call: "in" }),
+        ],
+      }),
+    ];
+    const singlesSummary = summarizeSession({ sessionType: "rally", rallies: doublesAlleyRally, doubles: false });
+    const doublesSummary = summarizeSession({ sessionType: "rally", rallies: doublesAlleyRally, doubles: true });
+    expect({
+      qualifyingRallies: s.qualifyingRallies,
+      avgRallyLength: s.avgRallyLength,
+      singlesDeepPct: singlesSummary.deepZonePct,
+      doublesDeepPct: doublesSummary.deepZonePct,
+    }).toEqual({
       qualifyingRallies: 3,
       avgRallyLength: 5.7,
+      singlesDeepPct: 0,
+      doublesDeepPct: 100,
     });
   });
 
@@ -527,12 +594,18 @@ describe("webhook auth and job tokens", () => {
 });
 
 describe("parseWebhookEvent", () => {
-  it("parses rally.ready into a rally with shots (bookmarks never come from Modal)", () => {
+  it("parses rally.ready into a rally with shots and preserves bookmarked, live_call, session metadata, and points", () => {
     expect(
       parseWebhookEvent({
         event_id: "evt-1",
         type: "rally.ready",
         match_id: MATCH_ID,
+        session_type: "match",
+        source: "ios",
+        doubles: true,
+        live_call: "out",
+        score: { sets: [[1, 0]], games: [2, 1], points: ["30", "15"] },
+        points: [{ point_idx: 0, winner: "near", server: "near", source: "watch", bookmarked: true, at_s: 23.8 }],
         rally: {
           rally_idx: 2,
           start_s: 12.5,
@@ -570,13 +643,20 @@ describe("parseWebhookEvent", () => {
       type: "rally.ready",
       eventId: "evt-1",
       matchId: MATCH_ID,
+      sessionType: "match",
+      source: "ios",
+      doubles: true,
+      court: null,
+      score: { sets: [[1, 0]], games: [2, 1], points: ["30", "15"] },
+      stats: null,
+      points: [{ pointIdx: 0, winner: "me", server: "me", source: "watch", bookmarked: true, atS: 23.8 }],
       rally: {
         rallyIdx: 2,
         startS: 12.5,
         endS: 24,
         shotCount: 2,
         inStreak: 1,
-        bookmarked: false,
+        bookmarked: true,
         clipUrl: `/clips/${MATCH_ID}/2.mp4`,
         ballTrack: [[12500, 640, 360]],
         driftPx: 0.8,
@@ -601,13 +681,13 @@ describe("parseWebhookEvent", () => {
             sigmaM: 0.032,
             liveCall: null,
           },
-          shot({ rallyIdx: 2, shotIdx: 1, hitter: "far", stroke: "bh", call: "out" }),
+          shot({ rallyIdx: 2, shotIdx: 1, hitter: "far", stroke: "bh", call: "out", liveCall: "out" }),
         ],
       },
     });
   });
 
-  it("parses match.status and match.ready", () => {
+  it("parses match.status and match.ready (including Phase 3 biomechanics and points)", () => {
     expect({
       processing: parseWebhookEvent({
         event_id: "evt-2",
@@ -626,7 +706,13 @@ describe("parseWebhookEvent", () => {
         match_id: MATCH_ID,
         status: "ready",
         rallies_done: 24,
-        stats: { longest_rally: 31 },
+        stats: {
+          longest_rally: 31,
+          biomechanics: {
+            traits: [{ trait: "Hip-Shoulder Separation", stroke: "fh", user_value: 38.2, pro_mean: 42.0, pro_std: 4.0, unit: "deg" }],
+            coach_notes: "Rotate hips earlier through contact.",
+          },
+        },
         score: null,
       }),
     }).toEqual({
@@ -652,7 +738,37 @@ describe("parseWebhookEvent", () => {
         source: null,
         fps: null,
       },
-      ready: { type: "match.ready", eventId: "evt-3", matchId: MATCH_ID, ralliesDone: 24, score: null },
+      ready: {
+        type: "match.ready",
+        eventId: "evt-3",
+        matchId: MATCH_ID,
+        ralliesDone: 24,
+        score: null,
+        sessionType: null,
+        source: null,
+        doubles: null,
+        court: null,
+        stats: {
+          longest_rally: 31,
+          biomechanics: {
+            traits: [{ trait: "Hip-Shoulder Separation", stroke: "fh", user_value: 38.2, pro_mean: 42.0, pro_std: 4.0, unit: "deg" }],
+            coach_notes: "Rotate hips earlier through contact.",
+          },
+          biomechTraits: [
+            {
+              trait: "Hip-Shoulder Separation",
+              stroke: "fh",
+              userValue: 38.2,
+              proMean: 42,
+              proStd: 4,
+              zScore: -0.95,
+              unit: "deg",
+            },
+          ],
+          coachNotes: "Rotate hips earlier through contact.",
+        },
+        points: [],
+      },
     });
   });
 
@@ -671,5 +787,245 @@ describe("parseWebhookEvent", () => {
     expect(() => parseWebhookEvent({ type: "rally.ready", match_id: MATCH_ID, rally: { start_s: 1, end_s: 2 } })).toThrow(
       "INVALID_ARGUMENT: rally.ready requires rally.rally_idx, start_s and end_s.",
     );
+  });
+});
+
+function createInMemorySupabase() {
+  const tables: Record<string, Array<Record<string, unknown>>> = {
+    tennis_matches: [],
+    tennis_rallies: [],
+    tennis_shots: [],
+    tennis_points: [],
+  };
+
+  return {
+    from(table: string) {
+      const rows = tables[table] ?? (tables[table] = []);
+      return {
+        upsert(
+          payload: Record<string, unknown> | Array<Record<string, unknown>>,
+          opts?: { onConflict?: string; ignoreDuplicates?: boolean },
+        ) {
+          const items = Array.isArray(payload) ? payload : [payload];
+          const conflictKeys = (opts?.onConflict ?? "id").split(",").map((k) => k.trim());
+          for (const item of items) {
+            const idx = rows.findIndex((r) => conflictKeys.every((k) => r[k] === item[k]));
+            if (idx === -1) {
+              rows.push({
+                played_on: "2026-10-23",
+                session_type: "rally",
+                source: "ios",
+                status: "processing",
+                doubles: false,
+                rallies_done: 0,
+                stats: {},
+                created_at: "2026-10-23T00:00:00.000Z",
+                updated_at: "2026-10-23T00:00:00.000Z",
+                ...item,
+              });
+            } else if (!opts?.ignoreDuplicates) {
+              rows[idx] = { ...rows[idx], ...item };
+            }
+          }
+          return Promise.resolve({ error: null });
+        },
+        update(patch: Record<string, unknown>) {
+          const filters: Array<(r: Record<string, unknown>) => boolean> = [];
+          const runUpdate = () => {
+            for (let i = 0; i < rows.length; i++) {
+              if (filters.every((fn) => fn(rows[i]))) {
+                rows[i] = { ...rows[i], ...patch };
+              }
+            }
+            return Promise.resolve({ error: null });
+          };
+          const builder = {
+            eq(col: string, val: unknown) {
+              filters.push((r) => r[col] === val);
+              return builder;
+            },
+            neq(col: string, val: unknown) {
+              filters.push((r) => r[col] !== val);
+              return builder;
+            },
+            // biome-ignore lint/suspicious/noThenProperty: Supabase query builder is a PromiseLike
+            then<TResult1 = { error: null }, TResult2 = never>(
+              onfulfilled?: ((value: { error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+              onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+            ) {
+              return runUpdate().then(onfulfilled, onrejected);
+            },
+          };
+          return builder;
+        },
+        select(_cols: string) {
+          const filters: Array<(r: Record<string, unknown>) => boolean> = [];
+          const orders: string[] = [];
+          const getFiltered = () => {
+            const matched = rows.filter((r) => filters.every((fn) => fn(r)));
+            for (const col of [...orders].reverse()) {
+              matched.sort((a, b) => Number(a[col] ?? 0) - Number(b[col] ?? 0));
+            }
+            return matched;
+          };
+          const builder = {
+            eq(col: string, val: unknown) {
+              filters.push((r) => r[col] === val);
+              return builder;
+            },
+            order(col: string) {
+              orders.push(col);
+              return builder;
+            },
+            maybeSingle() {
+              const matched = getFiltered();
+              return Promise.resolve({ data: matched[0] ?? null, error: null });
+            },
+            // biome-ignore lint/suspicious/noThenProperty: Supabase query builder is a PromiseLike
+            then<TResult1 = { data: Array<Record<string, unknown>>; error: null }, TResult2 = never>(
+              onfulfilled?: (
+                value: { data: Array<Record<string, unknown>>; error: null },
+              ) => TResult1 | PromiseLike<TResult1>,
+              onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+            ) {
+              return Promise.resolve({ data: getFiltered(), error: null }).then(onfulfilled, onrejected);
+            },
+          };
+          return builder;
+        },
+      };
+    },
+  } as unknown as Parameters<typeof applyWebhookEvent>[1];
+}
+
+describe("applyWebhookEvent and getTennisMatch", () => {
+  it("transitions iOS rally.ready sessions to ready, persists bookmarked/live_call/points/court, and merges Phase 3 biomechanics", async () => {
+    const client = createInMemorySupabase();
+    const modalCourt = {
+      size: [1920, 1080],
+      court_px: [CORNERS_PX[3], CORNERS_PX[2], CORNERS_PX[0], CORNERS_PX[1]],
+      posts_px: POSTS_PX,
+    };
+
+    const rallyEvt = parseWebhookEvent({
+      event_id: "evt-ios-1",
+      type: "rally.ready",
+      match_id: MATCH_ID,
+      session_type: "match",
+      source: "ios",
+      doubles: true,
+      court: modalCourt,
+      score: { sets: [[1, 0]], games: [2, 1], points: ["30", "15"] },
+      points: [{ point_idx: 0, winner: "near", server: "near", source: "watch", bookmarked: true, at_s: 15.2 }],
+      rally: {
+        rally_idx: 0,
+        start_s: 10,
+        end_s: 16,
+        shot_count: 2,
+        in_streak: 1,
+        bookmarked: true,
+        clip_url: `/clips/${MATCH_ID}/0.mp4`,
+      },
+      shots: [
+        {
+          shot_idx: 0,
+          hitter: "near",
+          stroke: "serve",
+          t_hit_s: 10.2,
+          t_bounce_s: 10.9,
+          hit_x: 1.2,
+          hit_y: -11.8,
+          bounce_x: -1.8,
+          bounce_y: 5.2,
+          speed_mph: 108,
+          call: "in",
+          live_call: "in",
+        },
+        {
+          shot_idx: 1,
+          hitter: "far",
+          stroke: "fh",
+          t_hit_s: 11.4,
+          t_bounce_s: 12.3,
+          hit_x: -2.0,
+          hit_y: 10.5,
+          bounce_x: 4.8,
+          bounce_y: -9.5,
+          speed_mph: 74,
+          call: "in",
+          live_call: "out",
+        },
+      ],
+    });
+
+    await applyWebhookEvent(rallyEvt, client);
+    const afterRally = await getTennisMatch(MATCH_ID, true, client);
+
+    // Late match.status processing event must not move a ready session back to processing
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.status",
+        match_id: MATCH_ID,
+        status: "processing",
+      }),
+      client,
+    );
+
+    // Phase 3 match.ready with biomechanics traits and coach notes
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.ready",
+        match_id: MATCH_ID,
+        rallies_done: 1,
+        stats: {
+          biomechanics: {
+            traits: [
+              { trait: "Knee Bend", stroke: "serve", user_value: 44, pro_mean: 50, pro_std: 5, unit: "deg" },
+            ],
+            coach_notes: "Load the back leg deeper on the trophy pose.",
+          },
+        },
+      }),
+      client,
+    );
+
+    const finalDetail = await getTennisMatch(MATCH_ID, true, client);
+    expect({
+      statusAfterRally: afterRally?.status,
+      sessionType: finalDetail?.sessionType,
+      doubles: finalDetail?.doubles,
+      courtCorners: finalDetail?.court?.cornersPx,
+      rallyBookmarked: finalDetail?.rallies[0]?.bookmarked,
+      secondShotLiveCall: finalDetail?.rallies[0]?.shots[1]?.liveCall,
+      points: finalDetail?.points,
+      deepZonePct: finalDetail?.summary.deepZonePct,
+      pointsWon: finalDetail?.summary.pointsWon,
+      biomechTraits: finalDetail?.summary.biomechTraits,
+      coachNotes: finalDetail?.summary.coachNotes,
+      finalStatus: finalDetail?.status,
+    }).toEqual({
+      statusAfterRally: "ready",
+      sessionType: "match",
+      doubles: true,
+      courtCorners: CORNERS_PX,
+      rallyBookmarked: true,
+      secondShotLiveCall: "out",
+      points: [{ pointIdx: 0, winner: "me", server: "me", source: "watch", bookmarked: true, atS: 15.2 }],
+      deepZonePct: 100,
+      pointsWon: 1,
+      biomechTraits: [
+        {
+          trait: "Knee Bend",
+          stroke: "serve",
+          userValue: 44,
+          proMean: 50,
+          proStd: 5,
+          zScore: -1.2,
+          unit: "deg",
+        },
+      ],
+      coachNotes: "Load the back leg deeper on the trophy pose.",
+      finalStatus: "ready",
+    });
   });
 });

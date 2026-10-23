@@ -1,3 +1,7 @@
+"use client";
+
+import { useRouter } from "next/navigation";
+import { useEffect, useRef } from "react";
 import {
   courtToSvg,
   ITF_DOUBLES_HALF_WIDTH_M,
@@ -5,6 +9,7 @@ import {
   ITF_NET_POST_OFFSET_M,
   ITF_SERVICE_LINE_M,
   ITF_SINGLES_HALF_WIDTH_M,
+  type TennisMatchStatus,
   type TennisShot,
 } from "@/lib/tennis";
 
@@ -350,5 +355,94 @@ export default function TennisCourtMinimap({
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * Client-side `<video>` player for Modal HTTP Byte-Range rally clips that seeks to a selected
+ * shot/bounce timestamp (`seekToS = tBounceS - activeRally.startS`) and applies slow-motion
+ * playback (`playbackRate = 0.25`) when triggered from a Hawk-Eye Challenge card.
+ *
+ * @param props - `src` clip URL, optional `seekToS` in clip-local seconds, and `playbackRate`.
+ * @returns Rendered `<video>` element.
+ */
+export function TennisClipPlayer({
+  src,
+  seekToS = null,
+  playbackRate = 1,
+}: {
+  src: string;
+  seekToS?: number | null;
+  playbackRate?: number;
+}) {
+  const videoRef = useRef<HTMLVideoElement | null>(null);
+
+  useEffect(() => {
+    const video = videoRef.current;
+    if (!video) return;
+
+    const applySeekAndRate = () => {
+      video.playbackRate = playbackRate;
+      if (seekToS !== null && Number.isFinite(seekToS)) {
+        const clamped =
+          Number.isFinite(video.duration) && video.duration > 0
+            ? Math.min(Math.max(0, seekToS), Math.max(0, video.duration - 0.05))
+            : Math.max(0, seekToS);
+        video.currentTime = clamped;
+        void video.play().catch(() => {
+          // Autoplay may be blocked before user interaction; leave paused at seek frame.
+        });
+      }
+    };
+
+    if (video.readyState >= 1) {
+      applySeekAndRate();
+      return;
+    }
+
+    video.addEventListener("loadedmetadata", applySeekAndRate, { once: true });
+    return () => {
+      video.removeEventListener("loadedmetadata", applySeekAndRate);
+    };
+  }, [src, seekToS, playbackRate]);
+
+  return (
+    <video
+      ref={videoRef}
+      key={src}
+      src={src}
+      controls
+      playsInline
+      preload="metadata"
+      className="w-full aspect-video rounded-md bg-stone-950 border border-stone-800"
+    />
+  );
+}
+
+/**
+ * Polls `router.refresh()` every 4 seconds while a session is in `"processing"` or `"uploading"`
+ * state so newly processed rallies and summary metrics stream into `/tennis/[id]` automatically.
+ *
+ * @param props - Current `status` of the session.
+ * @returns An inline live-polling indicator badge when active, or `null`.
+ */
+export function TennisStatusPoller({ status }: { status: TennisMatchStatus }) {
+  const router = useRouter();
+  const isPending = status === "processing" || status === "uploading";
+
+  useEffect(() => {
+    if (!isPending) return;
+    const timer = window.setInterval(() => {
+      router.refresh();
+    }, 4000);
+    return () => window.clearInterval(timer);
+  }, [isPending, router]);
+
+  if (!isPending) return null;
+  return (
+    <span className="ml-2 inline-flex items-center gap-1.5 rounded-full bg-amber-100 dark:bg-amber-950/60 px-2 py-0.5 text-[11px] font-medium text-amber-800 dark:text-amber-300">
+      <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+      Auto-refreshing every 4s
+    </span>
   );
 }

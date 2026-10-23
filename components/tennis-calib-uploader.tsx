@@ -5,12 +5,14 @@ import { type ChangeEvent, type MouseEvent, useEffect, useMemo, useRef, useState
 import { commitTennisMatch, createTennisMatch } from "@/app/tennis/actions";
 import {
   applyHomography,
+  getUploadResumeKey,
   ITF_DOUBLES_HALF_WIDTH_M,
   ITF_HALF_LENGTH_M,
   ITF_SERVICE_LINE_M,
   ITF_SINGLES_HALF_WIDTH_M,
   MODAL_PART_SIZE_BYTES,
   type Point2D,
+  scaleCalibrationPoints,
   type TennisSessionType,
   validateCourtCalibration,
 } from "@/lib/tennis";
@@ -48,6 +50,47 @@ const WIREFRAME: Array<[Point2D, Point2D]> = (() => {
 })();
 
 type JobState = { job_id: string; part_size: number; parts_expected: number; received_parts: number[] };
+
+type StoredUploadSession = {
+  matchId: string;
+  jobId?: string;
+  jobToken: string;
+  modalEndpoint: string;
+  createdAt: number;
+};
+
+const RESUME_MAX_AGE_MS = 11 * 60 * 60 * 1000;
+
+function readStoredUpload(key: string): StoredUploadSession | null {
+  try {
+    const raw = window.localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredUploadSession;
+    if (!parsed.matchId || Date.now() - parsed.createdAt > RESUME_MAX_AGE_MS) {
+      window.localStorage.removeItem(key);
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredUpload(key: string, session: StoredUploadSession): void {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(session));
+  } catch {
+    // Ignore storage quota errors in private-browsing modes.
+  }
+}
+
+function clearStoredUpload(key: string): void {
+  try {
+    window.localStorage.removeItem(key);
+  } catch {
+    // Ignore storage errors.
+  }
+}
 
 async function modalFetch(url: string, token: string, init: RequestInit = {}): Promise<Response> {
   return fetch(url, { ...init, headers: { ...(init.headers ?? {}), "X-Job-Token": token } });
@@ -92,6 +135,7 @@ export default function TennisCalibUploader() {
   const [runBiomech, setRunBiomech] = useState(false);
 
   const [videoFile, setVideoFile] = useState<File | null>(null);
+  const [videoSize, setVideoSize] = useState<[number, number] | null>(null);
   const [frameLoaded, setFrameLoaded] = useState(false);
   const [decodeError, setDecodeError] = useState<string | null>(null);
   const [imageSize, setImageSize] = useState<[number, number]>([1920, 1080]);
@@ -108,13 +152,20 @@ export default function TennisCalibUploader() {
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
   const cornersPx = useMemo(() => points.slice(0, 4), [points]);
-  const netPostsPx = useMemo(() => (points.length === 6 ? points.slice(4, 6) : undefined), [points]);
+  // Pass netPostsPx whenever the user has tapped >4 points so a 5th tap validates and prompts for the 6th tap.
+  const netPostsPx = useMemo(() => (points.length > 4 ? points.slice(4, 6) : undefined), [points]);
   const validation = useMemo(
     () =>
       cornersPx.length < 4
         ? { valid: false, errors: [] as string[], calibration: null }
         : validateCourtCalibration({ imageSize, cornersPx, netPostsPx, doubles }),
     [imageSize, cornersPx, netPostsPx, doubles],
+  );
+  const wireframeCalibration = useMemo(
+    () =>
+      validation.calibration ??
+      (cornersPx.length === 4 ? validateCourtCalibration({ imageSize, cornersPx, doubles }).calibration : null),
+    [validation.calibration, imageSize, cornersPx, doubles],
   );
 
   // Overlay: tapped points and, once the 4 corners are valid, the projected court wireframe.
@@ -126,8 +177,8 @@ export default function TennisCalibUploader() {
     overlay.height = imageSize[1];
     ctx.clearRect(0, 0, overlay.width, overlay.height);
 
-    if (validation.calibration) {
-      const Hinv = validation.calibration.homographyToImage;
+    if (wireframeCalibration) {
+      const Hinv = wireframeCalibration.homographyToImage;
       ctx.strokeStyle = "#22c55e";
       ctx.lineWidth = 3;
       for (const [a, b] of WIREFRAME) {
@@ -158,7 +209,7 @@ export default function TennisCalibUploader() {
       ctx.textBaseline = "middle";
       ctx.fillText(String(idx + 1), u, v);
     });
-  }, [points, imageSize, validation]);
+  }, [points, imageSize, wireframeCalibration]);
 
   // 4x loupe around the cursor, sampled from the Frame-0 canvas.
   useEffect(() => {
@@ -196,6 +247,7 @@ export default function TennisCalibUploader() {
     const file = e.target.files?.[0];
     if (!file) return;
     setVideoFile(file);
+    setVideoSize(null);
     setFrameLoaded(false);
     setError(null);
 
@@ -204,11 +256,22 @@ export default function TennisCalibUploader() {
     video.muted = true;
     video.playsInline = true;
     video.preload = "auto";
+    video.onloadedmetadata = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoSize([video.videoWidth, video.videoHeight]);
+      }
+    };
     video.onloadeddata = () => {
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoSize([video.videoWidth, video.videoHeight]);
+      }
       video.currentTime = 0;
     };
     video.onseeked = () => {
-      if (video.videoWidth > 0) paintFrame(video, video.videoWidth, video.videoHeight);
+      if (video.videoWidth > 0 && video.videoHeight > 0) {
+        setVideoSize([video.videoWidth, video.videoHeight]);
+        paintFrame(video, video.videoWidth, video.videoHeight);
+      }
       URL.revokeObjectURL(url);
     };
     video.onerror = () => {
@@ -245,38 +308,77 @@ export default function TennisCalibUploader() {
     setBusy(true);
     setError(null);
     setProgressPct(0);
+    const resumeKey = getUploadResumeKey(videoFile);
+    const cachedSession = readStoredUpload(resumeKey);
+    const targetVideoSize = videoSize ?? imageSize;
+    const scaledCorners = scaleCalibrationPoints(cornersPx, imageSize, targetVideoSize);
+    const scaledNetPosts = netPostsPx ? scaleCalibrationPoints(netPostsPx, imageSize, targetVideoSize) : undefined;
+
     try {
-      setStatus("Creating session…");
+      setStatus(cachedSession ? "Resuming session…" : "Creating session…");
       const { matchId, jobToken, modalEndpoint, court } = await createTennisMatch({
+        id: cachedSession?.matchId,
         title,
         playedOn,
         sessionType,
         doubles,
-        imageSize,
-        cornersPx,
-        netPostsPx,
+        imageSize: targetVideoSize,
+        cornersPx: scaledCorners,
+        netPostsPx: scaledNetPosts,
       });
 
-      setStatus("Registering upload with Modal…");
-      const jobRes = await modalFetch(`${modalEndpoint}/jobs`, jobToken, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          match_id: matchId,
-          rally_idx: null,
-          source: "web",
-          session_type: sessionType,
-          court,
-          doubles,
-          size_bytes: videoFile.size,
-          content_type: /\.mov$/i.test(videoFile.name) || videoFile.type === "video/quicktime" ? "video/quicktime" : "video/mp4",
-          title: title.trim() || null,
-          played_on: playedOn,
-          biomech: runBiomech,
-        }),
+      writeStoredUpload(resumeKey, {
+        matchId,
+        jobId: cachedSession?.jobId,
+        jobToken,
+        modalEndpoint,
+        createdAt: cachedSession?.createdAt ?? Date.now(),
       });
-      if (!jobRes.ok) throw new Error(`Modal POST /jobs failed: HTTP ${jobRes.status} ${await jobRes.text()}`);
-      const job = (await jobRes.json()) as JobState;
+
+      let job: JobState | null = null;
+      if (cachedSession?.jobId) {
+        setStatus("Checking already-uploaded parts on Modal…");
+        const statusRes = await modalFetch(
+          `${modalEndpoint}/jobs/${encodeURIComponent(cachedSession.jobId)}`,
+          jobToken,
+          { method: "GET" },
+        );
+        if (statusRes.ok) {
+          job = (await statusRes.json()) as JobState;
+        }
+      }
+
+      if (!job) {
+        setStatus("Registering upload with Modal…");
+        const jobRes = await modalFetch(`${modalEndpoint}/jobs`, jobToken, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            match_id: matchId,
+            rally_idx: null,
+            source: "web",
+            session_type: sessionType,
+            court,
+            doubles,
+            size_bytes: videoFile.size,
+            content_type: /\.mov$/i.test(videoFile.name) || videoFile.type === "video/quicktime" ? "video/quicktime" : "video/mp4",
+            title: title.trim() || null,
+            played_on: playedOn,
+            biomech: runBiomech,
+          }),
+        });
+        if (!jobRes.ok) throw new Error(`Modal POST /jobs failed: HTTP ${jobRes.status} ${await jobRes.text()}`);
+        job = (await jobRes.json()) as JobState;
+      }
+
+      writeStoredUpload(resumeKey, {
+        matchId,
+        jobId: job.job_id,
+        jobToken,
+        modalEndpoint,
+        createdAt: cachedSession?.createdAt ?? Date.now(),
+      });
+
       const partSize = job.part_size || MODAL_PART_SIZE_BYTES;
       const jobUrl = `${modalEndpoint}/jobs/${encodeURIComponent(job.job_id)}`;
 
@@ -302,6 +404,7 @@ export default function TennisCalibUploader() {
       if (!commitRes.ok) throw new Error(`Modal commit failed: HTTP ${commitRes.status} ${await commitRes.text()}`);
 
       await commitTennisMatch(matchId);
+      clearStoredUpload(resumeKey);
       setProgressPct(100);
       setStatus("Uploaded. Modal is processing the session…");
       router.push(`/tennis/${matchId}`);
