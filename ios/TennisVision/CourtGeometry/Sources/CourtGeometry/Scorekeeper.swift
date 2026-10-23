@@ -219,6 +219,8 @@ public struct MatchConfig: Equatable, Codable, Sendable {
 
 /// Full match state.
 public struct MatchScore: Equatable, Codable, Sendable {
+    /// Point winner log ("M" for me, "O" for opp), matching Python `state["log"]`.
+    public var log = ""
     /// Finished sets, games per player.
     public var sets: [ScorePair] = []
     /// Games in the current set.
@@ -233,6 +235,28 @@ public struct MatchScore: Equatable, Codable, Sendable {
     /// Who served the first tiebreak point (serves second in the next set's rotation).
     public var tiebreakFirstServer: Player?
     public var winner: Player?
+}
+
+/// Discrepancy kind returned by `MatchScorekeeper.reconcile(observedSide:observedServer:)`.
+public enum ScoreDiscrepancy: String, Codable, Sendable, Equatable {
+    case missedPoint = "missed_point"
+    case wrongServer = "wrong_server"
+}
+
+/// Visual serve-side / server check against the scorekeeper state.
+public struct ScoreReconciliation: Equatable, Codable, Sendable {
+    public var ok: Bool
+    public var expectedSide: ServeSide
+    public var expectedServer: Player
+    public var suggestion: ScoreDiscrepancy?
+
+    /// Creates a reconciliation result.
+    public init(ok: Bool, expectedSide: ServeSide, expectedServer: Player, suggestion: ScoreDiscrepancy? = nil) {
+        self.ok = ok
+        self.expectedSide = expectedSide
+        self.expectedServer = expectedServer
+        self.suggestion = suggestion
+    }
 }
 
 /// Match Mode state machine with undo (Swift twin of `apply()` / `expected_server_side()` / `undo()`).
@@ -264,6 +288,7 @@ public struct MatchScorekeeper: Sendable {
     public mutating func pointWon(by p: Player) {
         guard score.winner == nil else { return }
         history.append(score)
+        score.log.append(p == .me ? "M" : "O")
         score.points[p] += 1
         if score.inTiebreak {
             let pts = score.points
@@ -321,16 +346,45 @@ public struct MatchScorekeeper: Sendable {
         return true
     }
 
+    /// Checks the score against what the camera saw at the next serve: the serving side (from the server's
+    /// position) and/or who serves (Swift twin of Python `scorekeeper.reconcile`).
+    ///
+    /// - Parameters:
+    ///   - observedSide: Visually observed serving side (`deuce` or `ad`), if available.
+    ///   - observedServer: Visually observed server (`me` or `opp`), if available.
+    /// - Returns: Reconciliation result (`ok = false` with `.wrongServer` or `.missedPoint` on mismatch).
+    public func reconcile(observedSide: ServeSide? = nil, observedServer: Player? = nil) -> ScoreReconciliation {
+        let expSide = serverSide
+        let expServer = score.server
+        if let observedServer, observedServer != expServer {
+            return ScoreReconciliation(ok: false, expectedSide: expSide, expectedServer: expServer, suggestion: .wrongServer)
+        }
+        if let observedSide, observedSide != expSide {
+            return ScoreReconciliation(ok: false, expectedSide: expSide, expectedServer: expServer, suggestion: .missedPoint)
+        }
+        return ScoreReconciliation(ok: true, expectedSide: expSide, expectedServer: expServer, suggestion: nil)
+    }
+
     /// Current game points, me first: "30-15", "40-40", "AD-40", "40-AD"; tiebreak "6-5".
     public var pointsText: String {
         let p = score.points
         if score.inTiebreak { return "\(p.me)-\(p.opp)" }
         let names = ["0", "15", "30", "40"]
-        if p.me >= 3 && p.opp >= 3 {
+        if p.me >= 3 && p.opp >= 3 && !config.noAd {
             if p.me == p.opp { return "40-40" }
             return p.me > p.opp ? "AD-40" : "40-AD"
         }
         return "\(names[min(p.me, 3)])-\(names[min(p.opp, 3)])"
+    }
+
+    /// Full formatted score string ("6-4 3-2 30-15"), matching Python `scorekeeper.format_score`.
+    public var formattedScore: String {
+        var parts = score.sets.map { "\($0.me)-\($0.opp)" }
+        if score.winner == nil {
+            parts.append("\(score.games.me)-\(score.games.opp)")
+            parts.append(pointsText)
+        }
+        return parts.joined(separator: " ")
     }
 
     /// Short human display: "Deuce", "Ad Me", "Ad Opp", "Deciding Point", "TB 6-5", or the points text.

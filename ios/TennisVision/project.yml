@@ -36,6 +36,7 @@ targets:
         CFBundleDisplayName: TennisVision
         NSCameraUsageDescription: Records rallies at 1080p60 and calls lines live.
         NSMicrophoneUsageDescription: Listens for racket hits to wake the line caller between rallies.
+        UIBackgroundModes: [audio]
         UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
         UIRequiresFullScreen: true
         UILaunchScreen: {}

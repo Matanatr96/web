@@ -39,8 +39,13 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     /// Camera intrinsics K for the 1920×1080 output (sample-buffer attachment, else derived from the FOV).
     private(set) var intrinsics: Intrinsics?
+    private let exposureLock = NSLock()
+    private var _exposureFrozen = false
     /// While true (rally `.live`), exposure stays frozen so the ball's brightness doesn't pump mid-rally.
-    var exposureFrozen = false
+    var exposureFrozen: Bool {
+        get { exposureLock.withLock { _exposureFrozen } }
+        set { exposureLock.withLock { _exposureFrozen = newValue } }
+    }
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let captureQueue = DispatchQueue(label: "tennis.capture", qos: .userInteractive)
@@ -124,11 +129,17 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     /// KVO on `exposureTargetOffset`: between rallies, nudge ISO (never the shutter) towards 0 EV; frozen while live.
     private func observeExposure(_ cam: AVCaptureDevice) {
         exposureObservation = cam.observe(\.exposureTargetOffset, options: [.new]) { [weak self] cam, _ in
-            guard let self, !self.exposureFrozen else { return }
+            guard let self else { return }
             let offset = cam.exposureTargetOffset
-            guard abs(offset) > Self.exposureDeadbandEV,
-                  Date().timeIntervalSince(self.lastExposureChange) > Self.exposureMinInterval else { return }
-            self.lastExposureChange = Date()
+            let now = Date()
+            let shouldUpdate = self.exposureLock.withLock { () -> Bool in
+                guard !self._exposureFrozen,
+                      abs(offset) > Self.exposureDeadbandEV,
+                      now.timeIntervalSince(self.lastExposureChange) > Self.exposureMinInterval else { return false }
+                self.lastExposureChange = now
+                return true
+            }
+            guard shouldUpdate else { return }
             let iso = min(max(cam.iso * powf(2, -offset), cam.activeFormat.minISO), cam.activeFormat.maxISO)
             guard (try? cam.lockForConfiguration()) != nil else { return }
             cam.setExposureModeCustom(duration: Self.shutter, iso: iso, completionHandler: nil)
@@ -292,7 +303,7 @@ extension CameraCaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate {
             intrinsics = Intrinsics(fx: Double(k.columns.0.x), fy: Double(k.columns.1.y),
                                     cx: Double(k.columns.2.x), cy: Double(k.columns.2.y))
         }
-        if let encoder {
+        if let encoder = self.encoder {
             VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
                                             duration: CMTime(value: 1, timescale: Self.fps), frameProperties: nil,
                                             infoFlagsOut: nil) { [weak self] status, _, encoded in
@@ -307,11 +318,16 @@ extension CameraCaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate {
 // MARK: - RallyWriter
 
 /// Pass-through (no re-encode) HEVC writer for one clip.
+/// Holds a bounded 1.75 s sliding tail in RAM while `stopAt` is unset so that when Rally Mode closes a rally after
+/// `maxRallyGap` (3.5 s of silence), frames after `lastActivity + 2.0 s` have not yet been committed to `AVAssetWriterInput`.
 private final class RallyWriter {
+    static let holdSeconds = max(0, RallyTracker.maxRallyGap - CameraCaptureManager.tailSeconds + 0.25)
+
     let url: URL
     private let writer: AVAssetWriter
     private let input: AVAssetWriterInput
     private var started = false
+    private var pending: [CMSampleBuffer] = []
     /// Clip end (last activity + tail); nil while the rally is still live.
     var stopAt: CMTime?
     var onFinish: ((URL?) -> Void)?
@@ -325,6 +341,22 @@ private final class RallyWriter {
     }
 
     func append(_ sample: CMSampleBuffer) {
+        let pts = sample.presentationTimeStamp
+        if let stop = stopAt, CMTimeCompare(pts, stop) > 0 { return }
+        pending.append(sample)
+        if stopAt != nil {
+            while !pending.isEmpty {
+                writeSample(pending.removeFirst())
+            }
+        } else {
+            while let first = pending.first,
+                  CMTimeGetSeconds(CMTimeSubtract(pts, first.presentationTimeStamp)) > Self.holdSeconds {
+                writeSample(pending.removeFirst())
+            }
+        }
+    }
+
+    private func writeSample(_ sample: CMSampleBuffer) {
         if !started {
             guard writer.startWriting() else { return }
             writer.startSession(atSourceTime: sample.presentationTimeStamp)
@@ -341,16 +373,22 @@ private final class RallyWriter {
 
     /// Finishes the file, trimming media after `end` when given.
     func finish(at end: CMTime?) {
+        for sample in pending {
+            if let end, CMTimeCompare(sample.presentationTimeStamp, end) > 0 { continue }
+            writeSample(sample)
+        }
+        pending.removeAll()
         guard started else {
             onFinish?(nil)
             return
         }
-        input.markAsFinished()
         if let end { writer.endSession(atSourceTime: end) }
+        input.markAsFinished()
         writer.finishWriting { [self] in onFinish?(writer.status == .completed ? url : nil) }
     }
 
     func cancel() {
+        pending.removeAll()
         if started { writer.cancelWriting() }
         try? FileManager.default.removeItem(at: url)
     }

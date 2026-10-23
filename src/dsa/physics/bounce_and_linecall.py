@@ -28,8 +28,8 @@ from typing import Callable, Iterable, Sequence
 import cv2
 import numpy as np
 
-from dsa.physics.homography import (BALL_R, DOUBLES_HALF_W, HALF_LEN, SERVICE, SINGLES_HALF_W, Calibration,
-                                    to_court)
+from dsa.physics.homography import (BALL_R, CENTRE_HALF_W, DOUBLES_HALF_W, HALF_LEN, SERVICE, SINGLES_HALF_W,
+                                    Calibration, to_court)
 
 STEP = 3
 SMALL_W, SMALL_H = 512, 288
@@ -48,13 +48,14 @@ SIGMA_PX_FLOOR = 1.0            # native px: WASB + centroid error on a sharp 1/
 G = 9.81
 CATBOOST_HZ, CATBOOST_LAGS, CATBOOST_THRESHOLD = 30.0, 3, 0.45
 ROI = 64
-REGIONS = {                     # x0, x1, y0, y1 in court metres
+CONTACT_R = 0.015               # m: turf/court contact patch radius when enabled
+REGIONS = {                     # x0, x1, y0, y1 in court metres (lines included; 5 cm centre service line)
     "singles": (-SINGLES_HALF_W, SINGLES_HALF_W, -HALF_LEN, HALF_LEN),
     "doubles": (-DOUBLES_HALF_W, DOUBLES_HALF_W, -HALF_LEN, HALF_LEN),
-    "serve_deuce_far": (-SINGLES_HALF_W, 0.0, 0.0, SERVICE),
-    "serve_ad_far": (0.0, SINGLES_HALF_W, 0.0, SERVICE),
-    "serve_deuce_near": (0.0, SINGLES_HALF_W, -SERVICE, 0.0),
-    "serve_ad_near": (-SINGLES_HALF_W, 0.0, -SERVICE, 0.0),
+    "serve_deuce_far": (-SINGLES_HALF_W, CENTRE_HALF_W, 0.0, SERVICE),
+    "serve_ad_far": (-CENTRE_HALF_W, SINGLES_HALF_W, 0.0, SERVICE),
+    "serve_deuce_near": (-CENTRE_HALF_W, SINGLES_HALF_W, -SERVICE, 0.0),
+    "serve_ad_near": (-SINGLES_HALF_W, CENTRE_HALF_W, -SERVICE, 0.0),
 }
 DEPTH_ZONES = ("deep", "short", "out_long", "out_wide", "net", "unknown")
 
@@ -461,16 +462,16 @@ def project_ground(cal: Calibration, xy) -> np.ndarray:
 
 
 def catboost_features(track: np.ndarray, i: int, hz: float = CATBOOST_HZ, lags: int = CATBOOST_LAGS) -> np.ndarray:
-    """The 30 Hz bounce model's inputs at sample i (TennisProject's recipe): for lag k = 1..lags-1, the ball's
+    """The 30 Hz bounce model's inputs at sample i (TennisProject's recipe): for lag k = 1..lags, the ball's
     x and y differences to k samples before and after (resampled at hz) and their ratios."""
     ok = track[:, 1] > 0
     t, p = track[ok, 0], track[ok, 2:4]
     t_i = track[i, 0]
     at = lambda tt: np.array([np.interp(tt, t, p[:, 0]), np.interp(tt, t, p[:, 1])])   # noqa: E731
     c, f = at(t_i), []
-    for k in range(1, lags):
+    for k in range(1, lags + 1):
         b, a = at(t_i - k / hz), at(t_i + k / hz)
-        dx, dy, dxi, dyi = abs(b[0] - c[0]), b[1] - c[1], a[0] - c[0], a[1] - c[1]
+        dx, dy, dxi, dyi = abs(b[0] - c[0]), b[1] - c[1], abs(a[0] - c[0]), a[1] - c[1]
         f += [dx, dy, dxi, dyi, abs(dx / (dxi + 1e-15)), dy / (dyi + 1e-15)]
     return np.array(f, np.float64)
 
@@ -483,6 +484,22 @@ def _image_v_turn(track: np.ndarray, i: int, n: int = LOOK) -> tuple[float, floa
     return float(np.polyfit(track[a, 0], track[a, 3], 1)[0]), float(np.polyfit(track[b, 0], track[b, 3], 1)[0])
 
 
+def _has_prior_far_bounce(track: np.ndarray, i: int, cal: Calibration) -> bool:
+    """True when the ball already bounced on the far half within the preceding ~1 s before sample i."""
+    t = track[:, 0]
+    ti = t[i]
+    ok = track[:, 1] > 0
+    for c in range(max(2, i - 65), i - 4):
+        if not (ok[c] and ti - 1.0 <= t[c] <= ti - 0.12):
+            continue
+        w = track[max(0, c - 3):min(len(track), c + 4), 3]
+        if track[c, 3] >= w.max() - 2.0:
+            vv_c = _image_v_turn(track, c)
+            if vv_c is not None and vv_c[0] > 0 > vv_c[1] and to_court(cal.Hr, track[c, 2:4])[1] > 0:
+                return True
+    return False
+
+
 def classify_event(track: np.ndarray, i: int, cal: Calibration, catboost=None) -> dict:
     """What happened at the kink near sample i -> {kind: 'bounce' | 'hit' | 'none', bounce, method, half, ...}.
 
@@ -490,11 +507,13 @@ def classify_event(track: np.ndarray, i: int, cal: Calibration, catboost=None) -
     change of the ball's court-Y velocity hardly moves it in the image (a plain sign test of Hr-projected Y'
     gets far bounces wrong). So:
       out_of_reach  the kink seen through Hr lands more than REACH_M beyond the court: the ball was in the air
-                    (a ball 0.3 m up at the far baseline projects 2+ m long): hit.
+                    (a ball 0.3 m up at the far baseline projects 2+ m long): hit, unless it has the ground-bounce
+                    signature with no prior bounce on that half (an out ball > 2 m long/wide).
       far half      (inside reach) a bounce comes down and goes up, so the image-v velocity flips from down to
-                    up (the component the camera does see): bounce; else none (a smooth turn, noise).
+                    up (the component the camera does see): bounce; a reversal after a far bounce or arriving
+                    trajectory is a hit; else none (a smooth turn, noise).
       near half     court_y: the bounce hypothesis fitted in 3D (arc_fit: contact on the ball plane, gravity +
-                    drag arcs in and out, rays steep enough to see Y'). Y' reversed and the ball going up: hit;
+                    drag arcs in and out, rays steep enough to see Y'). Y' reversed and sent back: hit;
                     coming down and Z' raised by more than BOUNCE_DVZ: bounce; else none.
     Samples whose rays point above the horizon are left out (E11: a lob above the camera); with fewer than
     MIN_SIDE left on either side, TennisProject's 30 Hz CatBoost bounce model decides when given (catboost:
@@ -503,13 +522,14 @@ def classify_event(track: np.ndarray, i: int, cal: Calibration, catboost=None) -
     xy = to_court(cal.Hr, uv) if _rays(cal, uv[None])[0, 2] < 0 else np.array([0.0, np.inf])
     half = "near" if xy[1] < 0 else "far"
     out = {"half": half, "xy_proj": xy}
-    if abs(xy[1]) > HALF_LEN + REACH_M or abs(xy[0]) > DOUBLES_HALF_W + REACH_M:
-        return out | {"kind": "hit", "bounce": False, "method": "out_of_reach"}
     pre, post = _sides(track, i, n=ARC_SIDE)
     below = lambda ks: [k for k in ks if _rays(cal, track[[k], 2:4])[0, 2] < 0]    # noqa: E731
     pre, post = below(pre), below(post)
     vv = _image_v_turn(track, i)
+    out_of_reach = abs(xy[1]) > HALF_LEN + REACH_M or abs(xy[0]) > DOUBLES_HALF_W + REACH_M
     if len(pre) < MIN_SIDE or len(post) < MIN_SIDE:
+        if out_of_reach:
+            return out | {"kind": "hit", "bounce": False, "method": "out_of_reach"}
         if catboost is not None:
             x = catboost_features(track, i)[None]
             p = catboost.predict_proba(x)[0, 1] if hasattr(catboost, "predict_proba") else catboost.predict(x)[0]
@@ -518,27 +538,57 @@ def classify_event(track: np.ndarray, i: int, cal: Calibration, catboost=None) -
         b = vv is not None and vv[0] > 0 > vv[1]
         return out | {"kind": "bounce" if b else "hit", "bounce": b, "method": "image_v"}
     s = track[:, [0, 2, 3]]
+    y_pre0 = to_court(cal.Hr, s[pre[0], 1:])[1]
+    y_post1 = to_court(cal.Hr, s[post[-1], 1:])[1]
+    dy_pre, dy_post = float(xy[1] - y_pre0), float(y_post1 - xy[1])
+    if half == "far" and vv is not None and vv[0] <= 0 and vv[1] - vv[0] < -100 and dy_pre > 0 and dy_post > 1.0:
+        return {"half": "near", "xy_proj": xy, "kind": "hit", "bounce": False, "method": "image_v", "v_px_s": vv}
     if half == "far":
-        b = vv is not None and vv[0] > 0 > vv[1]
-        t_star, uv_star = subframe(s[pre[-FULL_SIDE:]], s[post[:FULL_SIDE]]) if b else (None, None)
-        return out | {"kind": "bounce" if b else "none", "bounce": b, "method": "image_v", "v_px_s": vv,
-                      "t_star": t_star, "xy": to_court(cal.Hr, uv_star) if b else None}
+        if out_of_reach:
+            is_out_b = (vv is not None and vv[0] > -25 and vv[1] < -20 and vv[0] - vv[1] > 35
+                        and dy_post > 0 and not _has_prior_far_bounce(track, i, cal))
+            if is_out_b:
+                t_star, uv_star = subframe(s[pre[-FULL_SIDE:]], s[post[:FULL_SIDE]])
+                return out | {"kind": "bounce", "bounce": True, "method": "image_v", "v_px_s": vv,
+                              "t_star": t_star, "xy": to_court(cal.Hr, uv_star)}
+            return out | {"kind": "hit", "bounce": False, "method": "out_of_reach"}
+        b = (vv is not None and (vv[0] > 0 > vv[1] or (vv[0] > -15 and vv[1] < -80 and dy_post > 1.0))
+             and not _has_prior_far_bounce(track, i, cal))
+        if b:
+            t_star, uv_star = subframe(s[pre[-FULL_SIDE:]], s[post[:FULL_SIDE]])
+            return out | {"kind": "bounce", "bounce": True, "method": "image_v", "v_px_s": vv,
+                          "t_star": t_star, "xy": to_court(cal.Hr, uv_star)}
+        if (dy_pre > 0 and dy_post < -0.5 and (vv is None or vv[0] < 50)) or _has_prior_far_bounce(track, i, cal):
+            if vv is not None and -95 < vv[1] and vv[0] < 80:
+                return out | {"kind": "hit", "bounce": False, "method": "out_of_reach", "v_px_s": vv}
+        return out | {"kind": "none", "bounce": False, "method": "image_v", "v_px_s": vv, "t_star": None, "xy": None}
+    if out_of_reach and dy_post > 0:
+        return out | {"kind": "hit", "bounce": False, "method": "out_of_reach"}
     f = arc_fit(cal, s[pre], s[post])
     j = int(np.argmin(np.abs(track[:, 0] - f["t_star"])))
     if j != i and abs(track[j, 0] - f["t_star"]) < abs(track[i, 0] - f["t_star"]) - 1e-3:
         pre2, post2 = (below(x) for x in _sides(track, j, n=ARC_SIDE))     # re-centred on the fitted contact
-        if len(pre2) >= MIN_SIDE and len(post2) >= MIN_SIDE:
-            f = arc_fit(cal, s[pre2], s[post2])
+        if len(pre2) >= MIN_SIDE and len(post2) >= MIN_SIDE and s[pre2[-1], 0] <= f["t_star"] <= s[post2[0], 0]:
+            f2 = arc_fit(cal, s[pre2], s[post2])
+            f = f2 if f2["rms_px"] < f["rms_px"] else f
     if f["rms_px"] > ARC_RETRY_PX:                 # another event inside the window: fit fewer samples
         pre3, post3 = (below(x) for x in _sides(track, i, n=FULL_SIDE))
         if len(pre3) >= MIN_SIDE and len(post3) >= MIN_SIDE:
             f3 = arc_fit(cal, s[pre3], s[post3])
             f = f3 if f3["rms_px"] < f["rms_px"] else f
     v1, v2 = f["v_pre"], f["v_post"]
-    if np.sign(v1[1]) != np.sign(v2[1]) and v2[2] > 0:
-        kind = "hit"                                  # sent back, and up (to clear the net)
-    elif v1[2] < 0 and v2[2] - v1[2] > BOUNCE_DVZ:
+    if dy_pre < 0 and dy_post < 0.5 and v2[1] > -2.0:  # ray depth/height trade-off on 6 samples: widen to 8
+        pre8, post8 = (below(x) for x in _sides(track, i, n=8))
+        if len(pre8) >= MIN_SIDE and len(post8) >= MIN_SIDE:
+            f = arc_fit(cal, s[pre8], s[post8])
+            v1, v2 = f["v_pre"], f["v_post"]
+    if np.sign(v1[1]) != np.sign(v2[1]) and dy_post > 0.5 and v2[1] > 2.0 and (v2[2] > 0 or (vv is not None and vv[1] < 0)):
+        kind = "hit"                                  # sent back toward the far court
+    elif (v1[2] < 0 and v2[2] - v1[2] > BOUNCE_DVZ) or (dy_pre < 0 and dy_post < 0.5 and vv is not None
+                                                        and vv[0] > 100 and vv[0] - vv[1] > 300):
         kind = "bounce"                               # came down, kicked up by the court
+    elif out_of_reach:
+        return out | {"kind": "hit", "bounce": False, "method": "out_of_reach"}
     else:
         kind = "none"
     return out | {"kind": kind, "bounce": kind == "bounce", "method": "court_y", "vy_pre": float(v1[1]),
@@ -629,7 +679,8 @@ def events(track: np.ndarray, cal: Calibration, catboost=None) -> list[dict]:
         last_hit = next((x for x in reversed(out) if x["kind"] == "hit"), start)
         prev = out[-1] if out else None
         if e["kind"] == "hit":
-            before = prev if prev is not None else start
+            before = prev if (prev is not None or (start is not None and e["t"] - start["t"] > 0.2
+                                                   and e["method"] != "out_of_reach")) else start
             if before is not None and before["kind"] == "hit" and before["half"] == e["half"]:
                 continue
             if e["method"] == "out_of_reach" and last_hit is not None and not any(
@@ -653,25 +704,32 @@ def events(track: np.ndarray, cal: Calibration, catboost=None) -> list[dict]:
 
 # --- calls --------------------------------------------------------------------------------------------------
 
-def margin(xy, region: str = "singles") -> tuple[float, np.ndarray]:
+def margin(xy, region: str = "singles", hitter: str | None = None,
+           contact_r: float = 0.0) -> tuple[float, np.ndarray]:
     """Signed distance (m, positive = out) of a bounce from the region's boundary, as the largest excess over
     its four edges, and the outward normal of that edge."""
     x0, x1, y0, y1 = REGIONS[region]
+    if hitter == "near":
+        y0 = max(y0, 0.0)
+    elif hitter == "far":
+        y1 = min(y1, 0.0)
     X, Y = float(xy[0]), float(xy[1])
-    ex = [(x0 - X, (-1.0, 0.0)), (X - x1, (1.0, 0.0)), (y0 - Y, (0.0, -1.0)), (Y - y1, (0.0, 1.0))]
+    ex = [(x0 - X - contact_r, (-1.0, 0.0)), (X - x1 - contact_r, (1.0, 0.0)),
+          (y0 - Y - contact_r, (0.0, -1.0)), (Y - y1 - contact_r, (0.0, 1.0))]
     m, n = max(ex, key=lambda e: e[0])
     return m, np.array(n)
 
 
-def call(xy, sigma, region: str = "singles") -> dict:
+def call(xy, sigma, region: str = "singles", hitter: str | None = None, contact_r: float = 0.0) -> dict:
     """{call, margin_m, sigma_m}: out when margin_m > 2 sigma_m, in when < -2 sigma_m, else close; unknown
     when xy is None. sigma: sigma_m along the edge's normal (float) or a 2 x 2 covariance in m^2."""
     if xy is None or sigma is None:
         return {"call": "unknown", "margin_m": None, "sigma_m": None}
-    m, n = margin(xy, region)
+    m, n = margin(xy, region, hitter=hitter, contact_r=contact_r)
     s = np.asarray(sigma, np.float64)
     sm = float(np.sqrt(n @ s @ n)) if s.ndim == 2 else float(s)
-    verdict = "out" if m > 2 * sm else "in" if m < -2 * sm else "close"
+    netted = hitter in ("near", "far") and (float(xy[1]) < 0 if hitter == "near" else float(xy[1]) > 0)
+    verdict = "out" if (netted or m > 2 * sm) else "in" if m < -2 * sm else "close"
     return {"call": verdict, "margin_m": round(float(m), 4), "sigma_m": round(sm, 4)}
 
 

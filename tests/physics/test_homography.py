@@ -43,6 +43,8 @@ def test_calibrate_from_14_points_and_with_known_k():
     assert known.rms_px < 0.01 and np.allclose(known.centre, CAMERA, atol=1e-3)
     with pytest.raises(ValueError):
         Hm.calibrate(court[:3], SIZE)
+    with pytest.raises(ValueError):
+        Hm.calibrate(np.zeros((4, 2)), SIZE, K=cal.K)
 
 
 def test_hr_removes_the_ball_radius_parallax():

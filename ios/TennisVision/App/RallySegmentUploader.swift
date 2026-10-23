@@ -30,7 +30,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
 
         /// Reads the Modal endpoint + device token from Info.plist; nil when not configured (clips stay local).
         static func fromBundle(matchId: UUID, sessionType: SessionMode, doubles: Bool, court: CourtJSON?) -> Config? {
-            guard let base = (Bundle.main.object(forInfoDictionaryKey: "ModalBaseURL") as? String).flatMap(URL.init),
+            guard let base = (Bundle.main.object(forInfoDictionaryKey: "ModalBaseURL") as? String).flatMap({ URL(string: $0) }),
                   let token = Bundle.main.object(forInfoDictionaryKey: "ModalJobToken") as? String, !token.isEmpty
             else { return nil }
             return Config(baseURL: base, jobToken: token, matchId: matchId, sessionType: sessionType, doubles: doubles,
@@ -51,12 +51,56 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Persistent per-clip upload state.
+    /// Match-mode score snapshot sent alongside a rally upload (`POST /jobs`) or session finalization.
+    struct ScorePayload: Codable {
+        var log: String
+        var sets: [[Int]]
+        var games: [Int]
+        var points: [Int]
+        var tiebreak: Bool
+        var tiebreakTo: Int
+        var server: String
+        var winner: String?
+        var formatted: String
+
+        init(_ sk: MatchScorekeeper) {
+            let s = sk.score
+            log = s.log
+            sets = s.sets.map { [$0.me, $0.opp] }
+            games = [s.games.me, s.games.opp]
+            points = [s.points.me, s.points.opp]
+            tiebreak = s.inTiebreak
+            tiebreakTo = s.tiebreakTo
+            server = s.server.rawValue
+            winner = s.winner?.rawValue
+            formatted = sk.formattedScore
+        }
+    }
+
+    /// Match-mode point record (`tennis_points` row).
+    struct PointPayload: Codable {
+        var pointIdx: Int
+        var rallyIdx: Int?
+        var server: String
+        var serveSide: String
+        var winner: String
+        var endedBy: String?
+        var scoreBefore: String
+        var scoreAfter: String
+        var timestampS: Double?
+    }
+
+    /// Persistent per-clip upload state, keyed by `"{matchId}_{rallyIdx}"`.
     private struct Upload: Codable {
+        var key: String
         var rallyIdx: Int
         var clipPath: String
         var startS: Double
         var config: Config
+        var bookmarked = false
+        var liveCall: String?
+        var score: ScorePayload?
+        var points: [PointPayload]?
         var jobId: String?
         var partCount = 0
         var done: Set<Int> = []
@@ -78,7 +122,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }()
-    private var uploads: [Int: Upload] = [:]
+    private var uploads: [String: Upload] = [:]
     private var responses: [Int: Data] = [:]
     private static let manifestURL = CameraCaptureManager.clipsDirectory.appendingPathComponent("uploads.json")
     private static let partsDirectory: URL = {
@@ -87,11 +131,17 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         return dir
     }()
 
+    private static func uploadKey(matchId: UUID, rallyIdx: Int) -> String {
+        "\(matchId.uuidString.lowercased())_\(rallyIdx)"
+    }
+
     private override init() {
         super.init()
         delegateQueue.addOperation {
             if let data = try? Data(contentsOf: Self.manifestURL),
-               let saved = try? JSONDecoder().decode([Int: Upload].self, from: data) { self.uploads = saved }
+               let saved = try? JSONDecoder().decode([String: Upload].self, from: data) {
+                self.uploads = saved
+            }
             _ = self.session                                // reconnect to tasks from a previous launch
         }
     }
@@ -105,21 +155,64 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
     ///   - rallyIdx: Rally index within the session.
     ///   - startS: Clip start relative to the session start (seconds).
     ///   - config: Endpoint, token and session metadata.
-    func enqueue(clip: URL, rallyIdx: Int, startS: Double, config: Config) {
+    ///   - bookmarked: Whether the player bookmarked this rally during play.
+    ///   - liveCall: Last on-device line call during this rally (`"in"`, `"out"`, `"close"`), if any.
+    ///   - score: Match-mode score state snapshot, if in `.match` mode.
+    ///   - points: Match-mode point history (`tennis_points`), if in `.match` mode.
+    func enqueue(clip: URL, rallyIdx: Int, startS: Double, config: Config,
+                 bookmarked: Bool = false, liveCall: String? = nil,
+                 score: ScorePayload? = nil, points: [PointPayload]? = nil) {
         delegateQueue.addOperation {
-            self.uploads[rallyIdx] = Upload(rallyIdx: rallyIdx, clipPath: clip.path, startS: startS, config: config)
+            let key = Self.uploadKey(matchId: config.matchId, rallyIdx: rallyIdx)
+            self.uploads[key] = Upload(key: key, rallyIdx: rallyIdx, clipPath: clip.path, startS: startS,
+                                       config: config, bookmarked: bookmarked, liveCall: liveCall,
+                                       score: score, points: points)
             self.save()
-            self.createJob(rallyIdx)
+            self.createJob(key)
+        }
+    }
+
+    /// Updates Match Mode score/point metadata on any queued uploads for `config.matchId` and notifies the backend
+    /// when finalizing or updating a session.
+    func finalizeSession(config: Config, score: ScorePayload?, points: [PointPayload]?) {
+        delegateQueue.addOperation {
+            let prefix = config.matchId.uuidString.lowercased() + "_"
+            for k in self.uploads.keys where k.hasPrefix(prefix) {
+                self.uploads[k]?.score = score
+                self.uploads[k]?.points = points
+            }
+            self.save()
+            let mid = config.matchId.uuidString.lowercased()
+            var req = URLRequest(url: config.baseURL.appendingPathComponent("sessions/\(mid)/finalize"))
+            req.httpMethod = "POST"
+            req.setValue(config.jobToken, forHTTPHeaderField: "X-Job-Token")
+            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            let court = config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
+            var body: [String: Any] = [
+                "match_id": mid,
+                "source": "ios",
+                "session_type": config.sessionType.rawValue,
+                "doubles": config.doubles,
+                "court": court ?? NSNull(),
+            ]
+            if let score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
+                body["score"] = obj
+            }
+            if let points, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(points)) {
+                body["points"] = obj
+            }
+            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+            URLSession.shared.dataTask(with: req).resume()
         }
     }
 
     /// Re-drives uploads that exhausted their retries (call when the app returns to the foreground).
     func resumePending() {
         delegateQueue.addOperation {
-            for (idx, u) in self.uploads where u.failed {
-                self.uploads[idx]?.failed = false
-                self.uploads[idx]?.attempts = [:]
-                if let jobId = u.jobId { self.fetchReceivedParts(idx, jobId: jobId) } else { self.createJob(idx) }
+            for (key, u) in self.uploads where u.failed {
+                self.uploads[key]?.failed = false
+                self.uploads[key]?.attempts = [:]
+                if let jobId = u.jobId { self.fetchReceivedParts(key, jobId: jobId) } else { self.createJob(key) }
             }
             self.save()
         }
@@ -127,92 +220,113 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
 
     // MARK: Steps
 
-    private func createJob(_ idx: Int) {
-        guard let u = uploads[idx] else { return }
+    private func createJob(_ key: String, delay: TimeInterval = 0) {
+        guard let u = uploads[key] else { return }
         let size = (try? FileManager.default.attributesOfItem(atPath: u.clipPath)[.size] as? Int) ?? 0
         let court = u.config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
-        let body: [String: Any] = [
-            "match_id": u.config.matchId.uuidString.lowercased(), "rally_idx": idx, "source": "ios",
+        var body: [String: Any] = [
+            "match_id": u.config.matchId.uuidString.lowercased(), "rally_idx": u.rallyIdx, "source": "ios",
             "session_type": u.config.sessionType.rawValue, "court": court ?? NSNull(), "doubles": u.config.doubles,
             "size_bytes": size, "content_type": "video/quicktime", "start_s": u.startS,
+            "bookmarked": u.bookmarked, "live_call": u.liveCall ?? NSNull(),
         ]
-        send(request(u, path: "jobs", method: "POST"), json: body, tag: Tag(kind: .create, rallyIdx: idx))
+        if let score = u.score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
+            body["score"] = obj
+        }
+        if let points = u.points, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(points)) {
+            body["points"] = obj
+        }
+        send(request(u, path: "jobs", method: "POST"), json: body, tag: Tag(kind: .create, key: key), delay: delay)
     }
 
-    private func didCreateJob(_ idx: Int, response: Data) {
-        guard var u = uploads[idx], let json = Self.json(response), let jobId = json["job_id"] as? String else {
-            return markFailed(idx)
+    private func didCreateJob(_ key: String, response: Data) {
+        guard var u = uploads[key], let json = Self.json(response), let jobId = json["job_id"] as? String else {
+            return markFailed(key)
         }
         u.jobId = jobId
         u.done = Set(json["received_parts"] as? [Int] ?? [])        // 200 on an identical repeat keeps progress
-        u.partCount = splitParts(u.clipPath, rallyIdx: idx, partSize: json["part_size"] as? Int ?? Self.defaultPartSize)
-        uploads[idx] = u
+        u.partCount = splitParts(u.clipPath, key: key, partSize: json["part_size"] as? Int ?? Self.defaultPartSize)
+        uploads[key] = u
         save()
-        guard u.partCount > 0 else { return markFailed(idx) }
-        sendMissingOrCommit(idx)
+        guard u.partCount > 0 else { return markFailed(key) }
+        sendMissingOrCommit(key)
     }
 
     /// Writes part files (background sessions can only upload from files).
-    private func splitParts(_ path: String, rallyIdx: Int, partSize: Int) -> Int {
+    private func splitParts(_ path: String, key: String, partSize: Int) -> Int {
         guard let handle = FileHandle(forReadingAtPath: path) else { return 0 }
         defer { try? handle.close() }
         var n = 0
         while let chunk = try? handle.read(upToCount: partSize), !chunk.isEmpty {
-            guard (try? chunk.write(to: partURL(rallyIdx, n))) != nil else { return 0 }
+            guard (try? chunk.write(to: partURL(key, n))) != nil else { return 0 }
             n += 1
         }
         return n
     }
 
-    private func sendMissingOrCommit(_ idx: Int) {
-        guard let u = uploads[idx] else { return }
+    private func sendMissingOrCommit(_ key: String) {
+        guard let u = uploads[key], u.partCount > 0 else { return markFailed(key) }
         let missing = (0..<u.partCount).filter { !u.done.contains($0) }
-        if missing.isEmpty { return commit(idx) }
-        missing.forEach { sendPart(idx, part: $0) }
+        if missing.isEmpty { return commit(key) }
+        missing.forEach { sendPart(key, part: $0) }
     }
 
-    private func sendPart(_ idx: Int, part: Int, delay: TimeInterval = 0) {
-        guard let u = uploads[idx], let jobId = u.jobId, let data = try? Data(contentsOf: partURL(idx, part)) else {
-            return markFailed(idx)
+    private func sendPart(_ key: String, part: Int, delay: TimeInterval = 0) {
+        guard let u = uploads[key], let jobId = u.jobId, let data = try? Data(contentsOf: partURL(key, part)) else {
+            return markFailed(key)
         }
         var req = request(u, path: "jobs/\(jobId)/parts/\(part)", method: "PUT")
         req.setValue("application/octet-stream", forHTTPHeaderField: "Content-Type")
         req.setValue(SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined(), forHTTPHeaderField: "X-Part-Sha256")
-        upload(req, file: partURL(idx, part), tag: Tag(kind: .part, rallyIdx: idx, part: part), delay: delay)
+        upload(req, file: partURL(key, part), tag: Tag(kind: .part, key: key, part: part), delay: delay)
     }
 
-    private func fetchReceivedParts(_ idx: Int, jobId: String) {
-        guard let u = uploads[idx] else { return }
-        URLSession.shared.dataTask(with: request(u, path: "jobs/\(jobId)", method: "GET")) { data, _, _ in
+    private func fetchReceivedParts(_ key: String, jobId: String) {
+        guard let u = uploads[key] else { return }
+        URLSession.shared.dataTask(with: request(u, path: "jobs/\(jobId)", method: "GET")) { data, resp, error in
             self.delegateQueue.addOperation {
-                guard self.uploads[idx] != nil else { return }
-                if let received = data.flatMap(Self.json)?["received_parts"] as? [Int] {
-                    self.uploads[idx]?.done = Set(received)
+                guard let current = self.uploads[key] else { return }
+                let status = (resp as? HTTPURLResponse)?.statusCode ?? 0
+                guard error == nil, (200..<300).contains(status),
+                      let received = data.flatMap(Self.json)?["received_parts"] as? [Int] else {
+                    if status == 401 || status == 403 {
+                        self.markFailed(key)
+                    } else if status == 404 {
+                        self.createJob(key)
+                    } else {
+                        self.retry(Tag(kind: .create, key: key))
+                    }
+                    return
+                }
+                self.uploads[key]?.done = Set(received)
+                if current.partCount == 0 {
+                    let count = self.splitParts(current.clipPath, key: key, partSize: Self.defaultPartSize)
+                    self.uploads[key]?.partCount = count
                 }
                 self.save()
-                self.sendMissingOrCommit(idx)
+                self.sendMissingOrCommit(key)
             }
         }.resume()
     }
 
-    private func commit(_ idx: Int, delay: TimeInterval = 0) {
-        guard let u = uploads[idx], let jobId = u.jobId else { return }
-        send(request(u, path: "jobs/\(jobId)/commit", method: "POST"), json: [:], tag: Tag(kind: .commit, rallyIdx: idx),
+    private func commit(_ key: String, delay: TimeInterval = 0) {
+        guard let u = uploads[key], let jobId = u.jobId else { return }
+        send(request(u, path: "jobs/\(jobId)/commit", method: "POST"), json: [:], tag: Tag(kind: .commit, key: key),
              delay: delay)
     }
 
     /// Modal confirmed the file is assembled on its volume: the phone keeps nothing.
-    private func didCommit(_ idx: Int) {
-        guard let u = uploads.removeValue(forKey: idx) else { return }
+    private func didCommit(_ key: String) {
+        guard let u = uploads.removeValue(forKey: key) else { return }
         try? FileManager.default.removeItem(atPath: u.clipPath)
-        (0..<u.partCount).forEach { try? FileManager.default.removeItem(at: partURL(idx, $0)) }
-        try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("create_\(idx).json"))
-        try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("commit_\(idx).json"))
+        (0..<u.partCount).forEach { try? FileManager.default.removeItem(at: partURL(key, $0)) }
+        try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("create_\(key).json"))
+        try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("commit_\(key).json"))
         save()
     }
 
-    private func markFailed(_ idx: Int) {
-        uploads[idx]?.failed = true
+    private func markFailed(_ key: String) {
+        uploads[key]?.failed = true
         save()
     }
 
@@ -226,7 +340,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         }
 
         var kind: Kind
-        var rallyIdx: Int
+        var key: String
         var part = 0
 
         var retryKey: String { kind == .part ? "part\(part)" : kind.rawValue }
@@ -243,9 +357,9 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
     private func send(_ req: URLRequest, json: [String: Any], tag: Tag, delay: TimeInterval = 0) {
         var req = req
         req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        let file = Self.partsDirectory.appendingPathComponent("\(tag.kind.rawValue)_\(tag.rallyIdx).json")
+        let file = Self.partsDirectory.appendingPathComponent("\(tag.kind.rawValue)_\(tag.key).json")
         guard let body = try? JSONSerialization.data(withJSONObject: json), (try? body.write(to: file)) != nil else {
-            return markFailed(tag.rallyIdx)
+            return markFailed(tag.key)
         }
         upload(req, file: file, tag: tag, delay: delay)
     }
@@ -257,8 +371,8 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         task.resume()
     }
 
-    private func partURL(_ idx: Int, _ part: Int) -> URL {
-        Self.partsDirectory.appendingPathComponent("rally_\(idx)_part_\(part).bin")
+    private func partURL(_ key: String, _ part: Int) -> URL {
+        Self.partsDirectory.appendingPathComponent("rally_\(key)_part_\(part).bin")
     }
 
     private static func json(_ data: Data) -> [String: Any]? {
@@ -280,26 +394,26 @@ extension RallySegmentUploader: URLSessionDataDelegate {
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
         let body = responses.removeValue(forKey: task.taskIdentifier) ?? Data()
         guard let raw = task.taskDescription?.data(using: .utf8), let tag = try? JSONDecoder().decode(Tag.self, from: raw),
-              uploads[tag.rallyIdx] != nil else { return }
+              uploads[tag.key] != nil else { return }
         let status = (task.response as? HTTPURLResponse)?.statusCode ?? 0
         let ok = error == nil && (200..<300).contains(status)
         switch (tag.kind, ok) {
         case (.create, true):
-            didCreateJob(tag.rallyIdx, response: body)
+            didCreateJob(tag.key, response: body)
         case (.part, true):
-            uploads[tag.rallyIdx]?.done.insert(tag.part)
+            uploads[tag.key]?.done.insert(tag.part)
             save()
-            if let u = uploads[tag.rallyIdx], u.done.count >= u.partCount { commit(tag.rallyIdx) }
+            if let u = uploads[tag.key], u.done.count >= u.partCount { commit(tag.key) }
         case (.commit, true):
-            didCommit(tag.rallyIdx)
+            didCommit(tag.key)
         case (.commit, false) where status == 409:
             // Parts missing on the server: mark them not-done and re-send.
             let missing = Self.json(body)?["missing"] as? [Int] ?? []
-            missing.forEach { uploads[tag.rallyIdx]?.done.remove($0) }
+            missing.forEach { uploads[tag.key]?.done.remove($0) }
             save()
-            missing.isEmpty ? retry(tag) : sendMissingOrCommit(tag.rallyIdx)
+            missing.isEmpty ? retry(tag) : sendMissingOrCommit(tag.key)
         case (_, false) where status == 401 || status == 403:
-            markFailed(tag.rallyIdx)                        // bad / expired device token: retrying won't help
+            markFailed(tag.key)                            // bad / expired device token: retrying won't help
         case (_, false):
             retry(tag)
         }
@@ -307,16 +421,16 @@ extension RallySegmentUploader: URLSessionDataDelegate {
 
     /// Exponential backoff (2 s, 4 s), then park as failed until `resumePending()`.
     private func retry(_ tag: Tag) {
-        guard uploads[tag.rallyIdx] != nil else { return }
-        let attempt = (uploads[tag.rallyIdx]?.attempts[tag.retryKey] ?? 0) + 1
-        uploads[tag.rallyIdx]?.attempts[tag.retryKey] = attempt
+        guard uploads[tag.key] != nil else { return }
+        let attempt = (uploads[tag.key]?.attempts[tag.retryKey] ?? 0) + 1
+        uploads[tag.key]?.attempts[tag.retryKey] = attempt
         save()
-        guard attempt < Self.maxAttempts else { return markFailed(tag.rallyIdx) }
+        guard attempt < Self.maxAttempts else { return markFailed(tag.key) }
         let delay = pow(2, Double(attempt))
         switch tag.kind {
-        case .part: sendPart(tag.rallyIdx, part: tag.part, delay: delay)
-        case .create: createJob(tag.rallyIdx)
-        case .commit: commit(tag.rallyIdx, delay: delay)
+        case .part: sendPart(tag.key, part: tag.part, delay: delay)
+        case .create: createJob(tag.key, delay: delay)
+        case .commit: commit(tag.key, delay: delay)
         }
     }
 

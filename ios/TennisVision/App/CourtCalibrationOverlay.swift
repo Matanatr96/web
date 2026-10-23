@@ -219,7 +219,7 @@ final class CourtDriftTracker: @unchecked Sendable {
                 ref.flatMap { Self.register($0, in: frame, near: corner) }
             }
             let valid = offsets.compactMap { $0 }
-            guard valid.count >= 3 else { return }
+            guard valid.count >= 2 else { return }
             let mx = Self.median(valid.map(\.x)), my = Self.median(valid.map(\.y))
             let drift = hypot(mx, my)
             if drift > Self.pausePx {
@@ -259,15 +259,18 @@ final class CourtDriftTracker: @unchecked Sendable {
     }
 
     /// Best SAD offset of `ref` within ±search px of `p`, refined to sub-pixel with 1D parabolas.
+    /// Clamps the search range at the frame borders so a corner within 15..35 px of the frame edge is still tracked.
     private static func register(_ ref: [UInt8], in frame: CVPixelBuffer, near p: Point2) -> Point2? {
         guard let plane = LumaPlane(frame) else { return nil }
         let r = patchSize / 2, cx = Int(p.x.rounded()), cy = Int(p.y.rounded())
-        guard plane.contains(cx - r - search, cy - r - search), plane.contains(cx + r + search, cy + r + search) else { return nil }
+        let minDx = max(-search, r - cx), maxDx = min(search, plane.width - 1 - r - cx)
+        let minDy = max(-search, r - cy), maxDy = min(search, plane.height - 1 - r - cy)
+        guard minDx <= maxDx, minDy <= maxDy else { return nil }
         let side = 2 * search + 1
         var sad = [Int](repeating: .max, count: side * side)
         var best = (cost: Int.max, dx: 0, dy: 0)
-        for dy in -search...search {
-            for dx in -search...search {
+        for dy in minDy...maxDy {
+            for dx in minDx...maxDx {
                 var cost = 0
                 for y in 0..<patchSize {
                     for x in 0..<patchSize {
@@ -279,14 +282,15 @@ final class CourtDriftTracker: @unchecked Sendable {
                 if cost < best.cost { best = (cost, dx, dy) }
             }
         }
+        guard best.cost < .max else { return nil }
         func sub(_ m: Int, _ c: Int, _ p: Int) -> Double {
             guard m != .max, p != .max else { return 0 }
             let denom = Double(m - 2 * c + p)
             return denom > 0 ? 0.5 * Double(m - p) / denom : 0
         }
         let i = (best.dy + search) * side + best.dx + search
-        let fx = abs(best.dx) < search ? sub(sad[i - 1], best.cost, sad[i + 1]) : 0
-        let fy = abs(best.dy) < search ? sub(sad[i - side], best.cost, sad[i + side]) : 0
+        let fx = (best.dx > minDx && best.dx < maxDx) ? sub(sad[i - 1], best.cost, sad[i + 1]) : 0
+        let fy = (best.dy > minDy && best.dy < maxDy) ? sub(sad[i - side], best.cost, sad[i + side]) : 0
         return Point2(Double(best.dx) + fx, Double(best.dy) + fy)
     }
 }

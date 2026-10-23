@@ -63,6 +63,9 @@ final class SessionController: NSObject, ObservableObject {
     private let matchId = UUID()
     private var sessionStartS: Double?
     private var savedBrightness: CGFloat?
+    private var pointsLog: [RallySegmentUploader.PointPayload] = []
+    private var lastCompletedRallyIdx: Int?
+    private var lastCompletedEndS: Double?
 
     /// A frozen frame for the calibration overlay.
     struct CalibrationFrame: Identifiable {
@@ -161,15 +164,37 @@ final class SessionController: NSObject, ObservableObject {
     }
 
     func point(_ winner: Player) {
+        let before = score.formattedScore
+        let srv = score.score.server.rawValue
+        let side = score.serverSide.rawValue
         score.pointWon(by: winner)
+        let after = score.formattedScore
+        let endedBy = lastCall?.call == .out ? "out" : "winner"
+        pointsLog.append(RallySegmentUploader.PointPayload(
+            pointIdx: pointsLog.count, rallyIdx: lastCompletedRallyIdx, server: srv, serveSide: side,
+            winner: winner.rawValue, endedBy: endedBy, scoreBefore: before, scoreAfter: after,
+            timestampS: lastCompletedEndS))
         updateServeRegion()
         pushWatch()
+        finishSession()
     }
 
     func undoPoint() {
         score.undo()
+        if !pointsLog.isEmpty { pointsLog.removeLast() }
         updateServeRegion()
         pushWatch()
+        finishSession()
+    }
+
+    /// Sends current session/score/points state to Modal so the session can be finalized or updated in Match Mode.
+    func finishSession() {
+        guard let config = RallySegmentUploader.Config.fromBundle(
+            matchId: matchId, sessionType: mode, doubles: doubles,
+            court: calibration.map(RallySegmentUploader.CourtJSON.init)) else { return }
+        let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
+        let matchPoints = mode == .match ? pointsLog : nil
+        RallySegmentUploader.shared.finalizeSession(config: config, score: matchScore, points: matchPoints)
     }
 
     /// Match Mode: the next serve must land in the box diagonally opposite the server (I'm on the near half).
@@ -233,19 +258,31 @@ extension SessionController: LiveLineCallerEngineDelegate {
 
     func engine(_ engine: LiveLineCallerEngine, rallyStartedAt pts: CMTime) {
         if sessionStartS == nil { sessionStartS = pts.seconds - CameraCaptureManager.preRollSeconds }
+        lastCall = nil
         camera.beginRally(at: pts)
     }
 
     func engine(_ engine: LiveLineCallerEngine, rallyEnded summary: RallySummary?, lastActivity: CMTime) {
         guard let summary else { return camera.discardRally() }
         let startS = max(0, summary.startS - CameraCaptureManager.preRollSeconds - (sessionStartS ?? 0))
+        let endS = max(0, summary.endS - (sessionStartS ?? 0))
+        lastCompletedRallyIdx = summary.rallyIdx
+        lastCompletedEndS = endS
+        let rallyCall = lastCall?.call.rawValue
+        let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
+        let matchPoints = mode == .match ? pointsLog : nil
         let config = RallySegmentUploader.Config.fromBundle(
             matchId: matchId, sessionType: mode, doubles: doubles,
             court: calibration.map(RallySegmentUploader.CourtJSON.init))
         camera.endRally(lastActivity: lastActivity, rallyIdx: summary.rallyIdx) { [weak self] url in
             guard let url else { return }
             DispatchQueue.main.async { self?.clipsSaved += 1 }
-            if let config { RallySegmentUploader.shared.enqueue(clip: url, rallyIdx: summary.rallyIdx, startS: startS, config: config) }
+            if let config {
+                RallySegmentUploader.shared.enqueue(
+                    clip: url, rallyIdx: summary.rallyIdx, startS: startS, config: config,
+                    bookmarked: summary.bookmarked, liveCall: rallyCall,
+                    score: matchScore, points: matchPoints)
+            }
         }
         updateServeRegion()
     }

@@ -47,7 +47,7 @@ final class WatchModel: NSObject, ObservableObject {
 
     /// Starts / ends an outdoor tennis workout (Match Mode keeps the app frontmost during play).
     func toggleWorkout() {
-        if let workout {
+        if let workout = self.workout {
             workout.end()
             builder?.endCollection(withEnd: Date()) { [weak self] _, _ in
                 self?.builder?.finishWorkout { _, _ in }

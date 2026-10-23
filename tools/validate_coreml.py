@@ -173,6 +173,8 @@ def main(argv=None) -> int:
 def _half_ok() -> bool:
     import torch
 
+    if not (torch.cuda.is_available() or (hasattr(torch.backends, "mps") and torch.backends.mps.is_available())):
+        return False
     try:
         torch.nn.functional.conv2d(torch.ones(1, 1, 4, 4, dtype=torch.float16), torch.ones(1, 1, 3, 3,
                                                                                       dtype=torch.float16))

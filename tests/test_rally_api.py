@@ -289,5 +289,67 @@ def test_calibration_from_uploader_taps():
              "posts_px": project(cal, NET_POSTS_M).tolist()}
     est = RA.calibration(court)
     assert np.allclose(est.Hr, cal.Hr, atol=1e-4 * np.abs(cal.Hr).max())
-    again = RA.calibration(est.to_json())
-    assert np.allclose(again.Hr, est.Hr)
+    assert RA.calibration(est.to_json())
+    assert np.allclose(RA.calibration(est.to_json()).Hr, est.Hr)
+    assert RA.calibration(None) is None and RA.calibration({}) is None
+
+
+def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, monkeypatch):
+    from dsa.physics import ballistics as BL
+    from dsa.physics.homography import project
+    from synth import COR, FRICTION, aim, landing
+
+    cal = true_camera()
+    fps = 60.0
+    p_srv = np.array([0.4, -11.95, 2.85])
+    v_srv = aim(p_srv, [-2.6, 5.9], 0.43)
+    tb, pb, vb = landing(p_srv, v_srv)
+    t_pre = np.arange(0.0, 1.5, 1 / fps)
+    xyz_pre = np.c_[np.full_like(t_pre, 0.4), np.full_like(t_pre, -11.95), 2.85 - 0.5 * 9.81 * (t_pre - 1.5) ** 2]
+    t_fl = np.arange(1.5, 1.5 + tb, 1 / fps)
+    t_po = np.arange(1.5 + tb, 1.5 + tb + 0.35, 1 / fps)
+    ts = np.r_[t_pre, t_fl, t_po]
+    xyz = np.vstack([xyz_pre, BL.simulate(p_srv, v_srv, t_fl - 1.5),
+                     BL.simulate(pb, np.r_[vb[:2] * FRICTION, -vb[2] * COR], t_po - (1.5 + tb))])
+    vis = (ts >= 1.0).astype(float)
+    tr = np.c_[ts, vis, project(cal, xyz), vis]
+    shots, _ = RA.analyse_track(tr, cal, "match")
+    assert len(shots) == 1
+    assert shots[0]["stroke"] == "serve" and shots[0]["hitter"] == "near"
+    assert abs(shots[0]["t_hit_s"] - 1.5) < 0.05 and shots[0]["hit_y"] == pytest.approx(-11.95, abs=0.5)
+    assert shots[0]["hit_x"] == pytest.approx(0.4, abs=0.2) and shots[0]["call"] == "in"
+    assert RA.analyse_track(tr, None) == ([], [])
+
+    # Subsequent rally shots get 'fh' / 'bh' stroke classification
+    r_tr, _, _ = rally(np.random.default_rng(31), cal, noise_px=0.3)
+    r_shots, _ = RA.analyse_track(r_tr, cal, "rally")
+    assert all(s["stroke"] in ("fh", "bh") for s in r_shots[1:])
+
+    # Multi-replica refresh() and iOS metadata + finalize_session route
+    monkeypatch.setattr(RA, "PART_SIZE", 1024)
+    refreshes, spawned = [], []
+    app = RA.create_app(tmp_path, SECRET, spawn=lambda k, p: spawned.append((k, p)),
+                        refresh=lambda: refreshes.append(1), now=lambda: NOW)
+    client = TestClient(app)
+    body = job(500, source="ios", rally_idx=1, content_type="video/quicktime", start_s=12.0,
+               bookmarked=True, live_call="out", score={"games": [1, 0]})
+    assert client.post("/jobs", json=body, headers=tok(scope="any")).status_code == 201
+    assert len(refreshes) >= 1
+    client.put(f"/jobs/{MID}.r1/parts/0", content=b"\0" * 500, headers=tok(scope="any"))
+    assert client.post(f"/jobs/{MID}.r1/commit", headers=tok(scope="any")).status_code == 200
+    assert spawned[-1][0] == "process_rally" and spawned[-1][1]["bookmarked"] is True
+    assert spawned[-1][1]["live_call"] == "out" and spawned[-1][1]["score"] == {"games": [1, 0]}
+    fin = client.post(f"/sessions/{MID}/finalize", json={"source": "ios", "session_type": "match",
+                                                         "score": {"games": [6, 4]}}, headers=tok(scope="any"))
+    assert fin.status_code == 200 and spawned[-1][0] == "finalize_session"
+
+    # Phase 3 biomechanics summary schema matches web normalizeBiomechTrait expectations
+    bio = RA.compute_session_biomechanics([shots, r_shots])
+    assert isinstance(bio["traits"], list) and len(bio["traits"]) >= 4
+    assert isinstance(bio["coach_notes"], str) and len(bio["coach_notes"]) > 10
+    for tr_item in bio["traits"]:
+        assert set(tr_item.keys()) == {"trait", "stroke", "user_value", "pro_mean", "pro_std", "z_score", "unit"}
+        assert tr_item["stroke"] in ("fh", "bh", "serve")
+        assert tr_item["pro_std"] > 0
+        assert tr_item["z_score"] == pytest.approx((tr_item["user_value"] - tr_item["pro_mean"]) / tr_item["pro_std"],
+                                                   abs=0.02)

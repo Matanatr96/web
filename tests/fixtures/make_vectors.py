@@ -110,12 +110,12 @@ LINECALL_CASES = [
     ("past the corner: the larger excess", [4.2, 12.0], 0.02, "singles", False, None, "out", 0.115, "out_long"),
     ("wide, not long", [4.4, 11.9], 0.02, "singles", False, None, "out", 0.285, "out_wide"),
     ("serve into the far deuce box", [-2.0, 5.0], 0.03, "serve_deuce_far", False, None, "in", -1.4, "short"),
-    ("serve into the wrong box", [1.0, 5.0], 0.03, "serve_deuce_far", False, None, "out", 1.0, "short"),
+    ("serve into the wrong box", [1.0, 5.0], 0.03, "serve_deuce_far", False, None, "out", 0.975, "short"),
     ("serve 5 cm long", [-1.0, 6.45], 0.02, "serve_deuce_far", False, None, "out", 0.05, "deep"),
-    ("serve on the centre line is close", [0.01, 3.0], 0.02, "serve_deuce_far", False, None, "close", 0.01, "short"),
-    ("serve into the near ad box", [-1.0, -3.0], 0.02, "serve_ad_near", False, None, "in", -1.0, "short"),
+    ("serve on the centre line is close", [0.01, 3.0], 0.02, "serve_deuce_far", False, None, "close", -0.015, "short"),
+    ("serve into the near ad box", [-1.0, -3.0], 0.02, "serve_ad_near", False, None, "in", -1.025, "short"),
     ("serve into the near deuce box", [2.0, -6.0], 0.05, "serve_deuce_near", False, None, "in", -0.4, "short"),
-    ("netted: bounced on the hitter's own side", [0.0, -3.0], 0.02, "singles", False, "near", "in", -4.115, "net"),
+    ("netted: bounced on the hitter's own side", [0.0, -3.0], 0.02, "singles", False, "near", "out", 3.0, "net"),
     ("no contact point", None, None, "singles", False, None, "unknown", None, "unknown"),
 ]
 

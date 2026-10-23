@@ -233,17 +233,71 @@ def test_catboost_decides_when_the_ball_is_above_the_horizon():
 
     yes, no = Model(0.9), Model(0.1)
     a = B.classify_event(lob, i, CAL, catboost=yes)
-    assert (a["method"], a["kind"]) == ("catboost", "bounce") and yes.seen.shape == (1, 12)
+    assert (a["method"], a["kind"]) == ("catboost", "bounce") and yes.seen.shape == (1, 18)
     assert B.classify_event(lob, i, CAL, catboost=no)["kind"] == "hit"
     assert B.classify_event(lob, i, CAL)["method"] == "image_v"
-    assert B.catboost_features(track, i).shape == (12,)
+    assert B.catboost_features(track, i).shape == (18,)
+
+
+def test_out_bounces_beyond_reach_in_court_far_hits_and_preroll_serve():
+    """Out bounces > 2 m long/wide are still classified as bounces (not out_of_reach hits); far hits inside
+    the baseline and downward near smashes/serves are classified as hits; pre-roll before a serve preserves
+    the real first hit in events()."""
+    from dsa.physics import ballistics as BL
+    from synth import COR, FRICTION, aim, landing
+
+    fps = 60.0
+    # 1. Far out bounce > 2 m beyond the baseline (Y = 14.5 m > 11.885 + 2.0)
+    p0 = np.array([0.5, -11.5, 1.1])
+    v0 = aim(p0, [-1.0, 14.5], 1.1)
+    tl, pl, vl = landing(p0, v0)
+    vb = np.r_[vl[:2] * FRICTION, -vl[2] * COR]
+    t1, t2 = np.arange(0.05, tl, 1 / fps), np.arange(tl, tl + 0.35, 1 / fps)
+    ts = np.r_[t1, t2]
+    uv = project(CAL, np.vstack([BL.simulate(p0, v0, t1), BL.simulate(pl, vb, t2 - tl)]))
+    tr_out = np.c_[ts, np.ones(len(ts)), uv, np.ones(len(ts))]
+    i_out = B.refine_kink(tr_out, int(np.argmin(np.abs(ts - tl))))
+    assert B.classify_event(tr_out, i_out, CAL)["kind"] == "bounce"
+
+    # 2. Far hit inside the baseline (bounce at Y = 5.5 m, hit at Y ~ 9.2 m)
+    v_in = aim(p0, [0.5, 5.5], 0.9)
+    tl2, pl2, vl2 = landing(p0, v_in)
+    vb2 = np.r_[vl2[:2] * FRICTION, -vl2[2] * COR]
+    th2 = 0.45
+    ph2 = BL.simulate(pl2, vb2, [th2])[0]
+    assert ph2[1] < 11.885
+    v_ret = aim(ph2, [-1.5, -9.0], 1.0)
+    t_a, t_b, t_c = np.arange(0.05, tl2, 1 / fps), np.arange(tl2, tl2 + th2, 1 / fps), np.arange(tl2 + th2, tl2 + th2 + 0.5, 1 / fps)
+    ts2 = np.r_[t_a, t_b, t_c]
+    xyz2 = np.vstack([BL.simulate(p0, v_in, t_a), BL.simulate(pl2, vb2, t_b - tl2), BL.simulate(ph2, v_ret, t_c - (tl2 + th2))])
+    uv2 = project(CAL, xyz2)
+    tr_in = np.c_[ts2, np.ones(len(ts2)), uv2, np.ones(len(ts2))]
+    i_hit = B.refine_kink(tr_in, int(np.argmin(np.abs(ts2 - (tl2 + th2)))))
+    assert B.classify_event(tr_in, i_hit, CAL)["kind"] == "hit"
+
+    # 3. Pre-roll (1.5 s) before an elevated near-baseline serve at Z = 2.85 m
+    p_srv = np.array([0.4, -11.95, 2.85])
+    v_srv = aim(p_srv, [-2.6, 5.9], 0.43)
+    tb_s, pb_s, vb_s = landing(p_srv, v_srv)
+    t_pre = np.arange(0.0, 1.5, 1 / fps)
+    xyz_pre = np.c_[np.full_like(t_pre, 0.4), np.full_like(t_pre, -11.95), 2.85 - 0.5 * 9.81 * (t_pre - 1.5) ** 2]
+    t_fl = np.arange(1.5, 1.5 + tb_s, 1 / fps)
+    t_po = np.arange(1.5 + tb_s, 1.5 + tb_s + 0.35, 1 / fps)
+    ts_s = np.r_[t_pre, t_fl, t_po]
+    xyz_s = np.vstack([xyz_pre, BL.simulate(p_srv, v_srv, t_fl - 1.5),
+                       BL.simulate(pb_s, np.r_[vb_s[:2] * FRICTION, -vb_s[2] * COR], t_po - (1.5 + tb_s))])
+    vis_s = (ts_s >= 1.0).astype(float)
+    tr_srv = np.c_[ts_s, vis_s, project(CAL, xyz_s), vis_s]
+    evs = B.events(tr_srv, CAL)
+    assert len(evs) >= 2 and evs[0]["kind"] == "hit" and evs[0]["half"] == "near"
+    assert abs(evs[0]["t"] - 1.5) < 0.05 and evs[1]["kind"] == "bounce"
 
 
 # --- calls and depth zones ------------------------------------------------------------------------------------
 
 @pytest.mark.parametrize("case", VECTORS["cases"], ids=[c["name"] for c in VECTORS["cases"]])
 def test_linecall_vectors(case):
-    got = B.call(case["xy"], case["sigma_m"], case["region"])
+    got = B.call(case["xy"], case["sigma_m"], case["region"], hitter=case["hitter"])
     assert got["call"] == case["expect"]["call"]
     if case["expect"]["margin_m"] is None:
         assert got["margin_m"] is None

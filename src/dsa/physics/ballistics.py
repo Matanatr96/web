@@ -112,30 +112,32 @@ def _ray_at_height(cal: Calibration, uv, z: float) -> np.ndarray:
 
 
 def fit_shot(samples, cal: Calibration, bounce: dict | None = None, fit_lift: bool = False, cd: float = CD,
-             hit_height_m: float = 1.0) -> dict:
+             hit_height_m: float = 1.0, t_hit: float | None = None) -> dict:
     """Fit one shot's flight.
 
     samples       (n, 3) t (s, presentation time), u, v (px) from just after the hit to just before the bounce.
     bounce        {"t": t_star, "xy": (X, Y)} from contact_point, when the shot bounced in view.
     fit_lift      also fit c_lift (Phase 1 default: pure drag).
     hit_height_m  first guess of the ball's height at the first sample.
+    t_hit         optional exact hit timestamp (<= samples[0, 0]) at which p0 and release speed v0 are evaluated.
     """
     from scipy.optimize import least_squares
 
     s = np.asarray(samples, np.float64)
-    t0 = s[0, 0]
+    t0 = float(t_hit) if (t_hit is not None and t_hit <= s[0, 0]) else float(s[0, 0])
     ts = s[:, 0] - t0
     p0 = _ray_at_height(cal, s[0, 1:], hit_height_m)
     if bounce is not None:
-        T = bounce["t"] - t0
+        T = max(bounce["t"] - t0, 1e-3)
         b = np.r_[bounce["xy"], BALL_R]
         vxy = (b[:2] - p0[:2]) / T
         vz = (BALL_R - p0[2] + 0.5 * G * T * T) / T
         v0 = np.r_[vxy, vz] * 1.1                              # drag: a little faster at launch
     else:
         p1 = _ray_at_height(cal, s[-1, 1:], hit_height_m)
-        v0 = (p1 - p0) / max(ts[-1], 1e-3)
-        v0[2] += 0.5 * G * ts[-1]
+        dt_span = max(ts[-1] - ts[0], 1e-3)
+        v0 = (p1 - p0) / dt_span
+        v0[2] += 0.5 * G * dt_span
     x0 = np.r_[p0, v0, [0.0] if fit_lift else []]
 
     def unpack(x):

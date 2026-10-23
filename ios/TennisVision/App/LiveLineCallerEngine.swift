@@ -79,10 +79,12 @@ final class LiveLineCallerEngine: @unchecked Sendable {
     private var track: [BallSample] = []
     private var recentOnsets: [Double] = []
     private var lastEventT = -Double.infinity
+    private var lastCheckedT = -Double.infinity
     private var lastHitterHalf: CourtHalf?
     private var bouncesThisRally = 0
     private var armedAt = 0.0
     private var cooldownUntil = 0.0
+    private var lastFramePTS = 0.0
     private var pending: [(CVPixelBuffer, Double)] = []
     private var frameIndex = 0
     private var inferenceBusy = false
@@ -90,6 +92,10 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 
     init() {
         announcer = CallAnnouncer(engine: audioEngine)
+        announcer.onPlayDuration = { [weak self] duration in
+            let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            self?.onsets.suppress(until: now + duration + 0.15)
+        }
         onsets.onOnset = { [weak self] t in self?.queue.async { self?.handleOnset(at: t) } }
     }
 
@@ -137,9 +143,16 @@ final class LiveLineCallerEngine: @unchecked Sendable {
     func ingest(_ pixelBuffer: CVPixelBuffer, pts: CMTime) {
         queue.async { [self] in
             let t = pts.seconds
-            advanceClock(to: t)
+            lastFramePTS = t
             let thermal = ProcessInfo.processInfo.thermalState
-            guard state == .armed || state == .live, thermal != .critical, let detector else { return }
+            if state == .cooldown || state == .armed || thermal == .critical || detector == nil {
+                advanceClock(to: t)
+            } else if state == .live, let last = tracker.lastActivity,
+                      t - last > RallyTracker.maxRallyGap + Self.postSamplesTimeout + 0.15 {
+                // Only expire an idle rally before triplet inference once the post-sample buffer window has also elapsed.
+                advanceClock(to: t)
+            }
+            guard state == .armed || state == .live, thermal != .critical, let detector = self.detector else { return }
             frameIndex += 1
             if thermal == .serious && frameIndex % 2 == 1 { return }       // 30 fps triplets
             pending.append((pixelBuffer, t))
@@ -161,7 +174,8 @@ final class LiveLineCallerEngine: @unchecked Sendable {
                 }
                 queue.async { [self] in
                     inferenceBusy = false
-                    handle(samples.compactMap { $0 }, sigmaPx: thermal == .serious ? 3.0 : BallKinematics.defaultSigmaPx)
+                    handle(samples.compactMap { $0 }, upTo: triplet.last?.1 ?? t,
+                           sigmaPx: thermal == .serious ? 3.0 : BallKinematics.defaultSigmaPx)
                 }
             }
         }
@@ -190,6 +204,9 @@ final class LiveLineCallerEngine: @unchecked Sendable {
             track.removeAll()
             stationary = nil
             bouncesThisRally = 0
+            lastHitterHalf = nil
+            lastEventT = -Double.infinity
+            lastCheckedT = -Double.infinity
             set(.armed)
             DispatchQueue.main.async { self.delegate?.engine(self, rallyStartedAt: CMTime(seconds: t, preferredTimescale: 600)) }
             if audioOnly { goLive() }
@@ -202,6 +219,18 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 
     private func goLive() {
         set(.live)
+        if mode == .match, let region = serveRegion {
+            // The service box is on the receiver's half, so the server stands on the opposite half.
+            switch region {
+            case .serveDeuceFar, .serveAdFar: lastHitterHalf = .near
+            case .serveDeuceNear, .serveAdNear: lastHitterHalf = .far
+            case .singles, .doubles: break
+            }
+        } else if let cal = calibration, let first = track.first, track.count >= 2 {
+            lastHitterHalf = BallKinematics.inferHitterHalf(at: Point2(first.u, first.v),
+                                                            post: Array(track.dropFirst()), calibration: cal)
+        }
+        lastEventT = armedAt
         registerHit(at: armedAt)                                           // the feed / first hit that woke us
     }
 
@@ -212,7 +241,7 @@ final class LiveLineCallerEngine: @unchecked Sendable {
             pending.removeAll()
             DispatchQueue.main.async { self.delegate?.engine(self, rallyEnded: nil, lastActivity: .zero) }
         case .live:
-            if let summary = tracker.tick(now: t) { finishRally(summary) }
+            if let summary = tracker.tick(now: t) { finishRally(summary, now: t) }
         case .cooldown where t >= cooldownUntil:
             set(.sleeping)
         default:
@@ -220,17 +249,27 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         }
     }
 
-    private func finishRally(_ summary: RallySummary) {
+    private func finishRally(_ summary: RallySummary, now: Double? = nil) {
         set(.cooldown)
         pending.removeAll()
         track.removeAll()
-        cooldownUntil = summary.endS + CameraCaptureManager.tailSeconds + 0.1
+        lastHitterHalf = nil
+        let ref = max(now ?? lastFramePTS, summary.endS)
+        cooldownUntil = ref + CameraCaptureManager.tailSeconds + 0.1
         let last = CMTime(seconds: summary.endS, preferredTimescale: 600)
         DispatchQueue.main.async { self.delegate?.engine(self, rallyEnded: summary, lastActivity: last) }
     }
 
     private func registerHit(at t: Double) {
         let outcome = tracker.registerHit(at: t)
+        if let ended = outcome.endedRally {
+            let last = CMTime(seconds: ended.endS, preferredTimescale: 600)
+            let nextStart = CMTime(seconds: t, preferredTimescale: 600)
+            DispatchQueue.main.async {
+                self.delegate?.engine(self, rallyEnded: ended, lastActivity: last)
+                self.delegate?.engine(self, rallyStartedAt: nextStart)
+            }
+        }
         if outcome.milestone != nil, audioMode == .milestones, !callsPaused { announcer.play(.milestone) }
         publishShots()
     }
@@ -242,7 +281,7 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 
     // MARK: Detections → events
 
-    private func handle(_ samples: [BallSample], sigmaPx: Double) {
+    private func handle(_ samples: [BallSample], upTo currentT: Double, sigmaPx: Double) {
         for s in samples where accept(s) { track.append(s) }
         if let newest = track.last?.t { track.removeAll { newest - $0.t > Self.trackWindow } }
         switch state {
@@ -250,8 +289,10 @@ final class LiveLineCallerEngine: @unchecked Sendable {
             let recent = track.filter { $0.t - armedAt >= -0.5 }
             if recent.count >= Self.goLiveDetections, let a = recent.first, let b = recent.last,
                hypot(b.u - a.u, b.v - a.v) > Self.goLiveDisplacementPx { goLive() }
+            advanceClock(to: currentT)
         case .live:
             processEvents(sigmaPx: sigmaPx)
+            if state == .live { advanceClock(to: currentT) }
         default:
             break
         }
@@ -279,28 +320,32 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         return hypot(predicted.x - p.x, predicted.y - p.y) <= Self.maxGateJumpPx
     }
 
-    /// Finds v extrema with enough post samples, classifies hit vs bounce, judges bounces.
+    /// Finds candidate events (v extrema or 2D velocity kinks) with enough post samples, classifies hit vs bounce,
+    /// enforces `BallKinematics.minEventGap` debounce, and judges bounces.
     private func processEvents(sigmaPx: Double) {
         guard let cal = calibration, track.count >= 3, let newestT = track.last?.t else { return }
-        for i in 1..<(track.count - 1) where track[i].t > lastEventT {
-            let (a, b, c) = (track[i - 1].v, track[i].v, track[i + 1].v)
-            let isExtremum = (b >= a && b > c) || (b <= a && b < c)
-            guard isExtremum else { continue }
+        for i in 1..<(track.count - 1) where track[i].t > max(lastCheckedT, lastEventT) {
+            guard track[i].t - lastEventT >= BallKinematics.minEventGap else { continue }
+            guard BallKinematics.isEventCandidate(in: track, at: i) else { continue }
             let post = track.count - 1 - i
             guard post >= BallKinematics.fitSamples
                     || (post >= BallKinematics.minSamples && newestT - track[i].t > Self.postSamplesTimeout) else { return }
-            lastEventT = track[i].t
             let pre = Array(track[...i]), after = Array(track[(i + 1)...])
             let eventT = track[i].t
             let heard = recentOnsets.contains { (-0.05...0.25).contains($0 - eventT) }
             switch BallKinematics.classifyEvent(pre: pre, post: after, h0: cal.h0, racketSound: heard) {
             case .hit:
-                lastHitterHalf = cal.h0.apply(Point2(track[i].u, track[i].v)).map { $0.y > 0 ? .far : .near }
-                registerHit(at: track[i].t)
+                lastEventT = eventT
+                lastCheckedT = eventT
+                lastHitterHalf = BallKinematics.inferHitterHalf(at: Point2(track[i].u, track[i].v), post: after, calibration: cal)
+                registerHit(at: eventT)
             case .bounce:
+                lastEventT = eventT
+                lastCheckedT = eventT
                 judgeBounce(at: i, cal: cal, sigmaPx: sigmaPx)
                 if state != .live { return }                               // match point ended: track was cleared
             case .unknown:
+                lastCheckedT = eventT
                 continue
             }
         }
@@ -312,7 +357,11 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         let estimate = BallKinematics.contactPoint(around: i - lo, in: window, hr: cal.hr, sigmaPx: sigmaPx)
         let isServe = mode == .match && bouncesThisRally == 0
         let region = isServe ? (serveRegion ?? .singles) : (doubles ? .doubles : .singles)
-        let result = LineCaller.judge(estimate, region: region, hitter: lastHitterHalf)
+        var hitter = lastHitterHalf
+        if hitter == nil, let first = track.first, i > 0 {
+            hitter = BallKinematics.inferHitterHalf(at: Point2(first.u, first.v), post: Array(track[0...i]), calibration: cal)
+        }
+        let result = LineCaller.judge(estimate, region: region, hitter: hitter)
         bouncesThisRally += 1
         let t = estimate?.tStar ?? track[i].t
         tracker.registerBounce(call: result.call, depthZone: result.depthZone, at: t)
@@ -321,7 +370,7 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         DispatchQueue.main.async { self.delegate?.engine(self, didCall: result, latencyMs: latencyMs) }
         publishShots()
         if mode == .match && (result.call == .out || result.depthZone == .net), let summary = tracker.endRally() {
-            finishRally(summary)                                           // point over: clip ends at bounce + tail
+            finishRally(summary, now: track.last?.t ?? t)                  // point over: clip ends at bounce + tail
         }
     }
 
@@ -422,41 +471,86 @@ final class WASBDetector {
             }
         }
         guard best.w > 0 else { return nil }
-        return Point2((Double(best.x / best.w) + 0.5) * scaleX - 0.5, (Double(best.y / best.w) + 0.5) * scaleY - 0.5)
+        return Point2(Double(best.x / best.w) * scaleX, Double(best.y / best.w) * scaleY)
     }
 
-    /// 64×64 native-1080p luma ROI: centroid of pixels brighter than mean + 2σ (the ball is the bright compact blob).
-    /// Falls back to the coarse point when the ROI is flat or the centroid jumps >12 px.
+    /// 64×64 native-1080p optic-yellow chroma ROI: connected component of yellow pixels (`(128 − Cb) + 0.5·(Cr − 128)`)
+    /// closest to the coarse ball point `p` (white court lines have `Cb ≈ 128, Cr ≈ 128` and cancel out, matching
+    /// Python `bounce_and_linecall.refine_roi`). Falls back to luma if Plane 1 is absent, or `p` if shift > 12 px.
     static func refine(_ frame: CVPixelBuffer, around p: Point2) -> Point2 {
         CVPixelBufferLockBaseAddress(frame, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
-        guard let base = CVPixelBufferGetBaseAddressOfPlane(frame, 0)?.assumingMemoryBound(to: UInt8.self) else { return p }
+        guard let yBase = CVPixelBufferGetBaseAddressOfPlane(frame, 0)?.assumingMemoryBound(to: UInt8.self) else { return p }
         let w = CVPixelBufferGetWidthOfPlane(frame, 0), h = CVPixelBufferGetHeightOfPlane(frame, 0)
-        let row = CVPixelBufferGetBytesPerRowOfPlane(frame, 0)
-        let x0 = min(max(Int(p.x) - roiSize / 2, 0), w - roiSize), y0 = min(max(Int(p.y) - roiSize / 2, 0), h - roiSize)
+        guard w >= roiSize, h >= roiSize else { return p }
+        let yRow = CVPixelBufferGetBytesPerRowOfPlane(frame, 0)
+        let uvBase = CVPixelBufferGetPlaneCount(frame) >= 2
+            ? CVPixelBufferGetBaseAddressOfPlane(frame, 1)?.assumingMemoryBound(to: UInt8.self)
+            : nil
+        let uvRow = CVPixelBufferGetPlaneCount(frame) >= 2 ? CVPixelBufferGetBytesPerRowOfPlane(frame, 1) : 0
+        let x0 = min(max(Int(p.x.rounded()) - roiSize / 2, 0), w - roiSize)
+        let y0 = min(max(Int(p.y.rounded()) - roiSize / 2, 0), h - roiSize)
+        let n = roiSize * roiSize
+        var scores = [Double](repeating: 0, count: n)
         var sum = 0.0, sumSq = 0.0
-        for y in y0..<(y0 + roiSize) {
-            for x in x0..<(x0 + roiSize) {
-                let v = Double(base[y * row + x])
+        for dy in 0..<roiSize {
+            let y = y0 + dy
+            for dx in 0..<roiSize {
+                let x = x0 + dx
+                let luma = Double(yBase[y * yRow + x])
+                let v: Double
+                if let uvBase {
+                    let uvIdx = (y / 2) * uvRow + (x / 2) * 2
+                    let cb = Double(uvBase[uvIdx])
+                    let cr = Double(uvBase[uvIdx + 1])
+                    v = luma > 80 ? max(0, (128.0 - cb) + 0.5 * (cr - 128.0)) : 0
+                } else {
+                    v = luma
+                }
+                scores[dy * roiSize + dx] = v
                 sum += v
                 sumSq += v * v
             }
         }
-        let n = Double(roiSize * roiSize), mean = sum / n
-        let threshold = mean + 2 * max((sumSq / n - mean * mean), 0).squareRoot()
-        var sw = 0.0, sx = 0.0, sy = 0.0
-        for y in y0..<(y0 + roiSize) {
-            for x in x0..<(x0 + roiSize) {
-                let wgt = Double(base[y * row + x]) - threshold
-                guard wgt > 0 else { continue }
-                sw += wgt
-                sx += wgt * Double(x)
-                sy += wgt * Double(y)
+        let count = Double(n), mean = sum / count
+        let std = max(sumSq / count - mean * mean, 0).squareRoot()
+        let minGate = uvBase != nil ? 12.0 : 180.0
+        let threshold = max(mean + 2.0 * std, minGate)
+        var visited = [Bool](repeating: false, count: n)
+        var best: (dist: Double, cx: Double, cy: Double)?
+        for dy0 in 0..<roiSize {
+            for dx0 in 0..<roiSize {
+                let startIdx = dy0 * roiSize + dx0
+                guard !visited[startIdx], scores[startIdx] > threshold else { continue }
+                var stack = [(dx0, dy0)]
+                visited[startIdx] = true
+                var pixels = 0
+                var sw = 0.0, sx = 0.0, sy = 0.0
+                while let (dx, dy) = stack.popLast() {
+                    let wgt = scores[dy * roiSize + dx]
+                    pixels += 1
+                    sw += wgt
+                    sx += wgt * Double(x0 + dx)
+                    sy += wgt * Double(y0 + dy)
+                    for (nx, ny) in [(dx + 1, dy), (dx - 1, dy), (dx, dy + 1), (dx, dy - 1)]
+                    where nx >= 0 && ny >= 0 && nx < roiSize && ny < roiSize {
+                        let nIdx = ny * roiSize + nx
+                        if !visited[nIdx] && scores[nIdx] > threshold {
+                            visited[nIdx] = true
+                            stack.append((nx, ny))
+                        }
+                    }
+                }
+                guard (4...400).contains(pixels), sw > 0 else { continue }
+                let cx = sx / sw, cy = sy / sw
+                let dist = hypot(cx - p.x, cy - p.y)
+                if dist <= 12.0, best == nil || dist < best!.dist {
+                    best = (dist, cx, cy)
+                }
             }
         }
-        guard sw > 1 else { return p }
-        let c = Point2(sx / sw, sy / sw)
-        return hypot(c.x - p.x, c.y - p.y) <= 12 ? c : p
+        if let best { return Point2(best.cx, best.cy) }
+        return p
     }
 }
 
@@ -473,10 +567,19 @@ final class HitOnsetDetector {
 
     /// Called with the onset time on the host clock (same clock as capture PTS).
     var onOnset: ((Double) -> Void)?
+    private let lock = NSLock()
+    private var suppressUntil = 0.0
     private var b0: Float = 0, b2: Float = 0, a1: Float = 0, a2: Float = 0
     private var z1: Float = 0, z2: Float = 0
     private var slowEnergy: Float = 1e-6
     private var lastOnset = 0.0
+
+    /// Blanks onset detection until `hostTimeS` so speaker announcements don't self-trigger racket onsets.
+    func suppress(until hostTimeS: Double) {
+        lock.lock()
+        suppressUntil = max(suppressUntil, hostTimeS)
+        lock.unlock()
+    }
 
     func install(on engine: AVAudioEngine) {
         let input = engine.inputNode
@@ -502,6 +605,9 @@ final class HitOnsetDetector {
         guard let x = buffer.floatChannelData?[0], time.isHostTimeValid else { return }
         let n = Int(buffer.frameLength), fs = buffer.format.sampleRate
         let start = CMClockMakeHostTimeFromSystemUnits(time.hostTime).seconds
+        lock.lock()
+        let blankedUntil = suppressUntil
+        lock.unlock()
         var i = 0
         while i < n {
             let end = min(i + Self.hop, n)
@@ -514,11 +620,13 @@ final class HitOnsetDetector {
             }
             energy /= Float(end - i)
             let t = start + Double(i) / fs
-            if energy > max(Self.floor, slowEnergy * Self.ratio), t - lastOnset > Self.refractory {
-                lastOnset = t
-                onOnset?(t)
+            if t >= blankedUntil {
+                if energy > max(Self.floor, slowEnergy * Self.ratio), t - lastOnset > Self.refractory {
+                    lastOnset = t
+                    onOnset?(t)
+                }
+                slowEnergy = 0.995 * slowEnergy + 0.005 * energy
             }
-            slowEnergy = 0.995 * slowEnergy + 0.005 * energy
             i = end
         }
     }
@@ -527,7 +635,7 @@ final class HitOnsetDetector {
 // MARK: - Call announcer
 
 /// Preloaded PCM buffers on one AVAudioPlayerNode so a call starts within one IO buffer (~5 ms).
-final class CallAnnouncer {
+final class CallAnnouncer: @unchecked Sendable {
     enum Sound: CaseIterable {
         case outVoice
         case closeVoice
@@ -535,8 +643,11 @@ final class CallAnnouncer {
         case milestone
     }
 
+    /// Invoked with the played buffer's duration (seconds) so the microphone onset detector can blank itself.
+    var onPlayDuration: ((Double) -> Void)?
     private let player = AVAudioPlayerNode()
     private let format = AVAudioFormat(standardFormatWithSampleRate: 48_000, channels: 1)!
+    private let lock = NSLock()
     private var buffers: [Sound: AVAudioPCMBuffer] = [:]
 
     init(engine: AVAudioEngine) {
@@ -549,15 +660,24 @@ final class CallAnnouncer {
     }
 
     func play(_ sound: Sound) {
-        guard let buffer = buffers[sound] else { return }
+        lock.lock()
+        let buffer = buffers[sound]
+        lock.unlock()
+        guard let buffer else { return }
+        let duration = Double(buffer.frameLength) / format.sampleRate
+        onPlayDuration?(duration)
         player.scheduleBuffer(buffer, at: nil, options: .interrupts)
         if !player.isPlaying { player.play() }
     }
 
     /// Renders "Out!" and "Close" once with AVSpeechSynthesizer so calls never wait on TTS.
     func prerenderSpeech() async {
-        if let out = await Self.speak("Out!", format: format) { buffers[.outVoice] = out }
-        if let close = await Self.speak("Close", format: format) { buffers[.closeVoice] = close }
+        let out = await Self.speak("Out!", format: format)
+        let close = await Self.speak("Close", format: format)
+        lock.lock()
+        if let out { buffers[.outVoice] = out }
+        if let close { buffers[.closeVoice] = close }
+        lock.unlock()
     }
 
     private func tones(_ parts: [(hz: Double, seconds: Double)]) -> AVAudioPCMBuffer? {

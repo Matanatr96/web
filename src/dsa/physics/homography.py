@@ -26,6 +26,7 @@ import numpy as np
 BALL_R = 0.033                       # m: ball radius; its centre's height at contact
 HALF_LEN, SERVICE = 11.885, 6.40     # m: baseline and service line distance from the net
 SINGLES_HALF_W, DOUBLES_HALF_W = 4.115, 5.485
+CENTRE_HALF_W = 0.025                # m: half-width of the 5 cm centre service line
 NET_POST_X, NET_POST_Z = DOUBLES_HALF_W + 0.914, 1.07
 NET_CENTRE_Z = 0.914
 
@@ -115,7 +116,10 @@ def _object_points(court_idx, posts: bool) -> np.ndarray:
 def _solve(obj: np.ndarray, img: np.ndarray, K: np.ndarray) -> tuple[np.ndarray, np.ndarray, float]:
     """Pose of a camera with intrinsics K: SQPnP (global) then Levenberg-Marquardt; reprojection RMS in px."""
     obj32, img32 = obj.astype(np.float64)[:, None], img.astype(np.float64)[:, None]
-    ok, rvec, tvec = cv2.solvePnP(obj32, img32, K, None, flags=cv2.SOLVEPNP_SQPNP)
+    try:
+        ok, rvec, tvec = cv2.solvePnP(obj32, img32, K, None, flags=cv2.SOLVEPNP_SQPNP)
+    except cv2.error:
+        return np.zeros(3), np.zeros(3), np.inf
     if not ok:
         return np.zeros(3), np.zeros(3), np.inf
     rvec, tvec = cv2.solvePnPRefineLM(obj32, img32, K, None, rvec, tvec)
@@ -148,6 +152,8 @@ def calibrate(court_px, size: tuple[int, int], court_idx=None, posts_px=None, K=
     img = np.r_[court_px, np.asarray(posts_px, np.float64).reshape(2, 2)] if posts else court_px
     if K is not None:
         r, t, rms = _solve(obj, img, np.asarray(K, np.float64))
+        if not np.isfinite(rms):
+            raise ValueError("calibration failed: no camera reprojects these points")
         return Calibration(np.asarray(K, np.float64), r, t, tuple(size), rms)
     w = size[0]
     cost = lambda lf: _solve(obj, img, _K(np.exp(lf) * w, size))[2]       # noqa: E731
@@ -207,7 +213,12 @@ def reregister(cal: Calibration, frame0, frame, max_drift_px: float = 40.0) -> t
     if not np.isfinite(drift) or drift > max_drift_px:
         return cal, float("inf")
     r, t, rms = _solve(obj, new, cal.K)
+    if not np.isfinite(rms):
+        return cal, float("inf")
+    try:
+        Minv = np.linalg.inv(M)
+    except np.linalg.LinAlgError:
+        return cal, float("inf")
     moved = Calibration(cal.K, r, t, cal.size, rms)
-    Minv = np.linalg.inv(M)
     moved.H0, moved.Hr = (h / h[2, 2] for h in (cal.H0 @ Minv, cal.Hr @ Minv))
     return moved, drift

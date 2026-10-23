@@ -179,7 +179,7 @@
    "hitter": null,
    "expect": {
     "call": "out",
-    "margin_m": 1.0,
+    "margin_m": 0.975,
     "depth_zone": "short"
    }
   },
@@ -211,7 +211,7 @@
    "hitter": null,
    "expect": {
     "call": "close",
-    "margin_m": 0.01,
+    "margin_m": -0.015,
     "depth_zone": "short"
    }
   },
@@ -227,7 +227,7 @@
    "hitter": null,
    "expect": {
     "call": "in",
-    "margin_m": -1.0,
+    "margin_m": -1.025,
     "depth_zone": "short"
    }
   },
@@ -258,8 +258,8 @@
    "doubles": false,
    "hitter": "near",
    "expect": {
-    "call": "in",
-    "margin_m": -4.115,
+    "call": "out",
+    "margin_m": 3.0,
     "depth_zone": "net"
    }
   },

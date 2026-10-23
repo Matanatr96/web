@@ -2,7 +2,7 @@
 name = "dsa"
 version = "0.1.0"
 description = "Deep sports analysis: players, skeletons, ball and hits from tennis video (phone or TV), with off-the-shelf models."
-requires-python = ">=3.11"
+requires-python = ">=3.11,<3.14"
 dependencies = [
     "torch==2.14.0",
     "torchvision==0.29.0",

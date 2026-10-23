@@ -127,8 +127,12 @@ public enum Court {
     public static let doublesHalfWidth = 5.485
     /// Net to service line.
     public static let serviceLineY = 6.40
+    /// Half-width of the 5 cm centre service line (serves touching the line are in).
+    public static let centreLineHalfWidth = 0.025
     /// Tennis-ball radius: the ball centre sits this far above the court at impact.
     public static let ballRadius = 0.033
+    /// Default ball ground contact-patch radius (~1.5 cm).
+    public static let contactRadius = 0.015
     /// Net post height.
     public static let netPostHeight = 1.07
     /// Net posts stand 0.914 m outside the doubles sidelines.
@@ -637,6 +641,32 @@ public enum BallKinematics {
     /// Minimum jump in image velocity (px/s) across an event: hits and bounces are velocity discontinuities, while a
     /// smooth flight apex (also a v extremum) only bends by gravity (~40 px/s across the gap at the far baseline).
     public static let minCuspPxPerS = 150.0
+    /// Minimum time separation (seconds) between two distinct hit/bounce events (`MIN_GAP_S`).
+    public static let minEventGap = 0.10
+
+    /// Magnitude of the 2D image-velocity jump (px/s) across sample `i`.
+    public static func velocityJump(in track: [BallSample], at i: Int) -> Double {
+        guard i >= 1, i < track.count - 1 else { return 0 }
+        let pre = Array(track[max(0, i - fitSamples + 1)...i])
+        let post = Array(track[i...min(track.count - 1, i + fitSamples - 1)])
+        guard let t0Pre = pre.first?.t, let t0Post = post.first?.t,
+              let uPre = Polynomial2.fit(t: pre.map(\.t), y: pre.map(\.u), t0: t0Pre, degree: 1),
+              let vPre = Polynomial2.fit(t: pre.map(\.t), y: pre.map(\.v), t0: t0Pre, degree: 1),
+              let uPost = Polynomial2.fit(t: post.map(\.t), y: post.map(\.u), t0: t0Post, degree: 1),
+              let vPost = Polynomial2.fit(t: post.map(\.t), y: post.map(\.v), t0: t0Post, degree: 1) else { return 0 }
+        return hypot(uPost.b - uPre.b, vPost.b - vPre.b)
+    }
+
+    /// True when sample `i` is either a vertical `v` extremum or a local peak in 2D velocity jump `>= minCuspPxPerS`
+    /// (catching rising-ball groundstrokes whose image `v` does not reverse sign on that frame).
+    public static func isEventCandidate(in track: [BallSample], at i: Int) -> Bool {
+        guard i >= 1, i < track.count - 1 else { return false }
+        let (a, b, c) = (track[i - 1].v, track[i].v, track[i + 1].v)
+        if (b >= a && b > c) || (b <= a && b < c) { return true }
+        let j = velocityJump(in: track, at: i)
+        guard j >= minCuspPxPerS else { return false }
+        return j >= velocityJump(in: track, at: i - 1) && j >= velocityJump(in: track, at: i + 1)
+    }
 
     /// True when the linear image-velocity fits before and after differ by at least `minCuspPxPerS`.
     public static func isCusp(pre: [BallSample], post: [BallSample]) -> Bool {
@@ -668,25 +698,92 @@ public enum BallKinematics {
     ///   - racketSound: A racket-hit audio onset coincides with the event (≈ −50…+250 ms, sound travels ~80 ms).
     public static func classifyEvent(pre: [BallSample], post: [BallSample], h0: Homography,
                                      racketSound: Bool = false) -> TrackEvent {
+        let preFit = Array(pre.suffix(fitSamples)), postFit = Array(post.prefix(fitSamples))
         func courtYVelocity(_ s: [BallSample]) -> Double? {
             let valid = s.compactMap { b in h0.apply(Point2(b.u, b.v)).map { (b.t, $0.y) } }
             guard valid.count >= 2 else { return nil }
             return Polynomial2.fit(t: valid.map(\.0), y: valid.map(\.1), t0: valid[0].0, degree: 1)?.b
         }
+        func imageVelocity(_ s: [BallSample]) -> (du: Double, dv: Double)? {
+            guard let t0 = s.first?.t,
+                  let u = Polynomial2.fit(t: s.map(\.t), y: s.map(\.u), t0: t0, degree: 1),
+                  let v = Polynomial2.fit(t: s.map(\.t), y: s.map(\.v), t0: t0, degree: 1) else { return nil }
+            return (u.b, v.b)
+        }
+        let hasCusp = isCusp(pre: preFit, post: postFit)
         guard let lastPre = pre.last, let firstPost = post.first,
-              racketSound || isCusp(pre: Array(pre.suffix(fitSamples)), post: Array(post.prefix(fitSamples))),
-              let before = courtYVelocity(Array(pre.suffix(fitSamples))),
-              let after = courtYVelocity(Array(post.prefix(fitSamples))),
+              racketSound || hasCusp,
+              let before = courtYVelocity(preFit),
+              let after = courtYVelocity(postFit),
+              let imgPre = imageVelocity(preFit),
+              let imgPost = imageVelocity(postFit),
               max(abs(before), abs(after)) >= minCourtSpeed else { return .unknown }
         guard let ground = h0.apply(Point2((lastPre.u + firstPost.u) / 2, (lastPre.v + firstPost.v) / 2)) else {
             return .hit                                    // above the horizon: certainly airborne
         }
+        // Image-v bounce signature: descending in image (dv > 0) before impact and kicking up (dv < 0) after impact.
+        // On the far half, +v_Y and +v_Z both push the image point up after a bounce (`-imgPost.dv >= 0.6 * imgPre.dv`),
+        // whereas a downward near-baseline serve/smash (`v_Z < 0`) that projects onto `ground.y > 0` has weak upward
+        // image motion (`-imgPost.dv < 0.6 * imgPre.dv`).
+        let imageBounceTurn = hasCusp && imgPre.dv > 0 && imgPost.dv < 0 && (-imgPost.dv >= 0.6 * imgPre.dv)
         if ground.y > 0 {
-            let onCourt = ground.y <= Court.halfLength + farHitMarginM && abs(ground.x) <= Court.doublesHalfWidth + farHitMarginM
-            return onCourt ? .bounce : .hit
+            let onCourt = ground.y <= Court.halfLength + farHitMarginM
+                && abs(ground.x) <= Court.doublesHalfWidth + farHitMarginM
+            // Smooth unbroken flight trajectory (single parabola fits pre+post with <0.1 px RMS and no cusp): not an event.
+            let all = preFit + postFit
+            if !hasCusp,
+               let uAll = Polynomial2.fit(t: all.map(\.t), y: all.map(\.u), t0: lastPre.t, degree: 2),
+               let vAll = Polynomial2.fit(t: all.map(\.t), y: all.map(\.v), t0: lastPre.t, degree: 2),
+               hypot(uAll.rms, vAll.rms) < 0.1 {
+                return .unknown
+            }
+            // Elevated near-baseline serve/smash projecting onto `ground.y > 0`: at ~3.7 m from the lens, free-fall
+            // image curvature `vPre.a ≈ 0.5 * fy * g / D` exceeds 900 px/s² (vs <450 px/s² on the far half D > 15 m).
+            let vPreQuad = Polynomial2.fit(t: preFit.map(\.t), y: preFit.map(\.v), t0: lastPre.t, degree: 2)
+            if let a = vPreQuad?.a, a > 900 {
+                return .hit
+            }
+            // Far-court hit inside or outside `onCourt`: ball sent back toward the near court (`after < -minCourtSpeed`
+            // or downward image motion `imgPost.dv > 0` after approaching the far court).
+            if after < -minCourtSpeed || (before > minCourtSpeed && imgPost.dv > 20) {
+                return .hit
+            }
+            // Far-court bounce (including out bounces > 2 m long/wide): sharp downward-to-upward image-v turn
+            // while continuing forward in +Y (`after > minCourtSpeed` and `after > before`).
+            if imageBounceTurn && after >= minCourtSpeed && after >= before {
+                return .bounce
+            }
+            if !onCourt || hasCusp || racketSound {
+                return .hit
+            }
+            return .unknown
         }
+        // Near half: serve/feed/overhead where pre-toss court-Y speed is small or jumps sharply forward.
+        if abs(before) < minCourtSpeed && after >= minCourtSpeed { return .hit }
         guard abs(before) >= minCourtSpeed, abs(after) >= minCourtSpeed else { return .unknown }
-        return (before > 0) == (after > 0) ? .bounce : .hit
+        if (before > 0) != (after > 0) { return .hit }
+        if before > 0 && after > before + 5.0 && !imageBounceTurn { return .hit }
+        return .bounce
+    }
+
+    /// Infers which half of the court a hitter struck the ball from using post-hit ball flight direction
+    /// (preventing elevated near-baseline serves from projecting through `Z = 0` onto the far court).
+    public static func inferHitterHalf(at pixel: Point2, post: [BallSample], calibration cal: CourtCalibration) -> CourtHalf? {
+        if let pose = cal.pose, let k = cal.intrinsics,
+           let hStrike = pose.planeHomography(z: 1.0, intrinsics: k),
+           let strikePt = hStrike.apply(pixel) {
+            if abs(strikePt.y) > 1.0 { return strikePt.y > 0 ? .far : .near }
+        }
+        let postFit = Array(post.prefix(fitSamples))
+        let valid = postFit.compactMap { b in cal.h0.apply(Point2(b.u, b.v)).map { (b.t, $0.y) } }
+        if valid.count >= 2, let vy = Polynomial2.fit(t: valid.map(\.0), y: valid.map(\.1), t0: valid[0].0, degree: 1)?.b,
+           abs(vy) >= minCourtSpeed {
+            // A ball struck near the far baseline projects well beyond the service line on H0; a ball moving +Y
+            // from below the service line was struck on the near half.
+            if let g = cal.h0.apply(pixel), g.y > Court.serviceLineY { return .far }
+            return vy > 0 ? .near : .far
+        }
+        return cal.h0.apply(pixel).map { $0.y > 0 ? .far : .near }
     }
 
     /// Sub-frame bounce from up to 4 pre + 4 post PTS samples: intersects quadratic fits of v(t), evaluates the
@@ -735,8 +832,19 @@ public enum BallKinematics {
     public static func contactPoint(around i: Int, in track: [BallSample], hr: Homography,
                                     sigmaPx: Double = defaultSigmaPx) -> ContactEstimate? {
         guard track.indices.contains(i) else { return nil }
-        let withPre = contactPoint(pre: Array(track[...i]), post: Array(track[(i + 1)...]), hr: hr, sigmaPx: sigmaPx)
-        let withPost = contactPoint(pre: Array(track[..<i]), post: Array(track[i...]), hr: hr, sigmaPx: sigmaPx)
+        let strictlyPre = i
+        let strictlyPost = track.count - 1 - i
+        func penalizeIfShort(_ est: ContactEstimate?) -> ContactEstimate? {
+            guard var e = est else { return nil }
+            if (strictlyPre < fitSamples || strictlyPost < fitSamples)
+                && e.samplesPre >= fitSamples && e.samplesPost >= fitSamples {
+                e.sigmaX *= 2
+                e.sigmaY *= 2
+            }
+            return e
+        }
+        let withPre = penalizeIfShort(contactPoint(pre: Array(track[...i]), post: Array(track[(i + 1)...]), hr: hr, sigmaPx: sigmaPx))
+        let withPost = penalizeIfShort(contactPoint(pre: Array(track[..<i]), post: Array(track[i...]), hr: hr, sigmaPx: sigmaPx))
         switch (withPre, withPost) {
         case let (a?, b?): return (a.sigmaX + a.sigmaY) <= (b.sigmaX + b.sigmaY) ? a : b
         case let (a, b): return a ?? b
@@ -818,16 +926,16 @@ public enum CallRegion: String, Codable, Sendable, CaseIterable {
     case serveDeuceNear = "serve_deuce_near"
     case serveAdNear = "serve_ad_near"
 
-    /// `[x0, x1] × [y0, y1]` in court metres.
+    /// `[x0, x1] × [y0, y1]` in court metres (service boxes include the 5 cm centre service line's 0.025 m outer edge).
     public var bounds: (x0: Double, x1: Double, y0: Double, y1: Double) {
-        let w = Court.singlesHalfWidth, l = Court.halfLength, s = Court.serviceLineY
+        let w = Court.singlesHalfWidth, l = Court.halfLength, s = Court.serviceLineY, c = Court.centreLineHalfWidth
         switch self {
         case .singles: return (-w, w, -l, l)
         case .doubles: return (-Court.doublesHalfWidth, Court.doublesHalfWidth, -l, l)
-        case .serveDeuceFar: return (-w, 0, 0, s)
-        case .serveAdFar: return (0, w, 0, s)
-        case .serveDeuceNear: return (0, w, -s, 0)
-        case .serveAdNear: return (-w, 0, -s, 0)
+        case .serveDeuceFar: return (-w, c, 0, s)
+        case .serveAdFar: return (-c, w, 0, s)
+        case .serveDeuceNear: return (-c, w, -s, 0)
+        case .serveAdNear: return (-w, c, -s, 0)
         }
     }
 
@@ -847,12 +955,16 @@ public enum LineCaller {
     /// Confidence gate: calls are only confident outside ±2σ_m (E9).
     public static let sigmaGate = 2.0
 
-    /// Signed margin of a court point (positive = out): `max(x0 − X, X − x1, y0 − Y, Y − y1)`, plus whether an
-    /// X edge (sideline / centre line, normal along X) governs.
-    public static func margin(_ p: Point2, region: CallRegion = .singles) -> (marginM: Double, xEdge: Bool) {
-        let b = region.bounds
-        let wide = max(b.x0 - p.x, p.x - b.x1)
-        let long = max(b.y0 - p.y, p.y - b.y1)
+    /// Signed margin of a court point (positive = out): `max(x0 − X, X − x1, y0 − Y, Y − y1) - contactRadius`, plus
+    /// whether an X edge (sideline / centre line, normal along X) governs. When `hitter` is provided and the ball
+    /// lands on the hitter's own half (netted), the net (`Y = 0`) is enforced as the inner Y boundary.
+    public static func margin(_ p: Point2, region: CallRegion = .singles, hitter: CourtHalf? = nil,
+                              contactRadius: Double = 0) -> (marginM: Double, xEdge: Bool) {
+        var b = region.bounds
+        if hitter == .near, p.y < 0 { b.y0 = max(b.y0, 0) }
+        if hitter == .far, p.y > 0 { b.y1 = min(b.y1, 0) }
+        let wide = max(b.x0 - p.x, p.x - b.x1) - contactRadius
+        let long = max(b.y0 - p.y, p.y - b.y1) - contactRadius
         return wide > long ? (wide, true) : (long, false)
     }
 
@@ -884,16 +996,18 @@ public enum LineCaller {
     ///   - c: Sub-frame contact, or nil (occluded / too few samples) → `unknown`.
     ///   - region: Rectangle to judge against (`singles` for every rally-mode shot).
     ///   - hitter: The hitter's half, if known.
+    ///   - contactRadius: Optional ball contact-patch radius (m) subtracted from margin.
     public static func judge(_ c: ContactEstimate?, region: CallRegion = .singles,
-                             hitter: CourtHalf? = nil) -> LineCallResult {
+                             hitter: CourtHalf? = nil, contactRadius: Double = 0) -> LineCallResult {
         guard let c else {
             return LineCallResult(call: .unknown, marginM: .nan, sigmaM: .nan, depthZone: .unknown,
                                   court: Point2(.nan, .nan), tStar: .nan)
         }
-        let (m, xEdge) = margin(c.court, region: region)
+        let (m, xEdge) = margin(c.court, region: region, hitter: hitter, contactRadius: contactRadius)
         let sigma = xEdge ? c.sigmaX : c.sigmaY
         let zone = classifyDepthZone(c.court, doubles: region == .doubles, hitter: hitter)
-        return LineCallResult(call: call(marginM: m, sigmaM: sigma), marginM: m, sigmaM: sigma,
+        let verdict: LineCall = zone == .net ? .out : call(marginM: m, sigmaM: sigma)
+        return LineCallResult(call: verdict, marginM: m, sigmaM: sigma,
                               depthZone: zone, court: c.court, tStar: c.tStar)
     }
 }

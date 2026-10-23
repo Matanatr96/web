@@ -8,14 +8,75 @@ BMVC 2023; NTT, MIT licence) with its tennis weights `wasb_tennis_best.pth.tar`
 |---|---|
 | Inputs | `frame_t0`, `frame_t1`, `frame_t2`: RGB images 512 x 288, oldest first (ImageNet normalisation baked in) |
 | Output | `heatmaps`: (1, 3, 288, 512) float16 probabilities (sigmoid baked in); channel k is `frame_tk` |
-| Use | step=3: non-overlapping triplets, all 3 heads read; ball = heaviest blob above 0.5, probability-weighted centroid |
+| Use | step=3: non-overlapping triplets, all 3 heads read; ball = heaviest blob > 0.5, weighted centroid |
 | Format | mlprogram, FP16, iOS 17+, intended for the Neural Engine |
-| Trained on | TrackNet tennis dataset (broadcast, 1280 x 720); phone footage from behind the court is out of distribution |
+| Trained on | TrackNet tennis dataset (broadcast, 1280 x 720); phone footage from behind the court is new to it |
 
 Spec: `{"inputs": [["frame_t0", [288, 512]], ["frame_t1", [288, 512]], ["frame_t2", [288, 512]]], "outputs": [["heatmaps", [1, 3, 288, 512]]], "spec_version": 8}`
 
 ## Validation (`tools/validate_coreml.py`)
 
 ```json
-not run yet: `uv run python tools/validate_coreml.py`
+{
+  "strict": {
+    "ok": true
+  },
+  "triplets": {
+    "n": 5,
+    "source": "synthetic"
+  },
+  "fp16": {
+    "ok": null,
+    "skipped": "no FP16 convolutions on this CPU build of torch"
+  },
+  "spec": {
+    "ok": true,
+    "type": "mlProgram",
+    "inputs": {
+      "frame_t0": [
+        "imageType",
+        512,
+        288
+      ],
+      "frame_t1": [
+        "imageType",
+        512,
+        288
+      ],
+      "frame_t2": [
+        "imageType",
+        512,
+        288
+      ]
+    },
+    "outputs": {
+      "heatmaps": [
+        [
+          1,
+          3,
+          288,
+          512
+        ],
+        65552
+      ]
+    },
+    "metadata": {
+      "threshold": "0.5",
+      "com.github.apple.coremltools.source_dialect": "TorchScript",
+      "weights": "wasb_tennis_best.pth.tar",
+      "com.github.apple.coremltools.version": "9.0",
+      "com.github.apple.coremltools.conversion_date": "2026-10-23",
+      "heads": "frame_t0,frame_t1,frame_t2",
+      "weights_sha256": "9d391239ab10c733f8e5bfadf16ab72838e7a8ebc88e8ae2038501c03d42b4bb",
+      "com.github.apple.coremltools.source": "torch==2.14.0+cu130",
+      "normalisation": "ImageNet (baked in)",
+      "step": "3",
+      "input": "RGB 512x288"
+    }
+  },
+  "coreml": {
+    "ok": null,
+    "skipped": "Core ML predictions need macOS (this is Linux)"
+  }
+}
 ```

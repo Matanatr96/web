@@ -80,9 +80,9 @@ def rally(rng, cal: Calibration, fps: float = 60.0, noise_px: float = 0.5):
             v = aim(p, b, rng.uniform(0.8, 1.3))
             tl, pl, vl = landing(p, v)
             vb = np.r_[vl[:2] * FRICTION, -vl[2] * COR]
-            ts_ = np.arange(0.05, 1.6, 0.005)
+            ts_ = np.arange(0.20, 1.6, 0.005)
             P, V = simulate(pl, vb, ts_, return_velocity=True)
-            back = HALF_LEN + rng.uniform(0.2, 1.5)
+            back = HALF_LEN + rng.uniform(-1.5, 1.5)
             k = np.flatnonzero((np.abs(P[:, 1]) >= back) & (P[:, 2] >= 0.35))
             if len(k):
                 break

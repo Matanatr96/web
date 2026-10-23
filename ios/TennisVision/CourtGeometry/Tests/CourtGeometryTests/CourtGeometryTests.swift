@@ -163,6 +163,18 @@ final class CourtGeometryTests: XCTestCase {
         // A smooth far-court flight apex is a v extremum too, but no velocity discontinuity: not an event.
         let apex = bounceTrack(b: Point3(1, 6, 2.5), vIn: Point3(0.5, 15, 0), vOut: Point3(0.5, 15, 0))
         XCTAssertEqual(BallKinematics.classifyEvent(pre: apex.pre, post: apex.post, h0: cal.h0), .unknown)
+        XCTAssertEqual(BallKinematics.classifyEvent(pre: apex.pre, post: apex.post, h0: cal.h0, racketSound: true), .unknown)
+        // Far-court out-long bounce (>2 m past baseline) still has a bounce v-turn and is classified as .bounce.
+        let outLongBounce = bounceTrack(b: Point3(0.5, 14.5, Court.ballRadius), vIn: Point3(0.2, 22, -7), vOut: Point3(0.2, 15, 4.5))
+        XCTAssertEqual(BallKinematics.classifyEvent(pre: outLongBounce.pre, post: outLongBounce.post, h0: cal.h0), .bounce)
+        // Far-court inside-baseline hit / volley returning toward the near court is classified as .hit.
+        let farInCourtHit = bounceTrack(b: Point3(0.5, 7.0, 1.0), vIn: Point3(0, 16, -1), vOut: Point3(0, -22, 1.5))
+        XCTAssertEqual(BallKinematics.classifyEvent(pre: farInCourtHit.pre, post: farInCourtHit.post, h0: cal.h0, racketSound: true), .hit)
+        // Elevated near-baseline serve (Z = 2.7 m, downward vOut.z < 0) is classified as .hit and attributed to .near.
+        let nearServe = bounceTrack(b: Point3(0.5, -11.8, 2.7), vIn: Point3(0, 0.2, -1.5), vOut: Point3(0.4, 28, -3.5))
+        XCTAssertEqual(BallKinematics.classifyEvent(pre: nearServe.pre, post: nearServe.post, h0: cal.h0, racketSound: true), .hit)
+        let servePx = Point2(nearServe.pre.last!.u, nearServe.pre.last!.v)
+        XCTAssertEqual(BallKinematics.inferHitterHalf(at: servePx, post: nearServe.post, calibration: cal), .near)
     }
 
     func testCandidateSampleIsAssignedToTheBetterFittingArc() throws {
@@ -173,6 +185,10 @@ final class CourtGeometryTests: XCTestCase {
         let c = try XCTUnwrap(BallKinematics.contactPoint(around: lowest, in: all, hr: cal.hr))
         XCTAssertEqual(c.tStar, 0.5123, accuracy: 0.002)
         XCTAssertLessThan(distance(c.court, Point2(1.0, 9.0)), 0.05)
+        // With only 3 post-samples after `lowest`, E8 doubles sigma even via contactPoint(around:).
+        let shortWindow = Array(all[...(lowest + 3)])
+        let shortC = try XCTUnwrap(BallKinematics.contactPoint(around: lowest, in: shortWindow, hr: cal.hr))
+        XCTAssertGreaterThan(shortC.sigmaY, 1.9 * c.sigmaY)
     }
 
     func testQuadraticFitIsExact() throws {
@@ -202,10 +218,17 @@ final class CourtGeometryTests: XCTestCase {
         XCTAssertEqual(wide.marginM, 0.185, accuracy: 1e-9)
         XCTAssertTrue(wide.xEdge)
         XCTAssertEqual(LineCaller.margin(Point2(-4.3, 3), region: .doubles).marginM, -1.185, accuracy: 1e-9)
-        // Serve into the far deuce box: crossing the centre line is out by 0.2 m.
-        XCTAssertEqual(LineCaller.margin(Point2(0.2, 3), region: .serveDeuceFar).marginM, 0.2, accuracy: 1e-9)
+        // Serve into the far deuce box: crossing the 2.5 cm centre-line outer edge at X = 0.2 m is out by 0.175 m.
+        XCTAssertEqual(LineCaller.margin(Point2(0.2, 3), region: .serveDeuceFar).marginM, 0.175, accuracy: 1e-9)
         XCTAssertEqual(CallRegion.serviceBox(serverHalf: .near, side: .deuce), .serveDeuceFar)
         XCTAssertEqual(CallRegion.serviceBox(serverHalf: .far, side: .ad), .serveAdNear)
+        // Netted bounce (same side as hitter) is always judged .out with .net depthZone.
+        let netted = ContactEstimate(tStar: 1, pixel: Point2(0, 0), court: Point2(0, -3), sigmaX: 0.02, sigmaY: 0.02,
+                                     samplesPre: 4, samplesPost: 4)
+        let nettedRes = LineCaller.judge(netted, region: .singles, hitter: .near)
+        XCTAssertEqual(nettedRes.call, .out)
+        XCTAssertEqual(nettedRes.depthZone, .net)
+        XCTAssertEqual(nettedRes.marginM, 3.0, accuracy: 1e-9)
     }
 
     func testDepthZones() {
@@ -377,6 +400,10 @@ final class CourtGeometryTests: XCTestCase {
         XCTAssertEqual(k.score.games.me, 0)
         XCTAssertEqual(k.pointsText, "40-0")
         XCTAssertEqual(k.score.server, .me)
+        XCTAssertEqual(k.reconcile(observedSide: .ad, observedServer: .me),
+                       ScoreReconciliation(ok: true, expectedSide: .ad, expectedServer: .me, suggestion: nil))
+        XCTAssertEqual(k.reconcile(observedSide: .deuce, observedServer: .me).suggestion, .missedPoint)
+        XCTAssertEqual(k.reconcile(observedSide: .ad, observedServer: .opp).suggestion, .wrongServer)
     }
 
     // MARK: Watch protocol
@@ -420,11 +447,13 @@ final class CourtGeometryTests: XCTestCase {
                 continue
             }
             let p = Point2(xy[0], xy[1])
-            let m = LineCaller.margin(p, region: region).marginM
-            XCTAssertEqual(LineCaller.call(marginM: m, sigmaM: sigma).rawValue, expect["call"] as? String, name)
+            let m = LineCaller.margin(p, region: region, hitter: hitter).marginM
+            let zone = LineCaller.classifyDepthZone(p, doubles: doubles, hitter: hitter)
+            let verdict = zone == .net ? LineCall.out : LineCaller.call(marginM: m, sigmaM: sigma)
+            XCTAssertEqual(verdict.rawValue, expect["call"] as? String, name)
             if let em = num(expect["margin_m"]) { XCTAssertEqual(m, em, accuracy: 1e-6, name) }
-            if let zone = expect["depth_zone"] as? String {
-                XCTAssertEqual(LineCaller.classifyDepthZone(p, doubles: doubles, hitter: hitter).rawValue, zone, name)
+            if let expectedZone = expect["depth_zone"] as? String {
+                XCTAssertEqual(zone.rawValue, expectedZone, name)
             }
         }
         for case let h as [String: Any] in root["homography"] as? [Any] ?? [] {
