@@ -216,14 +216,23 @@ export interface MatchStatusEvent {
   sessionType: TennisSessionType | null;
   source: "web" | "ios" | null;
   fps: number | null;
+  doubles?: boolean | null;
+  court?: CourtCalibrationV1 | Record<string, unknown> | null;
 }
 
-/** `rally.ready` webhook: one processed rally and its shots. */
+/** `rally.ready` webhook: one processed rally and its shots, plus optional session metadata (e.g. from iOS). */
 export interface RallyReadyEvent {
   type: "rally.ready";
   eventId: string | null;
   matchId: string;
   rally: TennisRally;
+  sessionType: TennisSessionType | null;
+  source: "web" | "ios" | null;
+  doubles: boolean | null;
+  court: CourtCalibrationV1 | Record<string, unknown> | null;
+  score: TennisMatchScore | null;
+  stats: Partial<TennisSessionSummary> | null;
+  points: TennisPoint[];
 }
 
 /** `match.ready` webhook: all rallies processed. */
@@ -233,6 +242,12 @@ export interface MatchReadyEvent {
   matchId: string;
   ralliesDone: number | null;
   score: TennisMatchScore | null;
+  sessionType: TennisSessionType | null;
+  source: "web" | "ios" | null;
+  doubles: boolean | null;
+  court: CourtCalibrationV1 | Record<string, unknown> | null;
+  stats: Partial<TennisSessionSummary> | null;
+  points: TennisPoint[];
 }
 
 /** Webhook event sent by the Modal `tennis-rally` app to `/api/tennis/webhook`. */
@@ -458,6 +473,66 @@ export function validateCourtCalibration(input: {
 }
 
 /**
+ * Scales tapped calibration points from a screenshot/preview resolution to the video's native frame
+ * dimensions. Returns `points` unchanged when `fromSize` and `toSize` match.
+ *
+ * @param points - Tapped points `[u, v]` in `fromSize` pixel coordinates.
+ * @param fromSize - Resolution `[width, height]` of the calibration image/canvas.
+ * @param toSize - Native resolution `[width, height]` of the video.
+ * @returns Scaled points in `toSize` pixel coordinates.
+ */
+export function scaleCalibrationPoints(
+  points: Point2D[],
+  fromSize: [number, number],
+  toSize: [number, number],
+): Point2D[] {
+  const [fromW, fromH] = fromSize;
+  const [toW, toH] = toSize;
+  if (
+    !Number.isFinite(fromW) ||
+    !Number.isFinite(fromH) ||
+    !Number.isFinite(toW) ||
+    !Number.isFinite(toH) ||
+    fromW <= 0 ||
+    fromH <= 0 ||
+    toW <= 0 ||
+    toH <= 0 ||
+    (fromW === toW && fromH === toH)
+  ) {
+    return points;
+  }
+  const scaleX = toW / fromW;
+  const scaleY = toH / fromH;
+  return points.map(([u, v]) => [Math.round(u * scaleX), Math.round(v * scaleY)]);
+}
+
+/**
+ * Builds the `localStorage` key used to persist an in-progress resumable browser upload for a video file
+ * so interrupted uploads resume from `received_parts` instead of minting a new match UUID.
+ *
+ * @param file - File metadata (`name`, `size`, `lastModified`).
+ * @returns Deterministic storage key.
+ */
+export function getUploadResumeKey(file: { name: string; size: number; lastModified: number }): string {
+  return `tennis_upload_v1:${file.name}:${file.size}:${file.lastModified}`;
+}
+
+/**
+ * Converts a shot timestamp (`tBounceS` or `tHitS`) to clip-local seconds relative to `rallyStartS`
+ * for seeking trimmed `/clips/{match_id}/{rally_idx}.mp4` segments.
+ *
+ * @param timestampS - Shot timestamp in seconds (session-global or clip-local), or `null`.
+ * @param rallyStartS - Rally `start_s` in seconds.
+ * @returns Non-negative clip-local timestamp in seconds, or `null`.
+ */
+export function toClipLocalTimeS(timestampS: number | null, rallyStartS: number): number | null {
+  if (timestampS === null || !Number.isFinite(timestampS)) return null;
+  const start = Number.isFinite(rallyStartS) && rallyStartS > 0 ? rallyStartS : 0;
+  const local = timestampS >= start ? timestampS - start : timestampS;
+  return Math.max(0, Number(local.toFixed(4)));
+}
+
+/**
  * Converts a calibration into the `court` object for the Modal `POST /jobs` request, reordering the
  * tapped corners into `COURT_M` order `[farLeft, farRight, nearLeft, nearRight]`.
  *
@@ -501,14 +576,16 @@ export function courtToSvg(
 }
 
 /**
- * Classifies a shot's direction from its hit and bounce positions.
+ * Classifies a shot's direction from its hit and bounce positions, matching Python `rally_api._direction`:
+ * - `"middle"` when `|bounceX| < ITF_SINGLES_HALF_WIDTH_M / 3` (`1.372 m`) or the ball did not cross the net.
+ * - `"cross"` when `hitX` and `bounceX` have opposite signs (`hitX * bounceX < 0`).
+ * - `"dtl"` when `hitX` and `bounceX` are on the same wing.
  *
  * @param hitX - Hit X in metres.
  * @param hitY - Hit Y in metres.
  * @param bounceX - Bounce X in metres.
  * @param bounceY - Bounce Y in metres.
- * @returns `"middle"` if the bounce is within 1 m of the centre line, the hit within 0.6 m of it, or the
- *   ball did not cross the net; otherwise `"cross"` (switches wings) or `"dtl"` (same wing).
+ * @returns `"middle"`, `"cross"`, or `"dtl"`.
  */
 export function classifyDirection(
   hitX: number,
@@ -516,8 +593,8 @@ export function classifyDirection(
   bounceX: number,
   bounceY: number,
 ): TennisDirection {
-  if (Math.abs(bounceX) <= 1.0 || Math.abs(hitX) <= 0.6) return "middle";
-  if (hitY * bounceY > 0) return "middle";
+  if (!Number.isFinite(bounceX) || Math.abs(bounceX) < ITF_SINGLES_HALF_WIDTH_M / 3) return "middle";
+  if (Number.isFinite(hitY) && Number.isFinite(bounceY) && hitY * bounceY > 0) return "middle";
   return hitX * bounceX < 0 ? "cross" : "dtl";
 }
 
@@ -554,7 +631,8 @@ export function classifyDepthZone(
 }
 
 /**
- * Counts consecutive `in`/`close` calls before the first `out` (`unknown` calls neither count nor break).
+ * Counts consecutive shots before the first `out` call (`in`, `close`, and `unknown` count toward the
+ * streak, matching Python `scorekeeper.in_streak` and Swift `RallyCounter.recordBounce`).
  *
  * @param shots - Shots of one rally, in order.
  * @returns The rally's in-streak.
@@ -563,7 +641,7 @@ export function computeInStreak(shots: Pick<TennisShot, "call">[]): number {
   let streak = 0;
   for (const s of shots) {
     if (s.call === "out") break;
-    if (s.call === "in" || s.call === "close") streak += 1;
+    if (s.call === "in" || s.call === "close" || s.call === "unknown") streak += 1;
   }
   return streak;
 }
@@ -581,19 +659,20 @@ function mean1(values: number[]): number | null {
  * 10+ shot rallies, deep-zone %, play-on-after-out rallies, FH/BH speeds) are always computed;
  * Match Mode adds first-serve % and points won/lost.
  *
- * @param params - Session type, rallies, optional points, whether to hide 1-shot feeds from the
- *   average (default: hidden in Rally Mode), and optional Phase-3 biomechanics / coach notes.
+ * @param params - Session type, rallies, optional points, doubles flag, whether to hide 1-shot feeds
+ *   from the average (default: hidden in Rally Mode), and optional Phase-3 biomechanics / coach notes.
  * @returns The `TennisSessionSummary`.
  */
 export function summarizeSession(params: {
   sessionType: TennisSessionType;
   rallies: TennisRally[];
   points?: TennisPoint[];
+  doubles?: boolean;
   hideOneShotFeeds?: boolean;
   biomechTraits?: BiomechTraitScore[];
   coachNotes?: string | null;
 }): TennisSessionSummary {
-  const { sessionType, rallies, points = [], biomechTraits, coachNotes } = params;
+  const { sessionType, rallies, points = [], doubles = false, biomechTraits, coachNotes } = params;
   const hideOneShotFeeds = params.hideOneShotFeeds ?? sessionType === "rally";
   const lengthOf = (r: TennisRally): number => Math.max(r.shotCount, r.shots.length);
   const qualifying = hideOneShotFeeds ? rallies.filter((r) => lengthOf(r) >= 2) : rallies;
@@ -647,7 +726,7 @@ export function summarizeSession(params: {
         shot.depthZone && shot.depthZone !== "unknown"
           ? shot.depthZone
           : shot.bounceX !== null && shot.bounceY !== null
-            ? classifyDepthZone(shot.bounceX, shot.bounceY, false, shot.hitter)
+            ? classifyDepthZone(shot.bounceX, shot.bounceY, doubles, shot.hitter)
             : "unknown";
       if (stroke !== "serve" && (zone === "deep" || zone === "short" || zone === "out_long" || zone === "out_wide")) {
         depthEligible += 1;
@@ -798,6 +877,10 @@ function str(val: unknown): string | null {
   return typeof val === "string" ? val : null;
 }
 
+function boolOrNull(val: unknown): boolean | null {
+  return typeof val === "boolean" ? val : null;
+}
+
 function parseCall(val: unknown): TennisCall {
   return val === "in" || val === "out" || val === "close" ? val : "unknown";
 }
@@ -828,28 +911,150 @@ function asRecord(val: unknown): Record<string, unknown> {
   return val && typeof val === "object" && !Array.isArray(val) ? (val as Record<string, unknown>) : {};
 }
 
+function parsePlayerSide(val: unknown): "me" | "opp" | null {
+  if (val === "me" || val === "near") return "me";
+  if (val === "opp" || val === "far") return "opp";
+  return null;
+}
+
+/** Normalises court calibration JSON from either Web (`CourtCalibrationV1`), Modal (`ModalCourtJson`), or iOS. */
+function normalizeWebhookCourt(
+  raw: unknown,
+  doublesFallback = false,
+): CourtCalibrationV1 | Record<string, unknown> | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
+  const obj = raw as Record<string, unknown>;
+  if (obj.version === 1 && Array.isArray(obj.cornersPx)) {
+    return obj as unknown as CourtCalibrationV1;
+  }
+  if (Array.isArray(obj.size) && obj.size.length === 2 && Array.isArray(obj.court_px) && obj.court_px.length === 4) {
+    const [farLeft, farRight, nearLeft, nearRight] = obj.court_px as Quad;
+    const cornersPx: Quad = [nearLeft, nearRight, farRight, farLeft];
+    const postsPx =
+      Array.isArray(obj.posts_px) && obj.posts_px.length === 2 ? (obj.posts_px as [Point2D, Point2D]) : undefined;
+    const validated = validateCourtCalibration({
+      imageSize: [Number(obj.size[0]), Number(obj.size[1])],
+      cornersPx,
+      netPostsPx: postsPx,
+      doubles: typeof obj.doubles === "boolean" ? obj.doubles : doublesFallback,
+    });
+    if (validated.calibration) return validated.calibration;
+  }
+  return obj;
+}
+
+/** Normalises `points` array from webhook payloads or `tennis_points` rows. */
+function parseWebhookPoints(raw: unknown): TennisPoint[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item, idx) => {
+    const p = asRecord(item);
+    const winner = parsePlayerSide(p.winner) ?? "me";
+    const server = parsePlayerSide(p.server);
+    const src = p.source === "watch" || p.source === "web" || p.source === "auto" ? p.source : "auto";
+    return {
+      pointIdx: num(p.point_idx ?? p.pointIdx) ?? idx,
+      winner,
+      server,
+      source: src,
+      bookmarked: Boolean(p.bookmarked),
+      atS: num(p.at_s ?? p.atS ?? p.t_s ?? p.end_s),
+    };
+  });
+}
+
+/** Normalises a single biomechanics trait row from either camelCase or snake_case payloads. */
+function normalizeBiomechTrait(raw: unknown): BiomechTraitScore | null {
+  const t = asRecord(raw);
+  const trait = str(t.trait ?? t.name);
+  const strokeRaw = (str(t.stroke) ?? "fh").toLowerCase();
+  const stroke: "fh" | "bh" | "serve" =
+    strokeRaw === "bh" || strokeRaw === "backhand"
+      ? "bh"
+      : strokeRaw === "serve"
+        ? "serve"
+        : "fh";
+  const userValue = num(t.userValue ?? t.user_value ?? t.mean ?? t.value);
+  const proMean = num(t.proMean ?? t.pro_mean) ?? 0;
+  const proStd = num(t.proStd ?? t.pro_std) ?? 1;
+  const zScore = num(t.zScore ?? t.z_score) ?? (userValue !== null && proStd > 0 ? (userValue - proMean) / proStd : 0);
+  if (!trait || userValue === null) return null;
+  return {
+    trait,
+    stroke,
+    userValue: round1(userValue),
+    proMean: round1(proMean),
+    proStd: round1(proStd),
+    zScore: Number(zScore.toFixed(2)),
+    unit: str(t.unit) ?? "deg",
+  };
+}
+
+/** Normalises `stats` from webhook payloads or `tennis_matches.stats` (handling both camelCase & snake_case + Phase 3 `biomechanics`). */
+function normalizeStatsRecord(raw: unknown): Partial<TennisSessionSummary> {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return {};
+  const s = raw as Record<string, unknown>;
+  const out: Partial<TennisSessionSummary> & Record<string, unknown> = { ...s };
+
+  const biomechObj = asRecord(s.biomechanics);
+  const rawTraits = Array.isArray(s.biomechTraits)
+    ? s.biomechTraits
+    : Array.isArray(s.biomech_traits)
+      ? s.biomech_traits
+      : Array.isArray(s.biomechanics)
+        ? s.biomechanics
+        : Array.isArray(biomechObj.traits)
+          ? biomechObj.traits
+          : Array.isArray(biomechObj.biomech_traits)
+            ? biomechObj.biomech_traits
+            : Array.isArray(biomechObj.biomechTraits)
+              ? biomechObj.biomechTraits
+              : null;
+  if (rawTraits) {
+    const traits = rawTraits.map(normalizeBiomechTrait).filter((t): t is BiomechTraitScore => t !== null);
+    out.biomechTraits = traits;
+  }
+
+  const coachNotes =
+    str(s.coachNotes) ?? str(s.coach_notes) ?? str(biomechObj.coachNotes) ?? str(biomechObj.coach_notes);
+  if (coachNotes !== null) {
+    out.coachNotes = coachNotes;
+  }
+  return out;
+}
+
 /** Maps a snake_case shot (webhook payload or `tennis_shots` row) to a `TennisShot`. */
 function mapShot(raw: unknown, rallyIdx: number, fallbackIdx: number): TennisShot {
   const s = asRecord(raw);
+  const hitX = num(s.hit_x ?? s.hitX);
+  const hitY = num(s.hit_y ?? s.hitY);
+  const bounceX = num(s.bounce_x ?? s.bounceX);
+  const bounceY = num(s.bounce_y ?? s.bounceY);
+  const rawDir = parseDirection(s.direction);
+  const direction =
+    rawDir ??
+    (hitX !== null && hitY !== null && bounceX !== null && bounceY !== null
+      ? classifyDirection(hitX, hitY, bounceX, bounceY)
+      : null);
+  const rawLiveCall = s.live_call ?? s.liveCall;
   return {
     rallyIdx,
-    shotIdx: num(s.shot_idx) ?? fallbackIdx,
+    shotIdx: num(s.shot_idx ?? s.shotIdx) ?? fallbackIdx,
     hitter: parseHitter(s.hitter),
     stroke: str(s.stroke),
-    direction: parseDirection(s.direction),
-    depthZone: parseDepthZone(s.depth_zone),
-    tHitS: num(s.t_hit_s),
-    tBounceS: num(s.t_bounce_s),
-    hitX: num(s.hit_x),
-    hitY: num(s.hit_y),
-    bounceX: num(s.bounce_x),
-    bounceY: num(s.bounce_y),
-    speedMph: num(s.speed_mph),
-    netClearanceM: num(s.net_clearance_m),
+    direction,
+    depthZone: parseDepthZone(s.depth_zone ?? s.depthZone),
+    tHitS: num(s.t_hit_s ?? s.tHitS),
+    tBounceS: num(s.t_bounce_s ?? s.tBounceS),
+    hitX,
+    hitY,
+    bounceX,
+    bounceY,
+    speedMph: num(s.speed_mph ?? s.speedMph),
+    netClearanceM: num(s.net_clearance_m ?? s.netClearanceM),
     call: parseCall(s.call),
-    marginM: num(s.margin_m),
-    sigmaM: num(s.sigma_m),
-    liveCall: s.live_call ? parseCall(s.live_call) : null,
+    marginM: num(s.margin_m ?? s.marginM),
+    sigmaM: num(s.sigma_m ?? s.sigmaM),
+    liveCall: rawLiveCall ? parseCall(rawLiveCall) : null,
   };
 }
 
@@ -889,20 +1094,26 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
   const eventId = str(obj.event_id);
 
   switch (obj.type) {
+    case "match.failed":
     case "match.status": {
-      if (obj.status !== "processing" && obj.status !== "failed") {
+      const status = obj.type === "match.failed" ? "failed" : obj.status;
+      if (status !== "processing" && status !== "failed") {
         throw new Error("INVALID_ARGUMENT: match.status requires status processing|failed.");
       }
+      const doubles = boolOrNull(obj.doubles);
+      const court = normalizeWebhookCourt(obj.court, doubles ?? false);
       return {
         type: "match.status",
         eventId,
         matchId,
-        status: obj.status,
+        status,
         error: str(obj.error),
         ralliesExpected: num(obj.rallies_expected),
         sessionType: parseSessionType(obj.session_type),
         source: parseSource(obj.source),
         fps: num(obj.fps),
+        ...(doubles !== null ? { doubles } : {}),
+        ...(court !== null ? { court } : {}),
       };
     }
     case "rally.ready": {
@@ -911,19 +1122,65 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
       if (rallyIdx === null || rallyIdx < 0 || !Number.isInteger(rallyIdx) || num(r.start_s) === null || num(r.end_s) === null) {
         throw new Error("INVALID_ARGUMENT: rally.ready requires rally.rally_idx, start_s and end_s.");
       }
-      const rawShots = Array.isArray(obj.shots) ? obj.shots : [];
+      const rawShots = Array.isArray(obj.shots) ? obj.shots : Array.isArray(r.shots) ? r.shots : [];
       const shots = rawShots.map((s, i) => mapShot(s, rallyIdx, i));
-      // Bookmarks are owned by the web UI / Watch, never by Modal.
-      return { type: "rally.ready", eventId, matchId, rally: mapRally({ ...r, bookmarked: false }, shots) };
+      // Propagate rally-level or event-level live_call (e.g. from iOS live calls) onto the decisive shot if not set per-shot.
+      const fallbackLiveCall = r.live_call ?? obj.live_call;
+      if (fallbackLiveCall && shots.length > 0 && shots.every((s) => s.liveCall === null)) {
+        if (Array.isArray(fallbackLiveCall)) {
+          shots.forEach((s, idx) => {
+            if (idx < fallbackLiveCall.length && fallbackLiveCall[idx]) {
+              s.liveCall = parseCall(fallbackLiveCall[idx]);
+            }
+          });
+        } else {
+          const parsedLive = parseCall(fallbackLiveCall);
+          const targetShot = shots.find((s) => s.call === "out" || s.call === "close") ?? shots[shots.length - 1];
+          targetShot.liveCall = parsedLive;
+        }
+      }
+      const bookmarked = Boolean(r.bookmarked ?? obj.bookmarked);
+      const doubles = boolOrNull(obj.doubles ?? r.doubles);
+      const score =
+        obj.score && typeof obj.score === "object"
+          ? (obj.score as TennisMatchScore)
+          : r.score && typeof r.score === "object"
+            ? (r.score as TennisMatchScore)
+            : null;
+      const rawPoints = obj.points ?? r.points ?? (score ? asRecord(score).history ?? asRecord(score).points_log : undefined);
+      return {
+        type: "rally.ready",
+        eventId,
+        matchId,
+        rally: mapRally({ ...r, bookmarked }, shots),
+        sessionType: parseSessionType(obj.session_type ?? r.session_type),
+        source: parseSource(obj.source ?? r.source),
+        doubles,
+        court: normalizeWebhookCourt(obj.court ?? r.court, doubles ?? false),
+        score,
+        stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
+        points: parseWebhookPoints(rawPoints),
+      };
     }
-    case "match.ready":
+    case "session.finalize":
+    case "match.ready": {
+      const doubles = boolOrNull(obj.doubles);
+      const score = obj.score && typeof obj.score === "object" ? (obj.score as TennisMatchScore) : null;
+      const rawPoints = obj.points ?? (score ? asRecord(score).history ?? asRecord(score).points_log : undefined);
       return {
         type: "match.ready",
         eventId,
         matchId,
         ralliesDone: num(obj.rallies_done),
-        score: obj.score && typeof obj.score === "object" ? (obj.score as TennisMatchScore) : null,
+        score,
+        sessionType: parseSessionType(obj.session_type),
+        source: parseSource(obj.source),
+        doubles,
+        court: normalizeWebhookCourt(obj.court, doubles ?? false),
+        stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
+        points: parseWebhookPoints(rawPoints),
       };
+    }
     default:
       throw new Error("INVALID_ARGUMENT: unsupported webhook event type.");
   }
@@ -932,23 +1189,28 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
 /**
  * Applies a webhook event to Postgres with idempotent upserts (service-role client; no Storage).
  * Replays are no-ops, late `match.status` events never move a `ready` session backwards, and
- * `rally.ready` never overwrites a rally's `bookmarked` flag. Afterwards the session summary is
- * recomputed from the stored rows and cached in `tennis_matches.stats`.
+ * `rally.ready` preserves `bookmarked`, `live_call`, `session_type`, `doubles`, `court`, `score`,
+ * `stats`, and `points` while transitioning iOS sessions to `ready` once rallies are present.
  *
  * @param event - Parsed webhook event.
+ * @param client - Optional Supabase client override for testing.
  * @returns `{ matchId }`.
  * @throws Error when a database write fails.
  */
-export async function applyWebhookEvent(event: TennisWebhookEvent): Promise<{ matchId: string }> {
-  const supabase = getServiceClient();
+export async function applyWebhookEvent(
+  event: TennisWebhookEvent,
+  client?: ReturnType<typeof getServiceClient>,
+): Promise<{ matchId: string }> {
+  const supabase = client ?? getServiceClient();
   const now = new Date().toISOString();
 
   // Web sessions are created by createTennisMatch; iOS sessions first appear here.
   const seed: Record<string, unknown> = { id: event.matchId, source: "ios", status: "processing" };
-  if (event.type === "match.status") {
-    if (event.source) seed.source = event.source;
-    if (event.sessionType) seed.session_type = event.sessionType;
-  }
+  if (event.source) seed.source = event.source;
+  if (event.sessionType) seed.session_type = event.sessionType;
+  if (typeof event.doubles === "boolean") seed.doubles = event.doubles;
+  if (event.court) seed.court = event.court;
+
   const { error: seedErr } = await supabase
     .from("tennis_matches")
     .upsert(seed, { onConflict: "id", ignoreDuplicates: true });
@@ -958,7 +1220,11 @@ export async function applyWebhookEvent(event: TennisWebhookEvent): Promise<{ ma
     const update: Record<string, unknown> = { status: event.status, updated_at: now };
     if (event.error !== null) update.error = event.error;
     if (event.ralliesExpected !== null) update.rallies_expected = event.ralliesExpected;
+    if (event.sessionType !== null) update.session_type = event.sessionType;
+    if (event.source !== null) update.source = event.source;
     if (event.fps !== null) update.fps = event.fps;
+    if (typeof event.doubles === "boolean") update.doubles = event.doubles;
+    if (event.court) update.court = event.court;
     const { error } = await supabase
       .from("tennis_matches")
       .update(update)
@@ -969,20 +1235,22 @@ export async function applyWebhookEvent(event: TennisWebhookEvent): Promise<{ ma
 
   if (event.type === "rally.ready") {
     const r = event.rally;
-    const { error: rallyErr } = await supabase.from("tennis_rallies").upsert(
-      {
-        match_id: event.matchId,
-        rally_idx: r.rallyIdx,
-        start_s: r.startS,
-        end_s: r.endS,
-        shot_count: r.shotCount,
-        in_streak: r.inStreak,
-        clip_url: r.clipUrl,
-        ball_track: r.ballTrack,
-        drift_px: r.driftPx,
-      },
-      { onConflict: "match_id,rally_idx" },
-    );
+    const rallyRow: Record<string, unknown> = {
+      match_id: event.matchId,
+      rally_idx: r.rallyIdx,
+      start_s: r.startS,
+      end_s: r.endS,
+      shot_count: r.shotCount,
+      in_streak: r.inStreak,
+      clip_url: r.clipUrl,
+      ball_track: r.ballTrack,
+      drift_px: r.driftPx,
+    };
+    if (r.bookmarked) rallyRow.bookmarked = true;
+
+    const { error: rallyErr } = await supabase
+      .from("tennis_rallies")
+      .upsert(rallyRow, { onConflict: "match_id,rally_idx" });
     if (rallyErr) throw new Error(`tennis_rallies upsert failed: ${rallyErr.message}`);
 
     if (r.shots.length > 0) {
@@ -1012,21 +1280,87 @@ export async function applyWebhookEvent(event: TennisWebhookEvent): Promise<{ ma
       );
       if (shotsErr) throw new Error(`tennis_shots upsert failed: ${shotsErr.message}`);
     }
+
+    const matchMetaUpdate: Record<string, unknown> = { updated_at: now };
+    if (event.sessionType !== null) matchMetaUpdate.session_type = event.sessionType;
+    if (event.source !== null) matchMetaUpdate.source = event.source;
+    if (event.doubles !== null) matchMetaUpdate.doubles = event.doubles;
+    if (event.court !== null) matchMetaUpdate.court = event.court;
+    if (event.score !== null) matchMetaUpdate.score = event.score;
+    if (Object.keys(matchMetaUpdate).length > 1) {
+      const { error: metaErr } = await supabase
+        .from("tennis_matches")
+        .update(matchMetaUpdate)
+        .eq("id", event.matchId);
+      if (metaErr) throw new Error(`tennis_matches update failed: ${metaErr.message}`);
+    }
+  }
+
+  if ((event.type === "rally.ready" || event.type === "match.ready") && event.points.length > 0) {
+    const { error: pointsErr } = await supabase.from("tennis_points").upsert(
+      event.points.map((p) => ({
+        match_id: event.matchId,
+        point_idx: p.pointIdx,
+        winner: p.winner,
+        server: p.server,
+        source: p.source,
+        bookmarked: p.bookmarked,
+        at_s: p.atS,
+      })),
+      { onConflict: "match_id,point_idx" },
+    );
+    if (pointsErr) throw new Error(`tennis_points upsert failed: ${pointsErr.message}`);
   }
 
   if (event.type === "match.ready") {
-    const { error } = await supabase
-      .from("tennis_matches")
-      .update({ status: "ready", score: event.score, error: null, updated_at: now })
-      .eq("id", event.matchId);
+    const matchUpdate: Record<string, unknown> = { status: "ready", error: null, updated_at: now };
+    if (event.score !== null) matchUpdate.score = event.score;
+    if (event.sessionType !== null) matchUpdate.session_type = event.sessionType;
+    if (event.source !== null) matchUpdate.source = event.source;
+    if (event.doubles !== null) matchUpdate.doubles = event.doubles;
+    if (event.court !== null) matchUpdate.court = event.court;
+    const { error } = await supabase.from("tennis_matches").update(matchUpdate).eq("id", event.matchId);
     if (error) throw new Error(`tennis_matches update failed: ${error.message}`);
   }
 
-  const detail = await getTennisMatch(event.matchId, true);
+  const detail = await getTennisMatch(event.matchId, true, supabase);
   if (detail) {
+    const eventStats = event.type === "rally.ready" || event.type === "match.ready" ? event.stats : null;
+    const mergedBiomechTraits = eventStats?.biomechTraits ?? detail.stats.biomechTraits;
+    const mergedCoachNotes =
+      eventStats?.coachNotes !== undefined ? eventStats.coachNotes : detail.stats.coachNotes;
+    const rawBiomech =
+      eventStats && "biomechanics" in eventStats
+        ? (eventStats as Record<string, unknown>).biomechanics
+        : detail.stats && "biomechanics" in detail.stats
+          ? (detail.stats as Record<string, unknown>).biomechanics
+          : undefined;
+    const mergedStats: TennisSessionSummary & Record<string, unknown> = {
+      ...detail.summary,
+      ...(mergedBiomechTraits ? { biomechTraits: mergedBiomechTraits } : {}),
+      ...(mergedCoachNotes !== undefined ? { coachNotes: mergedCoachNotes } : {}),
+      ...(rawBiomech !== undefined ? { biomechanics: rawBiomech } : {}),
+    };
+
+    const statsUpdate: Record<string, unknown> = {
+      rallies_done: detail.rallies.length,
+      stats: mergedStats,
+      updated_at: now,
+    };
+    if (
+      event.type === "rally.ready" &&
+      detail.rallies.length > 0 &&
+      (detail.source === "ios" ||
+        detail.ralliesExpected === null ||
+        detail.rallies.length >= detail.ralliesExpected)
+    ) {
+      statsUpdate.status = "ready";
+      statsUpdate.error = null;
+    }
+
     const { error } = await supabase
       .from("tennis_matches")
-      .update({ rallies_done: detail.rallies.length, stats: detail.summary, updated_at: now })
+      .update(statsUpdate)
       .eq("id", event.matchId);
     if (error) throw new Error(`tennis_matches stats update failed: ${error.message}`);
   }
@@ -1035,6 +1369,8 @@ export async function applyWebhookEvent(event: TennisWebhookEvent): Promise<{ ma
 
 function mapMatchRow(row: Record<string, unknown>): TennisMatch {
   const status = row.status;
+  const doubles = Boolean(row.doubles);
+  const court = normalizeWebhookCourt(row.court, doubles) as CourtCalibrationV1 | null;
   return {
     id: String(row.id),
     title: str(row.title),
@@ -1042,13 +1378,13 @@ function mapMatchRow(row: Record<string, unknown>): TennisMatch {
     sessionType: row.session_type === "match" ? "match" : "rally",
     source: row.source === "ios" ? "ios" : "web",
     status: status === "processing" || status === "ready" || status === "failed" ? status : "uploading",
-    court: row.court && typeof row.court === "object" ? (row.court as CourtCalibrationV1) : null,
-    doubles: Boolean(row.doubles),
+    court,
+    doubles,
     fps: num(row.fps),
     ralliesExpected: num(row.rallies_expected),
     ralliesDone: num(row.rallies_done) ?? 0,
     score: row.score && typeof row.score === "object" ? (row.score as TennisMatchScore) : null,
-    stats: asRecord(row.stats) as Partial<TennisSessionSummary>,
+    stats: normalizeStatsRecord(row.stats),
     error: str(row.error),
     createdAt: String(row.created_at ?? ""),
     updatedAt: String(row.updated_at ?? ""),
@@ -1081,12 +1417,17 @@ export async function getTennisMatches(filter: TennisSessionType | "all" = "all"
  *
  * @param id - Session UUID.
  * @param useServiceRole - Use the service-role client (webhook handler) instead of the public client.
+ * @param client - Optional Supabase client override for testing.
  * @returns The session detail, or `null` for an invalid UUID or a missing session.
  * @throws Error when a child-table query fails.
  */
-export async function getTennisMatch(id: string, useServiceRole = false): Promise<TennisMatchDetail | null> {
+export async function getTennisMatch(
+  id: string,
+  useServiceRole = false,
+  client?: ReturnType<typeof getServiceClient>,
+): Promise<TennisMatchDetail | null> {
   if (!isValidUuid(id)) return null;
-  const supabase = useServiceRole ? getServiceClient() : getSupabase();
+  const supabase = client ?? (useServiceRole ? getServiceClient() : getSupabase());
   const [matchRes, rallyRes, shotRes, pointRes] = await Promise.all([
     supabase.from("tennis_matches").select("*").eq("id", id).maybeSingle(),
     supabase.from("tennis_rallies").select("*").eq("match_id", id).order("rally_idx"),
@@ -1110,19 +1451,18 @@ export async function getTennisMatch(id: string, useServiceRole = false): Promis
   const rallies = ((rallyRes.data ?? []) as Array<Record<string, unknown>>).map((row) =>
     mapRally(row, shotsByRally.get(num(row.rally_idx) ?? 0) ?? []),
   );
-  const points: TennisPoint[] = ((pointRes.data ?? []) as Array<Record<string, unknown>>).map((p) => ({
-    pointIdx: num(p.point_idx) ?? 0,
-    winner: p.winner === "opp" ? "opp" : "me",
-    server: p.server === "me" || p.server === "opp" ? p.server : null,
-    source: p.source === "watch" || p.source === "web" ? p.source : "auto",
-    bookmarked: Boolean(p.bookmarked),
-    atS: num(p.at_s),
-  }));
+  const dbPoints = parseWebhookPoints(pointRes.data ?? []);
+  const fallbackScorePoints =
+    dbPoints.length === 0 && match.score
+      ? parseWebhookPoints(asRecord(match.score).history ?? asRecord(match.score).points_log)
+      : [];
+  const points = dbPoints.length > 0 ? dbPoints : fallbackScorePoints;
 
   const summary = summarizeSession({
     sessionType: match.sessionType,
     rallies,
     points,
+    doubles: match.doubles,
     biomechTraits: match.stats.biomechTraits,
     coachNotes: match.stats.coachNotes,
   });
