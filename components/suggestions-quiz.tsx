@@ -2,6 +2,11 @@
 
 import { useMemo, useState } from "react";
 import type { Restaurant } from "@/lib/types";
+import {
+  isRatedRestaurant,
+  pickRandom,
+  suggestPersonalRestaurants,
+} from "@/lib/restaurants-query";
 
 type Step = "city" | "category" | "cuisine" | "results";
 
@@ -21,17 +26,6 @@ type PlacesSuggestion = {
   maps_url: string;
 };
 
-function pickRandom<T>(items: T[], count: number, seed: number): T[] {
-  if (items.length <= count) return [...items];
-  // Deterministic-ish shuffle keyed by seed so reshuffle re-renders give a new pick.
-  const indexed = items.map((item, i) => ({
-    item,
-    key: Math.sin((i + 1) * (seed + 1) * 9301) * 233280,
-  }));
-  indexed.sort((a, b) => a.key - b.key);
-  return indexed.slice(0, count).map((x) => x.item);
-}
-
 export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaurant[] }) {
   const [step, setStep] = useState<Step>("city");
   const [city, setCity] = useState<string | null>(null);
@@ -39,28 +33,33 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
   const [category, setCategory] = useState<Category | null>(null);
   const [cuisineShuffle, setCuisineShuffle] = useState(0);
 
+  const ratedRestaurants = useMemo(
+    () => restaurants.filter(isRatedRestaurant),
+    [restaurants],
+  );
+
   const allCities = useMemo(() => {
-    return Array.from(new Set(restaurants.map((r) => r.city))).sort();
-  }, [restaurants]);
+    return Array.from(new Set(ratedRestaurants.map((r) => r.city))).sort();
+  }, [ratedRestaurants]);
 
   const categoriesAvailable = useMemo(() => {
     if (!city) return [];
     const set = new Set(
-      restaurants.filter((r) => r.city === city).map((r) => r.category),
+      ratedRestaurants.filter((r) => r.city === city).map((r) => r.category),
     );
     return CATEGORIES.filter((c) => set.has(c));
-  }, [restaurants, city]);
+  }, [ratedRestaurants, city]);
 
   const cuisinesInCity = useMemo(() => {
     if (!city || !category) return [];
     return Array.from(
       new Set(
-        restaurants
+        ratedRestaurants
           .filter((r) => r.city === city && r.category === category)
           .flatMap((r) => r.cuisines),
       ),
     ).sort();
-  }, [restaurants, city, category]);
+  }, [ratedRestaurants, city, category]);
 
   const cuisineOptions = useMemo(
     () => pickRandom(cuisinesInCity, MAX_OPTIONS, cuisineShuffle),
@@ -69,15 +68,13 @@ export default function SuggestionsQuiz({ restaurants }: { restaurants: Restaura
 
   const results = useMemo(() => {
     if (!city || !cuisine || !category) return [];
-    return restaurants
-      .filter(
-        (r) =>
-          r.city === city &&
-          r.cuisines.includes(cuisine) &&
-          r.category === category,
-      )
-      .sort((a, b) => b.overall - a.overall)
-      .slice(0, MAX_RESULTS);
+    return suggestPersonalRestaurants(restaurants, {
+      city,
+      cuisine,
+      category,
+      mode: "rated",
+      maxResults: MAX_RESULTS,
+    });
   }, [restaurants, city, cuisine, category]);
 
   function reset() {

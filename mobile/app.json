@@ -1,0 +1,32 @@
+{
+  "expo": {
+    "name": "TLM Restaurants",
+    "slug": "tlm-restaurants",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "scheme": "tlmrestaurants",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "com.thelastmattapalli.restaurants",
+      "associatedDomains": [
+        "applinks:www.thelastmattapalli.com",
+        "applinks:thelastmattapalli.com"
+      ],
+      "infoPlist": {
+        "NSCameraUsageDescription": "Snap photos of restaurant receipts to itemize and split the bill, or attach dish photos to a visit.",
+        "NSPhotoLibraryUsageDescription": "Choose receipt or dish photos from your library.",
+        "NSLocationWhenInUseUsageDescription": "Find rated restaurants and vegan-friendly suggestions near your current location.",
+        "NSFaceIDUsageDescription": "Unlock admin controls to add restaurants, log visits, and manage receipts."
+      }
+    },
+    "plugins": [
+      "expo-router",
+      "expo-secure-store",
+      "expo-local-authentication",
+      "expo-location",
+      "expo-image-picker"
+    ]
+  }
+}

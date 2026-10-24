@@ -154,3 +154,126 @@ export function filterAdminRestaurants(
   return list;
 }
 
+/**
+ * Determine whether a restaurant has been rated (as opposed to an unrated
+ * "Want to Go" bookmark stub where `food` is null and `overall` is 0).
+ *
+ * @param r - Restaurant record (or object containing the `food` rating field).
+ * @returns True when `food` is non-null, false for unrated bookmarks.
+ */
+export function isRatedRestaurant(r: Pick<Restaurant, "food">): boolean {
+  return r.food !== null && r.food !== undefined;
+}
+
+/**
+ * Partition a restaurant list into rated favorites (`food !== null`) and
+ * unrated "Want to Go" bookmarks (`food === null`).
+ *
+ * @param restaurants - Full list of restaurant records.
+ * @returns Object containing `rated` and `wantToGo` arrays preserving input order.
+ */
+export function partitionRestaurants(restaurants: Restaurant[]): {
+  rated: Restaurant[];
+  wantToGo: Restaurant[];
+} {
+  const rated: Restaurant[] = [];
+  const wantToGo: Restaurant[] = [];
+  for (const r of restaurants) {
+    if (isRatedRestaurant(r)) {
+      rated.push(r);
+    } else {
+      wantToGo.push(r);
+    }
+  }
+  return { rated, wantToGo };
+}
+
+/**
+ * Deterministically sample up to `count` items from `items` using a numeric
+ * `seed` so UI reshuffle actions produce a repeatable pseudo-random subset.
+ *
+ * @param items - Source array of items to sample from.
+ * @param count - Maximum number of items to return.
+ * @param seed - Non-negative integer shuffle seed.
+ * @returns Sampled array of at most `count` items.
+ */
+export function pickRandom<T>(items: T[], count: number, seed: number): T[] {
+  if (items.length <= count) return [...items];
+  const indexed = items.map((item, i) => ({
+    item,
+    key: Math.sin((i + 1) * (seed + 1) * 9301) * 233280,
+  }));
+  indexed.sort((a, b) => a.key - b.key);
+  return indexed.slice(0, count).map((x) => x.item);
+}
+
+export type SuggestPersonalOptions = {
+  city?: string;
+  category?: string;
+  cuisine?: string;
+  mode?: "rated" | "want_to_go";
+  maxResults?: number;
+};
+
+/**
+ * Filter and rank personal restaurants for the Suggestions / Decide flow.
+ * Explicitly separates rated favorites (`r.food !== null`) from unrated
+ * "Want to Go" bookmarks (`r.food === null`) so unrated 0.00 rows never leak
+ * into rated picks.
+ *
+ * @param restaurants - Full list of restaurant records.
+ * @param opts - Optional city, category, cuisine, mode ("rated" | "want_to_go"), and maxResults cap.
+ * @returns Ranked matching restaurants sorted by `overall` descending (then name ascending).
+ */
+export function suggestPersonalRestaurants(
+  restaurants: Restaurant[],
+  opts: SuggestPersonalOptions = {},
+): Restaurant[] {
+  const mode = opts.mode ?? "rated";
+  const city = opts.city?.trim() ?? "";
+  const category = opts.category?.trim() ?? "";
+  const cuisine = opts.cuisine?.trim() ?? "";
+
+  const filtered = restaurants.filter((r) => {
+    if (mode === "rated" && !isRatedRestaurant(r)) return false;
+    if (mode === "want_to_go" && isRatedRestaurant(r)) return false;
+    if (city && r.city !== city) return false;
+    if (category && r.category !== category) return false;
+    if (cuisine && !r.cuisines.includes(cuisine)) return false;
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    if (b.overall !== a.overall) return b.overall - a.overall;
+    return a.name.localeCompare(b.name);
+  });
+
+  if (typeof opts.maxResults === "number" && opts.maxResults > 0) {
+    return filtered.slice(0, opts.maxResults);
+  }
+  return filtered;
+}
+
+/**
+ * Compute a Bayesian-weighted average rating to rank Google Places discovery
+ * results by balancing star rating against review volume.
+ *
+ * @param rating - Observed average rating (e.g. 0.0 to 5.0).
+ * @param reviewCount - Total number of user reviews `v`.
+ * @param priorWeight - Prior pseudo-count weight `m` (defaults to 50).
+ * @param priorMean - Prior mean rating `C` (defaults to 4.0).
+ * @returns Bayesian-adjusted score.
+ */
+export function bayesianScore(
+  rating: number,
+  reviewCount: number,
+  priorWeight: number = 50,
+  priorMean: number = 4.0,
+): number {
+  const v = reviewCount;
+  const m = priorWeight;
+  if (v + m <= 0) return 0;
+  return (v / (v + m)) * rating + (m / (v + m)) * priorMean;
+}
+
+

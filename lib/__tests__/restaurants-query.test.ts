@@ -255,3 +255,136 @@ describe("filterAdminRestaurants", () => {
   });
 });
 
+describe("isRatedRestaurant & partitionRestaurants", () => {
+  it("distinguishes rated rows from unrated Want-to-Go bookmarks", async () => {
+    const { isRatedRestaurant, partitionRestaurants } = await import(
+      "@/lib/restaurants-query"
+    );
+    const ratedRow = mapRestaurantRow({
+      ...baseRow,
+      id: 1,
+      name: "Rated Spot",
+      food: 8.5,
+      overall: 8.4,
+    });
+    const unratedRow = mapRestaurantRow({
+      ...baseRow,
+      id: 2,
+      name: "Want To Go Spot",
+      food: null,
+      overall: 0,
+    });
+
+    expect(isRatedRestaurant(ratedRow)).toBe(true);
+    expect(isRatedRestaurant(unratedRow)).toBe(false);
+
+    const partitioned = partitionRestaurants([ratedRow, unratedRow]);
+    expect(partitioned.rated.map((r) => r.name)).toEqual(["Rated Spot"]);
+    expect(partitioned.wantToGo.map((r) => r.name)).toEqual(["Want To Go Spot"]);
+  });
+});
+
+describe("pickRandom", () => {
+  it("returns all items when count >= items.length", async () => {
+    const { pickRandom } = await import("@/lib/restaurants-query");
+    expect(pickRandom(["A", "B"], 3, 0)).toEqual(["A", "B"]);
+  });
+
+  it("deterministically samples count items and varies with seed", async () => {
+    const { pickRandom } = await import("@/lib/restaurants-query");
+    const items = ["Italian", "Sushi", "Mexican", "Thai", "Indian", "Korean"];
+    const first = pickRandom(items, 3, 0);
+    const repeat = pickRandom(items, 3, 0);
+    const reshuffled = pickRandom(items, 3, 1);
+
+    expect(first).toHaveLength(3);
+    expect(first).toEqual(repeat);
+    expect(reshuffled).toHaveLength(3);
+    expect(reshuffled).not.toEqual(first);
+  });
+});
+
+describe("suggestPersonalRestaurants", () => {
+  it("excludes unrated bookmarks in rated mode and returns them in want_to_go mode", async () => {
+    const { suggestPersonalRestaurants } = await import("@/lib/restaurants-query");
+    const rows = [
+      mapRestaurantRow({
+        ...baseRow,
+        id: 1,
+        name: "Top Sushi",
+        city: "SF",
+        category: "Food",
+        overall: 9.1,
+        food: 9.2,
+        restaurant_cuisines: [{ cuisine_name: "Sushi" }],
+      }),
+      mapRestaurantRow({
+        ...baseRow,
+        id: 2,
+        name: "Good Sushi",
+        city: "SF",
+        category: "Food",
+        overall: 8.3,
+        food: 8.4,
+        restaurant_cuisines: [{ cuisine_name: "Sushi" }],
+      }),
+      mapRestaurantRow({
+        ...baseRow,
+        id: 3,
+        name: "Bookmarked Sushi",
+        city: "SF",
+        category: "Food",
+        overall: 0,
+        food: null,
+        restaurant_cuisines: [{ cuisine_name: "Sushi" }],
+      }),
+    ];
+
+    const ratedPicks = suggestPersonalRestaurants(rows, {
+      city: "SF",
+      category: "Food",
+      cuisine: "Sushi",
+      mode: "rated",
+    });
+    expect(ratedPicks.map((r) => r.name)).toEqual(["Top Sushi", "Good Sushi"]);
+
+    const wantToGoPicks = suggestPersonalRestaurants(rows, {
+      city: "SF",
+      category: "Food",
+      cuisine: "Sushi",
+      mode: "want_to_go",
+    });
+    expect(wantToGoPicks.map((r) => r.name)).toEqual(["Bookmarked Sushi"]);
+  });
+});
+
+describe("bayesianScore", () => {
+  it("weights rating toward priorMean when reviewCount is small", async () => {
+    const { bayesianScore } = await import("@/lib/restaurants-query");
+    // When v == m (50), score is exact midpoint between rating (5.0) and priorMean (4.0) -> 4.5
+    expect(bayesianScore(5.0, 50, 50, 4.0)).toBeCloseTo(4.5, 5);
+    // Higher review count with same rating scores higher when rating > priorMean
+    expect(bayesianScore(4.8, 500)).toBeGreaterThan(bayesianScore(4.8, 60));
+  });
+});
+
+describe("verifyAdminToken", () => {
+  it("accepts either the raw ADMIN_PASSWORD or its SHA-256 hex session token", async () => {
+    const prev = process.env.ADMIN_PASSWORD;
+    process.env.ADMIN_PASSWORD = "test-secret-password";
+    try {
+      const { verifyAdminToken, getAdminSessionToken } = await import("@/lib/auth");
+      const token = getAdminSessionToken();
+      expect(token).toBeTruthy();
+      expect(verifyAdminToken("test-secret-password")).toBe(true);
+      expect(verifyAdminToken(token!)).toBe(true);
+      expect(verifyAdminToken("wrong-password")).toBe(false);
+    } finally {
+      if (prev === undefined) delete process.env.ADMIN_PASSWORD;
+      else process.env.ADMIN_PASSWORD = prev;
+    }
+  });
+});
+
+
+

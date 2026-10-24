@@ -49,18 +49,39 @@ type BuiltInput = {
 
 function buildInput(fd: FormData): BuiltInput {
   const category = requiredStr(fd, "category");
-  const food = num(fd, "food");
-  const value = num(fd, "value");
-  const service = num(fd, "service");
-  const ambiance = num(fd, "ambiance");
-  const vegan_options = num(fd, "vegan_options");
+  const unratedFlag = optionalStr(fd, "unrated") === "true";
+  const rawFood = num(fd, "food");
+  const rawValue = num(fd, "value");
+  const rawService = num(fd, "service");
+  const rawAmbiance = num(fd, "ambiance");
+  const rawVegan = num(fd, "vegan_options");
 
-  // Use the form value first (from the hidden field), fall back to server-side compute
-  let overall = num(fd, "overall");
-  if (overall === null) {
-    overall = computeOverall(category, { food, value, service, ambiance, vegan_options });
+  const allSubRatingsEmpty =
+    rawFood === null &&
+    rawValue === null &&
+    rawService === null &&
+    rawAmbiance === null &&
+    rawVegan === null;
+
+  const isUnrated = unratedFlag || allSubRatingsEmpty;
+
+  const food = isUnrated ? null : rawFood;
+  const value = isUnrated ? null : rawValue;
+  const service = isUnrated ? null : rawService;
+  const ambiance = isUnrated ? null : rawAmbiance;
+  const vegan_options = isUnrated ? null : rawVegan;
+
+  let overall: number | null;
+  if (isUnrated) {
+    overall = 0;
+  } else {
+    // Use the form value first (from the hidden field), fall back to server-side compute
+    overall = num(fd, "overall");
+    if (overall === null) {
+      overall = computeOverall(category, { food, value, service, ambiance, vegan_options });
+    }
+    if (overall === null) throw new Error("Overall could not be computed — fill in all sub-ratings.");
   }
-  if (overall === null) throw new Error("Overall could not be computed — fill in all sub-ratings.");
 
   // Cuisines come from multiple checkbox inputs all named "cuisine".
   const cuisines = Array.from(
@@ -84,7 +105,9 @@ function buildInput(fd: FormData): BuiltInput {
       ambiance,
       vegan_options,
       note: optionalStr(fd, "note"),
-      last_visited: optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10),
+      last_visited: isUnrated
+        ? null
+        : (optionalStr(fd, "last_visited") ?? new Date().toISOString().slice(0, 10)),
       address: optionalStr(fd, "address"),
       lat: num(fd, "lat"),
       lng: num(fd, "lng"),
@@ -94,7 +117,13 @@ function buildInput(fd: FormData): BuiltInput {
   };
 }
 
-async function replaceCuisines(restaurantId: number, cuisines: string[]) {
+/**
+ * Replace all cuisine associations for `restaurantId` in `restaurant_cuisines`.
+ *
+ * @param restaurantId - Target restaurant primary key.
+ * @param cuisines - List of canonical cuisine names to associate.
+ */
+export async function replaceCuisines(restaurantId: number, cuisines: string[]): Promise<void> {
   const supabase = getServiceClient();
   const { error: delErr } = await supabase
     .from("restaurant_cuisines")
@@ -107,12 +136,22 @@ async function replaceCuisines(restaurantId: number, cuisines: string[]) {
   if (insErr) throw new Error(`Cuisine insert failed: ${insErr.message}`);
 }
 
-async function uploadPhotos(restaurantId: number, files: File[]): Promise<string[]> {
-  if (files.length === 0) return [];
+/**
+ * Compress raw image buffers to WebP (`<= 1800x1800`, quality 82) and upload
+ * them to the public `restaurant-photos` Supabase Storage bucket.
+ *
+ * @param restaurantId - Target restaurant primary key used as storage prefix.
+ * @param buffers - Raw image buffers to compress and upload.
+ * @returns Array of public Supabase Storage URLs for the uploaded photos.
+ */
+export async function uploadPhotoBuffers(
+  restaurantId: number,
+  buffers: Buffer[],
+): Promise<string[]> {
+  if (buffers.length === 0) return [];
   const supabase = getServiceClient();
   const urls: string[] = [];
-  for (const file of files) {
-    const raw = Buffer.from(await file.arrayBuffer());
+  for (const raw of buffers) {
     const compressed = await sharp(raw)
       .resize({ width: 1800, height: 1800, fit: "inside", withoutEnlargement: true })
       .webp({ quality: 82 })
@@ -128,7 +167,22 @@ async function uploadPhotos(restaurantId: number, files: File[]): Promise<string
   return urls;
 }
 
-async function deletePhotosFromStorage(urls: string[]): Promise<void> {
+async function uploadPhotos(restaurantId: number, files: File[]): Promise<string[]> {
+  if (files.length === 0) return [];
+  const buffers: Buffer[] = [];
+  for (const file of files) {
+    buffers.push(Buffer.from(await file.arrayBuffer()));
+  }
+  return uploadPhotoBuffers(restaurantId, buffers);
+}
+
+/**
+ * Remove photo objects from the `restaurant-photos` Supabase Storage bucket
+ * given their public URLs.
+ *
+ * @param urls - Public storage URLs to delete.
+ */
+export async function deletePhotosFromStorage(urls: string[]): Promise<void> {
   if (urls.length === 0) return;
   const supabase = getServiceClient();
   const marker = "/restaurant-photos/";
@@ -154,7 +208,7 @@ export async function logoutAction() {
   redirect("/admin/login");
 }
 
-export async function createRestaurant(fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
+export async function createRestaurant(fd: FormData): Promise<{ id: number; placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
   const { row, cuisines } = buildInput(fd);
   const supabase = getServiceClient();
@@ -162,6 +216,23 @@ export async function createRestaurant(fd: FormData): Promise<{ placeId: string 
   if (error) throw new Error(`Insert failed: ${error.message}`);
 
   await replaceCuisines(data.id, cuisines);
+
+  if (row.food !== null) {
+    const visitedOn = row.last_visited ?? new Date().toISOString().slice(0, 10);
+    const { error: visitErr } = await supabase.from("restaurant_visits").insert({
+      restaurant_id: data.id,
+      visited_on: visitedOn,
+      comment: row.note,
+      food: row.food,
+      value: row.value,
+      service: row.service,
+      ambiance: row.ambiance,
+      vegan_options: row.vegan_options,
+      overall: row.overall,
+    });
+    if (visitErr) throw new Error(`Initial visit insert failed: ${visitErr.message}`);
+    await recomputeRestaurantFromVisits(data.id);
+  }
 
   const files = fd.getAll("photos").filter((f): f is File => f instanceof File && f.size > 0);
   if (files.length > 0) {
@@ -171,12 +242,14 @@ export async function createRestaurant(fd: FormData): Promise<{ placeId: string 
 
   revalidatePath("/");
   revalidatePath("/restaurants");
+  revalidatePath("/restaurants/table");
+  revalidatePath("/restaurants/suggestions");
   revalidatePath("/map");
   revalidatePath("/admin");
-  return { placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
+  return { id: data.id, placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
 }
 
-export async function updateRestaurant(id: number, fd: FormData): Promise<{ placeId: string | null; note: string | null; name: string }> {
+export async function updateRestaurant(id: number, fd: FormData): Promise<{ id: number; placeId: string | null; note: string | null; name: string }> {
   await assertAdmin();
   const { row, cuisines } = buildInput(fd);
   const supabase = getServiceClient();
@@ -193,12 +266,39 @@ export async function updateRestaurant(id: number, fd: FormData): Promise<{ plac
   const { error } = await supabase.from("restaurants").update({ ...row, photos: photos.length ? photos : null }).eq("id", id);
   if (error) throw new Error(`Update failed: ${error.message}`);
   await replaceCuisines(id, cuisines);
+
+  // If an unrated bookmark is being rated for the first time and has no visits yet,
+  // record the initial visit row so visit_count becomes 1.
+  if (row.food !== null) {
+    const { count } = await supabase
+      .from("restaurant_visits")
+      .select("id", { count: "exact", head: true })
+      .eq("restaurant_id", id);
+    if ((count ?? 0) === 0) {
+      const visitedOn = row.last_visited ?? new Date().toISOString().slice(0, 10);
+      await supabase.from("restaurant_visits").insert({
+        restaurant_id: id,
+        visited_on: visitedOn,
+        comment: row.note,
+        food: row.food,
+        value: row.value,
+        service: row.service,
+        ambiance: row.ambiance,
+        vegan_options: row.vegan_options,
+        overall: row.overall,
+      });
+      await recomputeRestaurantFromVisits(id);
+    }
+  }
+
   revalidatePath("/");
   revalidatePath("/restaurants");
+  revalidatePath("/restaurants/table");
+  revalidatePath("/restaurants/suggestions");
   revalidatePath("/map");
   revalidatePath("/admin");
   revalidatePath(`/restaurant/${id}`);
-  return { placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
+  return { id, placeId: row.place_id ?? null, note: row.note ?? null, name: row.name };
 }
 
 // _fd is required for compatibility with <form action={...}>, which always
@@ -257,8 +357,10 @@ export async function deleteCuisine(id: number, _fd?: FormData) {
  * Recompute the recency-weighted ratings for a restaurant from its visit log
  * and write the result back to the restaurants row. Also refreshes the
  * cached visit_count and last_visited. Called after any visit mutation.
+ *
+ * @param restaurantId - Target restaurant primary key.
  */
-async function recomputeRestaurantFromVisits(restaurantId: number) {
+export async function recomputeRestaurantFromVisits(restaurantId: number): Promise<void> {
   const supabase = getServiceClient();
   const { data: rest, error: restErr } = await supabase
     .from("restaurants")
