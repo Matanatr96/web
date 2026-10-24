@@ -163,10 +163,17 @@ export interface TennisSessionSummary {
   avgRallyLength: number;
   rallies10Plus: number;
   deepZonePct: number;
+  deepPct: number;
   shortZonePct: number;
+  avgSpeedMph: number | null;
+  maxSpeedMph: number | null;
   fhSpeedAvg: number | null;
+  fhSpeedMax: number | null;
   bhSpeedAvg: number | null;
+  bhSpeedMax: number | null;
+  serveSpeedAvg: number | null;
   serveSpeedMax: number | null;
+  netClearanceAvgM: number | null;
   inPct: number;
   outCount: number;
   closeCount: number;
@@ -212,6 +219,18 @@ export interface TennisAllSessionsSummary {
   totalSessions: number;
   totalRallies: number;
   totalShots: number;
+  longestRally: number;
+  avgRallyLength: number;
+  avgSpeedMph: number | null;
+  maxSpeedMph: number | null;
+  serveSpeedAvg: number | null;
+  serveSpeedMax: number | null;
+  fhSpeedAvg: number | null;
+  fhSpeedMax: number | null;
+  bhSpeedAvg: number | null;
+  bhSpeedMax: number | null;
+  netClearanceAvgM: number | null;
+  deepPct: number;
   bestInStreak: number;
   inCallRate: number;
 }
@@ -223,9 +242,53 @@ export interface TennisSessionListItem extends TennisMatch {
   totalShots: number;
   bestInStreak: number;
   longestRally: number;
+  avgRallyLength: number;
+  avgSpeedMph: number | null;
+  maxSpeedMph: number | null;
+  serveSpeedAvg: number | null;
+  serveSpeedMax: number | null;
+  fhSpeedAvg: number | null;
+  fhSpeedMax: number | null;
+  bhSpeedAvg: number | null;
+  bhSpeedMax: number | null;
+  netClearanceAvgM: number | null;
+  deepPct: number;
   inPct: number;
   outCount: number;
   scoreFormatted: string | null;
+}
+
+/** Input parameters for building a Modal `POST /jobs` request payload. */
+export interface ModalJobRequestInput {
+  matchId: string;
+  rallyIdx?: number | null;
+  source?: "web" | "ios" | "ios_library";
+  sessionType?: TennisSessionType;
+  /** Optional court calibration; pass `null` or omit when skipping calibration for GPU auto-detect. */
+  court?: ModalCourtJson | CourtCalibrationV1 | null;
+  doubles?: boolean;
+  sizeBytes: number;
+  fileName?: string;
+  mimeType?: string;
+  title?: string | null;
+  playedOn?: string | null;
+  /** Whether to run 65-joint 3D pose biomechanics + ATP pro comparison (defaults to `true`). */
+  biomech?: boolean;
+}
+
+/** JSON payload sent to Modal `POST /jobs`. */
+export interface ModalJobRequestPayload {
+  match_id: string;
+  rally_idx: number | null;
+  source: "web" | "ios" | "ios_library";
+  session_type: TennisSessionType;
+  court: ModalCourtJson | null;
+  doubles: boolean;
+  size_bytes: number;
+  content_type: "video/quicktime" | "video/mp4";
+  title: string | null;
+  played_on: string | null;
+  biomech: boolean;
 }
 
 /** Response payload of `GET /api/tennis/sessions`. */
@@ -631,6 +694,42 @@ export function toModalCourtJson(cal: CourtCalibrationV1): ModalCourtJson {
 }
 
 /**
+ * Builds the JSON request body for Modal `POST /jobs`, defaulting `biomech: true` so every uploaded
+ * video receives full offline SwingVision ball speed, shot classification, and 3D biomechanics analysis.
+ * Supports optional court calibration (`court: null`) when the user skips manual corner tapping to use
+ * GPU auto-detection.
+ *
+ * @param input - Match metadata, optional calibration (`ModalCourtJson` | `CourtCalibrationV1` | `null`), and file info.
+ * @returns Normalized `ModalJobRequestPayload` for `POST /jobs`.
+ */
+export function buildJobRequest(input: ModalJobRequestInput): ModalJobRequestPayload {
+  let modalCourt: ModalCourtJson | null = null;
+  if (input.court) {
+    if ("cornersPx" in input.court) {
+      modalCourt = toModalCourtJson(input.court);
+    } else if ("court_px" in input.court) {
+      modalCourt = input.court;
+    }
+  }
+  const isMov =
+    input.mimeType === "video/quicktime" ||
+    Boolean(input.fileName && /\.mov$/i.test(input.fileName));
+  return {
+    match_id: input.matchId,
+    rally_idx: input.rallyIdx ?? null,
+    source: input.source ?? "web",
+    session_type: input.sessionType === "match" ? "match" : "rally",
+    court: modalCourt,
+    doubles: Boolean(input.doubles),
+    size_bytes: input.sizeBytes,
+    content_type: isMov ? "video/quicktime" : "video/mp4",
+    title: input.title?.trim() ? input.title.trim() : null,
+    played_on: input.playedOn?.trim() ? input.playedOn.trim() : null,
+    biomech: input.biomech ?? true,
+  };
+}
+
+/**
  * Converts court metres into SVG minimap coordinates. The near baseline (`Y = -11.885 m`) is drawn at
  * the bottom and the far baseline at the top; the view always spans the doubles court plus `padM`.
  *
@@ -732,14 +831,27 @@ function round1(val: number): number {
   return Math.round(val * 10) / 10;
 }
 
+function round2(val: number): number {
+  return Math.round(val * 100) / 100;
+}
+
 function mean1(values: number[]): number | null {
   return values.length > 0 ? round1(values.reduce((a, b) => a + b, 0) / values.length) : null;
 }
 
+function mean2(values: number[]): number | null {
+  return values.length > 0 ? round2(values.reduce((a, b) => a + b, 0) / values.length) : null;
+}
+
+function max1(values: number[]): number | null {
+  return values.length > 0 ? round1(Math.max(...values)) : null;
+}
+
 /**
- * Summarises a session for the dashboards. Rally Mode figures (longest rally, average length,
- * 10+ shot rallies, deep-zone %, play-on-after-out rallies, FH/BH speeds) are always computed;
- * Match Mode adds first-serve % and points won/lost.
+ * Summarises a session for the dashboards. Computes SwingVision offline speed & shot analytics
+ * (`avgSpeedMph`, `maxSpeedMph`, `serveSpeedAvg`, `serveSpeedMax`, `fhSpeedAvg`, `fhSpeedMax`,
+ * `bhSpeedAvg`, `bhSpeedMax`, `netClearanceAvgM`, `deepPct`, `longestRally`, `avgRallyLength`),
+ * plus Match Mode serve % and points won/lost.
  *
  * @param params - Session type, rallies, optional points, doubles flag, whether to hide 1-shot feeds
  *   from the average (default: hidden in Rally Mode), and optional Phase-3 biomechanics / coach notes.
@@ -772,9 +884,11 @@ export function summarizeSession(params: {
   let closeCount = 0;
   let firstServes = 0;
   let firstServesIn = 0;
+  const allSpeeds: number[] = [];
   const fhSpeeds: number[] = [];
   const bhSpeeds: number[] = [];
   const serveSpeeds: number[] = [];
+  const netClearances: number[] = [];
 
   for (const rally of rallies) {
     const len = lengthOf(rally);
@@ -789,9 +903,13 @@ export function summarizeSession(params: {
     rally.shots.forEach((shot, i) => {
       const stroke = (shot.stroke ?? "").toLowerCase();
       if (shot.speedMph !== null && shot.speedMph > 0) {
+        allSpeeds.push(shot.speedMph);
         if (stroke === "fh" || stroke === "forehand") fhSpeeds.push(shot.speedMph);
         else if (stroke === "bh" || stroke === "backhand") bhSpeeds.push(shot.speedMph);
         else if (stroke === "serve") serveSpeeds.push(shot.speedMph);
+      }
+      if (shot.netClearanceM !== null && Number.isFinite(shot.netClearanceM)) {
+        netClearances.push(shot.netClearanceM);
       }
       if (stroke === "serve" && i === 0) {
         firstServes += 1;
@@ -820,6 +938,7 @@ export function summarizeSession(params: {
 
   const called = inOrClose + outCount;
   const qualifyingShots = qualifying.reduce((acc, r) => acc + lengthOf(r), 0);
+  const deepZonePct = depthEligible > 0 ? round1((deepCount / depthEligible) * 100) : 0;
 
   return {
     sessionType,
@@ -830,11 +949,18 @@ export function summarizeSession(params: {
     longestInStreak,
     avgRallyLength: qualifying.length > 0 ? round1(qualifyingShots / qualifying.length) : 0,
     rallies10Plus,
-    deepZonePct: depthEligible > 0 ? round1((deepCount / depthEligible) * 100) : 0,
+    deepZonePct,
+    deepPct: deepZonePct,
     shortZonePct: depthEligible > 0 ? round1((shortCount / depthEligible) * 100) : 0,
+    avgSpeedMph: mean1(allSpeeds),
+    maxSpeedMph: max1(allSpeeds),
     fhSpeedAvg: mean1(fhSpeeds),
+    fhSpeedMax: max1(fhSpeeds),
     bhSpeedAvg: mean1(bhSpeeds),
-    serveSpeedMax: serveSpeeds.length > 0 ? round1(Math.max(...serveSpeeds)) : null,
+    bhSpeedMax: max1(bhSpeeds),
+    serveSpeedAvg: mean1(serveSpeeds),
+    serveSpeedMax: max1(serveSpeeds),
+    netClearanceAvgM: mean2(netClearances),
     inPct: called > 0 ? round1((inOrClose / called) * 100) : 0,
     outCount,
     closeCount,
@@ -848,9 +974,12 @@ export function summarizeSession(params: {
 }
 
 /**
- * Aggregates session-level statistics across a list of `TennisMatch` rows for the iOS Home Screen
- * and `GET /api/tennis/sessions`, returning both the top-level summary (`totalSessions`,
- * `totalRallies`, `totalShots`, `bestInStreak`, `inCallRate`) and enriched session items.
+ * Aggregates session-level SwingVision speed & shot statistics across a list of `TennisMatch` rows
+ * for the iOS Home Screen, web `/tennis` dashboard, and `GET /api/tennis/sessions`, returning both
+ * the top-level summary (`totalSessions`, `totalRallies`, `totalShots`, `longestRally`,
+ * `avgRallyLength`, `avgSpeedMph`, `maxSpeedMph`, `serveSpeedAvg`, `serveSpeedMax`, `fhSpeedAvg`,
+ * `fhSpeedMax`, `bhSpeedAvg`, `bhSpeedMax`, `netClearanceAvgM`, `deepPct`, plus backward-compatible
+ * `bestInStreak` and `inCallRate: 0`) and enriched session items.
  *
  * @param matches - Sessions ordered newest first (from `listTennisMatches` / `getTennisMatches`).
  * @returns `{ summary, sessions }`.
@@ -858,26 +987,70 @@ export function summarizeSession(params: {
 export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResponse {
   let totalRallies = 0;
   let totalShots = 0;
+  let longestRallyMax = 0;
   let bestInStreak = 0;
-  let weightedInSum = 0;
-  let weightTotal = 0;
+  const avgRallyLengths: number[] = [];
+  const avgSpeeds: number[] = [];
+  const maxSpeeds: number[] = [];
+  const serveAvgs: number[] = [];
+  const serveMaxes: number[] = [];
+  const fhAvgs: number[] = [];
+  const fhMaxes: number[] = [];
+  const bhAvgs: number[] = [];
+  const bhMaxes: number[] = [];
+  const netClearances: number[] = [];
+  const deepPcts: number[] = [];
 
   const sessions: TennisSessionListItem[] = matches.map((m) => {
-    const rallies = m.stats.totalRallies ?? m.ralliesDone ?? 0;
-    const shots = m.stats.totalShots ?? 0;
-    const longestRally = m.stats.longestRally ?? 0;
-    const streak = m.stats.longestInStreak ?? longestRally;
-    const inPct = m.stats.inPct ?? 0;
-    const outCount = m.stats.outCount ?? 0;
+    const s = m.stats as Record<string, unknown>;
+    const rallies = num(s.totalRallies ?? s.total_rallies ?? s.rallies) ?? m.ralliesDone ?? 0;
+    const shots = num(s.totalShots ?? s.total_shots) ?? 0;
+    const longestRally = num(s.longestRally ?? s.longest_rally) ?? 0;
+    const streak = num(s.longestInStreak ?? s.longest_in_streak) ?? longestRally;
+    const avgRallyLength =
+      num(s.avgRallyLength ?? s.avg_rally_length) ??
+      (rallies > 0 && shots > 0 ? round1(shots / rallies) : 0);
+
+    const fhSpeedAvg = num(s.fhSpeedAvg ?? s.fh_speed_avg);
+    const fhSpeedMax = num(s.fhSpeedMax ?? s.fh_speed_max) ?? fhSpeedAvg;
+    const bhSpeedAvg = num(s.bhSpeedAvg ?? s.bh_speed_avg);
+    const bhSpeedMax = num(s.bhSpeedMax ?? s.bh_speed_max) ?? bhSpeedAvg;
+    const serveSpeedAvg = num(s.serveSpeedAvg ?? s.serve_speed_avg);
+    const serveSpeedMax = num(s.serveSpeedMax ?? s.serve_speed_max) ?? serveSpeedAvg;
+
+    const strokeAvgs = [fhSpeedAvg, bhSpeedAvg, serveSpeedAvg].filter(
+      (v): v is number => v !== null && v > 0,
+    );
+    const strokeMaxes = [serveSpeedMax, fhSpeedMax, bhSpeedMax].filter(
+      (v): v is number => v !== null && v > 0,
+    );
+
+    const avgSpeedMph = num(s.avgSpeedMph ?? s.avg_speed_mph) ?? mean1(strokeAvgs);
+    const maxSpeedMph = num(s.maxSpeedMph ?? s.max_speed_mph) ?? max1(strokeMaxes);
+    const netClearanceAvgM = num(s.netClearanceAvgM ?? s.net_clearance_avg_m);
+    const deepPct = num(s.deepPct ?? s.deep_pct ?? s.deepZonePct ?? s.deep_zone_pct) ?? 0;
+    const inPct = num(s.inPct ?? s.in_pct) ?? 0;
+    const outCount = num(s.outCount ?? s.out_count) ?? 0;
 
     totalRallies += rallies;
     totalShots += shots;
+    longestRallyMax = Math.max(longestRallyMax, longestRally);
     bestInStreak = Math.max(bestInStreak, streak);
 
-    if (inPct > 0 || outCount > 0) {
-      const weight = shots > 0 ? shots : 1;
-      weightedInSum += inPct * weight;
-      weightTotal += weight;
+    if (avgRallyLength > 0) avgRallyLengths.push(avgRallyLength);
+    if (avgSpeedMph !== null && avgSpeedMph > 0) avgSpeeds.push(avgSpeedMph);
+    if (maxSpeedMph !== null && maxSpeedMph > 0) maxSpeeds.push(maxSpeedMph);
+    if (serveSpeedAvg !== null && serveSpeedAvg > 0) serveAvgs.push(serveSpeedAvg);
+    if (serveSpeedMax !== null && serveSpeedMax > 0) serveMaxes.push(serveSpeedMax);
+    if (fhSpeedAvg !== null && fhSpeedAvg > 0) fhAvgs.push(fhSpeedAvg);
+    if (fhSpeedMax !== null && fhSpeedMax > 0) fhMaxes.push(fhSpeedMax);
+    if (bhSpeedAvg !== null && bhSpeedAvg > 0) bhAvgs.push(bhSpeedAvg);
+    if (bhSpeedMax !== null && bhSpeedMax > 0) bhMaxes.push(bhSpeedMax);
+    if (netClearanceAvgM !== null && Number.isFinite(netClearanceAvgM)) {
+      netClearances.push(netClearanceAvgM);
+    }
+    if (deepPct > 0 || shots > 0) {
+      if (deepPct > 0) deepPcts.push(deepPct);
     }
 
     return {
@@ -887,6 +1060,17 @@ export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResp
       totalShots: shots,
       bestInStreak: streak,
       longestRally,
+      avgRallyLength,
+      avgSpeedMph,
+      maxSpeedMph,
+      serveSpeedAvg,
+      serveSpeedMax,
+      fhSpeedAvg,
+      fhSpeedMax,
+      bhSpeedAvg,
+      bhSpeedMax,
+      netClearanceAvgM,
+      deepPct,
       inPct,
       outCount,
       scoreFormatted: m.score ? formatScore(m.score) : null,
@@ -898,8 +1082,25 @@ export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResp
       totalSessions: matches.length,
       totalRallies,
       totalShots,
+      longestRally: longestRallyMax,
+      avgRallyLength:
+        avgRallyLengths.length > 0
+          ? (mean1(avgRallyLengths) ?? 0)
+          : totalRallies > 0 && totalShots > 0
+            ? round1(totalShots / totalRallies)
+            : 0,
+      avgSpeedMph: mean1(avgSpeeds),
+      maxSpeedMph: max1(maxSpeeds),
+      serveSpeedAvg: mean1(serveAvgs),
+      serveSpeedMax: max1(serveMaxes),
+      fhSpeedAvg: mean1(fhAvgs),
+      fhSpeedMax: max1(fhMaxes),
+      bhSpeedAvg: mean1(bhAvgs),
+      bhSpeedMax: max1(bhMaxes),
+      netClearanceAvgM: mean2(netClearances),
+      deepPct: mean1(deepPcts) ?? 0,
       bestInStreak,
-      inCallRate: weightTotal > 0 ? round1(weightedInSum / weightTotal) : 0,
+      inCallRate: 0,
     },
     sessions,
   };
@@ -958,6 +1159,34 @@ export function resolveClipUrl(clipUrl: string | null, modalBase: string | undef
   if (/^https?:\/\//.test(clipUrl)) return clipUrl;
   if (!modalBase) return null;
   return `${modalBase.replace(/\/$/, "")}/${clipUrl.replace(/^\//, "")}`;
+}
+
+/**
+ * Determines the SVG bounce dot fill, stroke, and label from the shot's stroke type and depth zone:
+ * - `serve`: amber
+ * - `deep` (6.40m to 11.885m): emerald
+ * - `short` (service boxes): cyan
+ * - other: slate
+ *
+ * @param shot - Shot with `stroke` and `depthZone`.
+ * @returns `{ fill, stroke, label }`.
+ */
+export function bounceStyle(shot: Pick<TennisShot, "stroke" | "depthZone">): {
+  fill: string;
+  stroke: string;
+  label: string;
+} {
+  const stroke = (shot.stroke ?? "").toLowerCase();
+  if (stroke === "serve") {
+    return { fill: "#f59e0b", stroke: "#b45309", label: "Serve" };
+  }
+  if (shot.depthZone === "deep") {
+    return { fill: "#10b981", stroke: "#047857", label: "Deep Zone" };
+  }
+  if (shot.depthZone === "short") {
+    return { fill: "#06b6d4", stroke: "#0e7490", label: "Short" };
+  }
+  return { fill: "#94a3b8", stroke: "#475569", label: "Other" };
 }
 
 const utf8 = new TextEncoder();

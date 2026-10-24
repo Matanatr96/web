@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import {
+  bounceStyle,
   courtToSvg,
   ITF_DOUBLES_HALF_WIDTH_M,
   ITF_HALF_LENGTH_M,
@@ -13,6 +14,8 @@ import {
   type TennisMatchStatus,
   type TennisShot,
 } from "@/lib/tennis";
+
+export { bounceStyle };
 
 export interface TennisCourtMinimapProps {
   /** Shots to render on the 2D court diagram. */
@@ -35,23 +38,6 @@ function pt(xM: number, yM: number) {
   return courtToSvg(xM, yM, { width: VIEW_W, height: VIEW_H, padM: PAD_M });
 }
 
-function callColor(call: TennisShot["call"]): {
-  fill: string;
-  stroke: string;
-  label: string;
-} {
-  if (call === "in") {
-    return { fill: "#10b981", stroke: "#047857", label: "IN" };
-  }
-  if (call === "out") {
-    return { fill: "#f43f5e", stroke: "#be123c", label: "OUT" };
-  }
-  if (call === "close") {
-    return { fill: "#f59e0b", stroke: "#b45309", label: "CLOSE (±2σ)" };
-  }
-  return { fill: "#a8a29e", stroke: "#57534e", label: "UNKNOWN" };
-}
-
 function formatStrokeLabel(stroke: string | null): string {
   if (!stroke) return "Shot";
   const lower = stroke.toLowerCase();
@@ -63,9 +49,9 @@ function formatStrokeLabel(stroke: string | null): string {
 
 /**
  * Server-safe 2D ITF metric SVG court minimap displaying shaded Deep Target Zones
- * ($6.40\text{–}11.885\text{ m}$), shot trajectory vectors, color-coded bounce locations
- * (`in` green, `out` red, `close` amber) with uncertainty rings, a `◆ Selected Shot`
- * diamond marker, a visual legend, and a compact selected-shot callout badge.
+ * ($6.40\text{–}11.885\text{ m}$), shot trajectory vectors, bounce locations colored by
+ * Stroke Type / Depth Zone (`deep` emerald, `short` cyan, `serve` amber, `other` slate),
+ * a `◆ Selected Shot` diamond marker, a visual legend, and a compact selected-shot callout badge.
  *
  * @param props - `TennisCourtMinimapProps` containing shots, doubles mode, deep-zone shading, and `activeShotIdx`.
  * @returns Rendered `<svg>` court minimap, visual legend, and selected-shot callout.
@@ -301,20 +287,18 @@ export default function TennisCourtMinimap({
           })}
         </g>
 
-        {/* Bounce impact dots, 2-sigma uncertainty halo, and ◆ Selected Shot diamond */}
+        {/* Bounce impact dots colored by Stroke Type / Depth Zone and ◆ Selected Shot diamond */}
         <g>
           {filteredShots.map((shot) => {
             if (shot.bounceX === null || shot.bounceY === null) return null;
             const pBounce = pt(shot.bounceX, shot.bounceY);
-            const colors = callColor(shot.call);
+            const colors = bounceStyle(shot);
             const isSelected = activeShotIdx === shot.shotIdx;
             const isHighlighted = activeShotIdx === null || isSelected;
-            const sigmaRadiusPx = Math.min(
-              14,
-              Math.max(5.5, (shot.sigmaM ?? 0.03) * 2 * 18),
-            );
-            const marginCm =
-              shot.marginM !== null ? `${(Math.abs(shot.marginM) * 100).toFixed(1)} cm` : "—";
+            const clearanceLabel =
+              shot.netClearanceM !== null
+                ? `${Math.round(shot.netClearanceM * 100)} cm net`
+                : "net n/a";
             const d = 6.8;
 
             return (
@@ -323,19 +307,8 @@ export default function TennisCourtMinimap({
                 opacity={isHighlighted ? 1 : 0.38}
               >
                 <title>
-                  {`Rally #${shot.rallyIdx + 1} · Shot #${shot.shotIdx + 1} (${formatStrokeLabel(shot.stroke)}) · ${colors.label} (${marginCm}) · ${shot.speedMph ? `${shot.speedMph} mph` : "speed n/a"} · Zone: ${shot.depthZone ?? "unknown"}`}
+                  {`Rally #${shot.rallyIdx + 1} · Shot #${shot.shotIdx + 1} (${formatStrokeLabel(shot.stroke)}) · ${shot.speedMph ? `${shot.speedMph} mph` : "speed n/a"} · ${clearanceLabel} · ${colors.label}`}
                 </title>
-                {shot.call === "close" && (
-                  <circle
-                    cx={pBounce.x}
-                    cy={pBounce.y}
-                    r={sigmaRadiusPx}
-                    fill="none"
-                    stroke={colors.fill}
-                    strokeWidth="1.2"
-                    strokeDasharray="2 2"
-                  />
-                )}
                 {isSelected ? (
                   <>
                     <circle
@@ -360,7 +333,7 @@ export default function TennisCourtMinimap({
                     cy={pBounce.y}
                     r={isHighlighted ? "4.4" : "3.4"}
                     fill={colors.fill}
-                    stroke="#0f172a"
+                    stroke={colors.stroke}
                     strokeWidth="1.2"
                   />
                 )}
@@ -373,23 +346,17 @@ export default function TennisCourtMinimap({
       {/* Visual Legend */}
       <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-400">
         <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
-          <span>●</span> IN
+          <span>●</span> Deep Zone
+        </span>
+        <span className="inline-flex items-center gap-1 text-cyan-700 dark:text-cyan-400">
+          <span>●</span> Short
         </span>
         <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
-          <span>●</span> CLOSE
-        </span>
-        <span className="inline-flex items-center gap-1 text-rose-700 dark:text-rose-400">
-          <span>●</span> OUT
+          <span>●</span> Serve
         </span>
         <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300">
-          <span>◆</span> Selected Shot
+          <span>◆</span> Selected Shot ◆
         </span>
-        {showDeepZones && (
-          <span className="inline-flex items-center gap-1">
-            <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/30 border border-emerald-500 inline-block" />
-            Deep Target Zone
-          </span>
-        )}
       </div>
 
       {/* Selected-Shot Detail Callout Badge */}
@@ -402,16 +369,18 @@ export default function TennisCourtMinimap({
               </span>
               <span
                 className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
-                  selectedShot.call === "in"
+                  selectedShot.depthZone === "deep"
                     ? "bg-emerald-200/80 text-emerald-900 dark:bg-emerald-900/70 dark:text-emerald-200"
-                    : selectedShot.call === "close"
-                      ? "bg-amber-200/80 text-amber-900 dark:bg-amber-900/70 dark:text-amber-200"
-                      : selectedShot.call === "out"
-                        ? "bg-rose-200/80 text-rose-900 dark:bg-rose-900/70 dark:text-rose-200"
-                        : "bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
+                    : selectedShot.depthZone === "short"
+                      ? "bg-cyan-200/80 text-cyan-900 dark:bg-cyan-900/70 dark:text-cyan-200"
+                      : "bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
                 }`}
               >
-                {selectedShot.call}
+                {selectedShot.depthZone === "deep"
+                  ? "Deep"
+                  : selectedShot.depthZone === "short"
+                    ? "Short"
+                    : bounceStyle(selectedShot).label}
               </span>
             </div>
             <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-stone-600 dark:text-stone-300 tabular-nums">
@@ -422,21 +391,28 @@ export default function TennisCourtMinimap({
                 </strong>
               </span>
               <span>
-                Depth: <strong className="uppercase">{selectedShot.depthZone ?? "unknown"}</strong>
+                Net Clearance:{" "}
+                <strong>
+                  {selectedShot.netClearanceM !== null
+                    ? `${selectedShot.netClearanceM.toFixed(2)} m (${Math.round(selectedShot.netClearanceM * 100)} cm)`
+                    : "—"}
+                </strong>
               </span>
               <span>
-                Margin:{" "}
-                <strong>
-                  {selectedShot.marginM !== null
-                    ? `${selectedShot.marginM >= 0 ? "+" : "−"}${Math.abs(selectedShot.marginM * 100).toFixed(1)} cm`
-                    : "±0.0 cm"}
+                Depth:{" "}
+                <strong className="uppercase">
+                  {selectedShot.depthZone === "deep"
+                    ? "Deep"
+                    : selectedShot.depthZone === "short"
+                      ? "Short"
+                      : (selectedShot.depthZone ?? "unknown")}
                 </strong>
               </span>
             </div>
           </div>
         ) : (
           <div className="rounded-md border border-dashed border-stone-200 dark:border-stone-800 px-3 py-2 text-center text-[11px] text-stone-400">
-            Click any shot in the scrubber to highlight its ◆ bounce &amp; line margin
+            Click any shot in the scrubber to highlight its ◆ bounce, ball speed &amp; depth zone
           </div>
         )}
       </div>

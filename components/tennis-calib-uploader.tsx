@@ -5,6 +5,7 @@ import { type ChangeEvent, type MouseEvent, useEffect, useMemo, useRef, useState
 import { commitTennisMatch, createTennisMatch } from "@/app/tennis/actions";
 import {
   applyHomography,
+  buildJobRequest,
   getUploadResumeKey,
   ITF_DOUBLES_HALF_WIDTH_M,
   ITF_HALF_LENGTH_M,
@@ -17,6 +18,8 @@ import {
   type TennisSessionType,
   validateCourtCalibration,
 } from "@/lib/tennis";
+
+export { buildJobRequest };
 
 const TAP_STEPS = [
   "Far-Left outer corner",
@@ -144,7 +147,8 @@ export default function TennisCalibUploader() {
   const [title, setTitle] = useState("");
   const [playedOn, setPlayedOn] = useState(() => new Date().toISOString().slice(0, 10));
   const [doubles, setDoubles] = useState(false);
-  const [runBiomech, setRunBiomech] = useState(false);
+  const [runBiomech, setRunBiomech] = useState(true);
+  const [skipCalibration, setSkipCalibration] = useState(false);
 
   const [videoFile, setVideoFile] = useState<File | null>(null);
   const [videoSize, setVideoSize] = useState<[number, number] | null>(null);
@@ -298,7 +302,7 @@ export default function TennisCalibUploader() {
       URL.revokeObjectURL(url);
       if (!screenshotLoadedRef.current) {
         setDecodeError(
-          "This browser can't decode Frame 0 of the video (common for HEVC .mov). Upload a screenshot of the first frame instead; the video itself still uploads unchanged.",
+          "This browser can't decode Frame 0 of the video (common for HEVC .mov). You can click \"Skip Calibration (Auto-Detect Court)\" to let the GPU auto-detect the court, or upload a first-frame screenshot.",
         );
       }
     };
@@ -312,6 +316,7 @@ export default function TennisCalibUploader() {
     const img = new Image();
     img.onload = () => {
       screenshotLoadedRef.current = true;
+      setSkipCalibration(false);
       paintFrame(img, img.naturalWidth, img.naturalHeight);
       URL.revokeObjectURL(url);
     };
@@ -326,16 +331,24 @@ export default function TennisCalibUploader() {
     return [Math.max(0, Math.min(imageSize[0], u)), Math.max(0, Math.min(imageSize[1], v))];
   };
 
+  const canUpload = Boolean(videoFile) && (skipCalibration || points.length === 0 || validation.valid) && !busy;
+
   const handleUpload = async () => {
-    if (!videoFile || !validation.valid) return;
+    if (!videoFile || (!skipCalibration && points.length > 0 && !validation.valid)) return;
     setBusy(true);
     setError(null);
     setProgressPct(0);
     const resumeKey = getUploadResumeKey(videoFile);
     const cachedSession = readStoredUpload(resumeKey);
     const targetVideoSize = videoSize ?? imageSize;
-    const scaledCorners = scaleCalibrationPoints(cornersPx, imageSize, targetVideoSize);
-    const scaledNetPosts = netPostsPx ? scaleCalibrationPoints(netPostsPx, imageSize, targetVideoSize) : undefined;
+    const useManualCalibration = !skipCalibration && points.length >= 4 && validation.valid;
+    const scaledCorners = useManualCalibration
+      ? scaleCalibrationPoints(cornersPx, imageSize, targetVideoSize)
+      : [];
+    const scaledNetPosts =
+      useManualCalibration && netPostsPx
+        ? scaleCalibrationPoints(netPostsPx, imageSize, targetVideoSize)
+        : undefined;
 
     try {
       setStatus(cachedSession ? "Resuming session…" : "Creating session…");
@@ -373,22 +386,24 @@ export default function TennisCalibUploader() {
 
       if (!job) {
         setStatus("Registering upload with Modal…");
+        const jobPayload = buildJobRequest({
+          matchId,
+          rallyIdx: null,
+          source: "web",
+          sessionType,
+          court,
+          doubles,
+          sizeBytes: videoFile.size,
+          fileName: videoFile.name,
+          mimeType: videoFile.type,
+          title,
+          playedOn,
+          biomech: runBiomech,
+        });
         const jobRes = await modalFetch(`${modalEndpoint}/jobs`, jobToken, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            match_id: matchId,
-            rally_idx: null,
-            source: "web",
-            session_type: sessionType,
-            court,
-            doubles,
-            size_bytes: videoFile.size,
-            content_type: /\.mov$/i.test(videoFile.name) || videoFile.type === "video/quicktime" ? "video/quicktime" : "video/mp4",
-            title: title.trim() || null,
-            played_on: playedOn,
-            biomech: runBiomech,
-          }),
+          body: JSON.stringify(jobPayload),
         });
         if (!jobRes.ok) throw new Error(`Modal POST /jobs failed: HTTP ${jobRes.status} ${await jobRes.text()}`);
         job = (await jobRes.json()) as JobState;
@@ -467,7 +482,7 @@ export default function TennisCalibUploader() {
   );
 
   const step1Done = Boolean(videoFile || frameLoaded);
-  const step2Done = validation.valid;
+  const step2Done = skipCalibration || validation.valid || (Boolean(videoFile) && points.length === 0);
   const activeWizardStep: 1 | 2 | 3 = !step1Done ? 1 : !step2Done ? 2 : 3;
 
   return (
@@ -488,7 +503,7 @@ export default function TennisCalibUploader() {
           { step: 1 as const, label: "1. Choose Video", done: step1Done },
           {
             step: 2 as const,
-            label: "2. Tap 4 Corners + 2 Net Posts",
+            label: "2. Calibrate Court (Optional)",
             done: step2Done,
           },
           {
@@ -520,9 +535,13 @@ export default function TennisCalibUploader() {
         {modeCard(
           "rally",
           "Rally Session (Default)",
-          "Practice hitting. A rally starts on any feed and keeps going if you play on after an out ball. Tracks streaks, 10+ shot rallies and deep-zone %.",
+          "Practice & cooperative hitting. Segments rallies automatically and computes FH/BH/Serve speeds, net clearance, deep-zone %, and 3D biomechanics.",
         )}
-        {modeCard("match", "Scored Match", "Serves judged against the service boxes, points end on an out, and a set/game/point scoreboard.")}
+        {modeCard(
+          "match",
+          "Scored Match",
+          "Full match tracking with serve speeds, rally breakdown, stroke biomechanics, and set/game/point scoreboard.",
+        )}
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-4 text-sm">
@@ -552,7 +571,7 @@ export default function TennisCalibUploader() {
           </label>
           <label className="inline-flex items-center gap-2">
             <input type="checkbox" checked={runBiomech} onChange={(e) => setRunBiomech(e.target.checked)} />
-            Run biomechanics (Phase 3)
+            Run biomechanics &amp; speed analysis
           </label>
         </div>
       </div>
@@ -563,7 +582,7 @@ export default function TennisCalibUploader() {
           <input type="file" accept="video/mp4,video/quicktime" onChange={handleVideoSelect} disabled={busy} />
         </label>
         <label className="block">
-          <span className="block text-stone-500 mb-1">First-frame screenshot (if the video won&apos;t preview)</span>
+          <span className="block text-stone-500 mb-1">First-frame screenshot (optional, for manual calibration)</span>
           <input type="file" accept="image/png,image/jpeg" onChange={handleScreenshotSelect} disabled={busy} />
         </label>
       </div>
@@ -577,7 +596,7 @@ export default function TennisCalibUploader() {
       {/* Visual Corner-Order Guide Pill Strip */}
       <div className="mb-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
         {CORNER_GUIDE_PILLS.map((pill, idx) => {
-          const isActiveTap = pill.indices.includes(points.length as 0 | 1 | 2 | 3 | 4 | 5);
+          const isActiveTap = !skipCalibration && pill.indices.includes(points.length as 0 | 1 | 2 | 3 | 4 | 5);
           const isCompletedTap = points.length > Math.max(...pill.indices);
           return (
             <div key={pill.label} className="inline-flex items-center gap-1.5">
@@ -603,7 +622,11 @@ export default function TennisCalibUploader() {
 
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2 text-xs">
         <span>
-          {points.length < 6 ? (
+          {skipCalibration || points.length === 0 ? (
+            <>
+              <strong>Optional:</strong> Tap 4 court corners below, or skip to let cloud GPU auto-detect the court.
+            </>
+          ) : points.length < 6 ? (
             <>
               Tap {points.length + 1}/6: <strong>{TAP_STEPS[points.length]}</strong>
               {points.length >= 4 && " (optional)"}
@@ -612,7 +635,22 @@ export default function TennisCalibUploader() {
             "All 6 points placed."
           )}
         </span>
-        <span className="flex gap-2">
+        <span className="flex flex-wrap gap-2">
+          <button
+            type="button"
+            onClick={() => {
+              setSkipCalibration(true);
+              setPoints([]);
+            }}
+            disabled={busy}
+            className={`rounded border px-2.5 py-1 font-medium cursor-pointer transition ${
+              skipCalibration
+                ? "border-emerald-500 bg-emerald-50 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                : "border-stone-200 dark:border-stone-700 hover:border-emerald-500"
+            }`}
+          >
+            Skip Calibration (Auto-Detect Court)
+          </button>
           <button
             type="button"
             onClick={() => setPoints((p) => p.slice(0, -1))}
@@ -639,7 +677,10 @@ export default function TennisCalibUploader() {
           onClick={(e) => {
             if (!frameLoaded || points.length >= 6 || busy) return;
             const pt = toFramePx(e);
-            if (pt) setPoints((p) => [...p, pt]);
+            if (pt) {
+              setSkipCalibration(false);
+              setPoints((p) => [...p, pt]);
+            }
           }}
           onMouseMove={(e) => setHoverPx(toFramePx(e))}
           onMouseLeave={() => setHoverPx(null)}
@@ -647,7 +688,9 @@ export default function TennisCalibUploader() {
         />
         {!frameLoaded && (
           <div className="absolute inset-0 flex items-center justify-center p-6 text-center text-xs text-stone-400">
-            Choose a video (or a first-frame screenshot) to calibrate the court.
+            {skipCalibration
+              ? "Auto-Detect Court enabled — GPU will automatically detect court corners during analysis."
+              : "Choose a video to upload immediately with GPU auto-calibration, or tap 4 corners to calibrate manually."}
           </div>
         )}
         {frameLoaded && hoverPx && (
@@ -660,7 +703,7 @@ export default function TennisCalibUploader() {
         )}
       </div>
 
-      {validation.errors.length > 0 && (
+      {!skipCalibration && points.length > 0 && validation.errors.length > 0 && (
         <ul className="mb-3 rounded-md border border-rose-300 bg-rose-50 dark:bg-rose-950/40 px-3 py-2 text-xs text-rose-700 dark:text-rose-300">
           {validation.errors.map((msg) => (
             <li key={msg}>{msg}</li>
@@ -688,7 +731,7 @@ export default function TennisCalibUploader() {
         <button
           type="button"
           onClick={handleUpload}
-          disabled={!videoFile || !validation.valid || busy}
+          disabled={!canUpload}
           className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40 transition"
         >
           {busy ? "Uploading…" : "Upload & Analyze"}
