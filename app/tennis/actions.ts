@@ -60,19 +60,32 @@ export async function createTennisMatch(input: {
   const sessionType: TennisSessionType = input.sessionType === "match" ? "match" : "rally";
   const jobToken = await signModalJobToken(matchId, Date.now() / 1000 + JOB_TOKEN_TTL_S);
 
-  const { error } = await getServiceClient()
+  const supabase = getServiceClient();
+  const now = new Date().toISOString();
+  const existingStatus = input.id
+    ? (
+        await supabase
+          .from("tennis_matches")
+          .select("status")
+          .eq("id", matchId)
+          .maybeSingle()
+      ).data?.status
+    : null;
+  const preserveAdvancedStatus = existingStatus === "processing" || existingStatus === "ready";
+
+  const { error } = await supabase
     .from("tennis_matches")
     .upsert(
       {
         id: matchId,
         title: input.title?.trim() || null,
-        played_on: input.playedOn?.trim() || new Date().toISOString().slice(0, 10),
+        played_on: input.playedOn?.trim() || now.slice(0, 10),
         session_type: sessionType,
         source: "web",
-        status: "uploading",
+        ...(preserveAdvancedStatus ? {} : { status: "uploading", error: null }),
         court: validation.calibration,
         doubles: validation.calibration.doubles,
-        updated_at: new Date().toISOString(),
+        updated_at: now,
       },
       { onConflict: "id" },
     );

@@ -162,6 +162,7 @@ export default function TennisCalibUploader() {
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const screenshotLoadedRef = useRef<boolean>(false);
 
   const cornersPx = useMemo(
     () => normalizeTappedCornersToQuad(points.slice(0, 4)),
@@ -263,7 +264,9 @@ export default function TennisCalibUploader() {
     if (!file) return;
     setVideoFile(file);
     setVideoSize(null);
-    setFrameLoaded(false);
+    if (!screenshotLoadedRef.current) {
+      setFrameLoaded(false);
+    }
     setError(null);
 
     const url = URL.createObjectURL(file);
@@ -285,15 +288,19 @@ export default function TennisCalibUploader() {
     video.onseeked = () => {
       if (video.videoWidth > 0 && video.videoHeight > 0) {
         setVideoSize([video.videoWidth, video.videoHeight]);
-        paintFrame(video, video.videoWidth, video.videoHeight);
+        if (!screenshotLoadedRef.current) {
+          paintFrame(video, video.videoWidth, video.videoHeight);
+        }
       }
       URL.revokeObjectURL(url);
     };
     video.onerror = () => {
       URL.revokeObjectURL(url);
-      setDecodeError(
-        "This browser can't decode Frame 0 of the video (common for HEVC .mov). Upload a screenshot of the first frame instead; the video itself still uploads unchanged.",
-      );
+      if (!screenshotLoadedRef.current) {
+        setDecodeError(
+          "This browser can't decode Frame 0 of the video (common for HEVC .mov). Upload a screenshot of the first frame instead; the video itself still uploads unchanged.",
+        );
+      }
     };
     video.src = url;
   };
@@ -304,6 +311,7 @@ export default function TennisCalibUploader() {
     const url = URL.createObjectURL(file);
     const img = new Image();
     img.onload = () => {
+      screenshotLoadedRef.current = true;
       paintFrame(img, img.naturalWidth, img.naturalHeight);
       URL.revokeObjectURL(url);
     };
@@ -420,6 +428,7 @@ export default function TennisCalibUploader() {
 
       await commitTennisMatch(matchId);
       clearStoredUpload(resumeKey);
+      screenshotLoadedRef.current = false;
       setProgressPct(100);
       setStatus("Uploaded. Modal is processing the session…");
       router.push(`/tennis/${matchId}`);

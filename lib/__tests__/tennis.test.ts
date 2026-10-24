@@ -369,16 +369,23 @@ describe("calibration & clip-time helpers", () => {
     });
   });
 
-  it("normalizes Far-Left -> Far-Right -> Near-Left -> Near-Right taps into calibration Quad order and formats session source badges", () => {
+  it("normalizes Far-Left -> Far-Right -> Near-Left -> Near-Right and Z-order taps into calibration Quad order and formats session source badges", () => {
     const farFirstTaps: Point2D[] = [
       CORNERS_PX[3],
       CORNERS_PX[2],
       CORNERS_PX[0],
       CORNERS_PX[1],
     ];
+    const zOrderNearFirstTaps: Point2D[] = [
+      CORNERS_PX[0],
+      CORNERS_PX[1],
+      CORNERS_PX[3],
+      CORNERS_PX[2],
+    ];
     expect({
       fromFarFirst: normalizeTappedCornersToQuad(farFirstTaps),
       alreadyNearFirst: normalizeTappedCornersToQuad(CORNERS_PX),
+      fromZOrderNearFirst: normalizeTappedCornersToQuad(zOrderNearFirstTaps),
       incomplete: normalizeTappedCornersToQuad(farFirstTaps.slice(0, 2)),
       iosLive: formatSessionSource("ios"),
       cameraRollDirect: formatSessionSource("ios_library"),
@@ -387,6 +394,7 @@ describe("calibration & clip-time helpers", () => {
     }).toEqual({
       fromFarFirst: CORNERS_PX,
       alreadyNearFirst: CORNERS_PX,
+      fromZOrderNearFirst: CORNERS_PX,
       incomplete: farFirstTaps.slice(0, 2),
       iosLive: "📱 iPhone Live",
       cameraRollDirect: "🖼️ Camera Roll",
@@ -554,7 +562,7 @@ describe("summarizeSession", () => {
 });
 
 describe("formatScore", () => {
-  it("formats scoreboards", () => {
+  it("formats scoreboards including formatted strings and numeric point indices", () => {
     expect({
       none: formatScore(null),
       inProgress: formatScore({ sets: [[6, 4]], games: [3, 2], points: ["40", "15"] }),
@@ -566,12 +574,37 @@ describe("formatScore", () => {
         games: [0, 0],
         points: ["0", "0"],
       }),
+      numericZerosAfterSet: formatScore({
+        sets: [[6, 4]],
+        games: [0, 0],
+        points: [0, 0],
+      }),
+      numericInProgress: formatScore({
+        sets: [[6, 4]],
+        games: [2, 1],
+        points: [2, 1],
+      }),
+      numericAd: formatScore({
+        sets: [],
+        games: [4, 4],
+        points: [4, 3],
+      }),
+      backendFormatted: formatScore({
+        sets: [[6, 4]],
+        games: [0, 0],
+        points: [0, 0],
+        formatted: "6-4",
+      }),
       backendDisplay: formatScore({ sets: [], games: [5, 4], points: "AD-40", display: "5-4 (AD-40)" }),
       stringPoints: formatScore({ sets: [], games: [1, 0], points: "30-15" }),
     }).toEqual({
       none: "No score recorded",
       inProgress: "6-4, 3-2 (40-15)",
       setsOnly: "6-3, 6-4",
+      numericZerosAfterSet: "6-4",
+      numericInProgress: "6-4, 2-1 (30-15)",
+      numericAd: "4-4 (Ad-40)",
+      backendFormatted: "6-4",
       backendDisplay: "5-4 (AD-40)",
       stringPoints: "1-0 (30-15)",
     });
@@ -889,6 +922,35 @@ function createInMemorySupabase() {
           };
           return builder;
         },
+        delete() {
+          const filters: Array<(r: Record<string, unknown>) => boolean> = [];
+          const runDelete = () => {
+            for (let i = rows.length - 1; i >= 0; i--) {
+              if (filters.every((fn) => fn(rows[i]))) {
+                rows.splice(i, 1);
+              }
+            }
+            return Promise.resolve({ error: null });
+          };
+          const builder = {
+            eq(col: string, val: unknown) {
+              filters.push((r) => r[col] === val);
+              return builder;
+            },
+            gte(col: string, val: number) {
+              filters.push((r) => Number(r[col]) >= val);
+              return builder;
+            },
+            // biome-ignore lint/suspicious/noThenProperty: Supabase query builder is a PromiseLike
+            then<TResult1 = { error: null }, TResult2 = never>(
+              onfulfilled?: ((value: { error: null }) => TResult1 | PromiseLike<TResult1>) | null,
+              onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+            ) {
+              return runDelete().then(onfulfilled, onrejected);
+            },
+          };
+          return builder;
+        },
         select(_cols: string) {
           const filters: Array<(r: Record<string, unknown>) => boolean> = [];
           const orders: string[] = [];
@@ -1151,6 +1213,189 @@ describe("applyWebhookEvent and getTennisMatch", () => {
         inCallRate: 86,
       },
       secondScore: "6-4",
+    });
+  });
+
+  it("handles multi-rally ios_library sessions, timestamp_s points, stale tail shot/point cleanup, and premature ready recovery", async () => {
+    const client = createInMemorySupabase();
+    const H = computeHomography4pt(CORNERS_PX, getOuterCourtCornersM());
+    const modalCalJson = {
+      version: 1,
+      size: [1920, 1080],
+      H0: [
+        [H[0], H[1], H[2]],
+        [H[3], H[4], H[5]],
+        [H[6], H[7], H[8]],
+      ],
+    };
+
+    // 1. Premature match.ready before any rallies arrive (e.g. legacy finalizeSession race)
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.ready",
+        match_id: MATCH_ID,
+        source: "ios_library",
+        session_type: "match",
+      }),
+      client,
+    );
+
+    // 2. match.status processing with rallies_expected = 2 moves session back to processing and saves fps + court
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.status",
+        match_id: MATCH_ID,
+        status: "processing",
+        rallies_expected: 2,
+        source: "ios_library",
+        session_type: "match",
+        fps: 60,
+        court: modalCalJson,
+      }),
+      client,
+    );
+    const afterStatus = await getTennisMatch(MATCH_ID, true, client);
+
+    // 3. First rally (1 of 2) with 2 shots and 2 points (using timestamp_s): must stay "processing"
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "rally.ready",
+        match_id: MATCH_ID,
+        source: "ios_library",
+        session_type: "match",
+        points: [
+          { point_idx: 0, winner: "me", server: "me", timestamp_s: 12.4 },
+          { point_idx: 1, winner: "opp", server: "me", timestamp_s: 24.8 },
+        ],
+        rally: { rally_idx: 0, start_s: 5, end_s: 13, shot_count: 2 },
+        shots: [
+          { shot_idx: 0, hitter: "near", stroke: "serve", call: "in", t_hit_s: 5.2, t_bounce_s: 5.9 },
+          { shot_idx: 1, hitter: "far", stroke: "fh", call: "out", t_hit_s: 6.4, t_bounce_s: 7.2 },
+        ],
+      }),
+      client,
+    );
+    const afterRally1 = await getTennisMatch(MATCH_ID, true, client);
+
+    // 4. Re-process rally 0 with 1 shot: tail shot_idx=1 is deleted, while rally.ready does not delete points
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "rally.ready",
+        match_id: MATCH_ID,
+        source: "ios_library",
+        session_type: "match",
+        points: [{ point_idx: 0, winner: "me", server: "me", timestamp_s: 12.4 }],
+        rally: { rally_idx: 0, start_s: 5, end_s: 13, shot_count: 1 },
+        shots: [{ shot_idx: 0, hitter: "near", stroke: "serve", call: "in", t_hit_s: 5.2, t_bounce_s: 5.9 }],
+      }),
+      client,
+    );
+
+    // 5. match.ready after undo shrinks points to 1 and sets final score (30-0)
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.ready",
+        match_id: MATCH_ID,
+        source: "ios_library",
+        session_type: "match",
+        score: { sets: [], games: [0, 0], points: [2, 0], formatted: "0-0 (30-0)" },
+        points: [{ point_idx: 0, winner: "me", server: "me", timestamp_s: 12.4 }],
+      }),
+      client,
+    );
+
+    // 6. Second rally (2 of 2) arrives: transitions/stays "ready"
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "rally.ready",
+        match_id: MATCH_ID,
+        source: "ios_library",
+        session_type: "match",
+        rally: { rally_idx: 1, start_s: 20, end_s: 28, shot_count: 2 },
+        shots: [
+          { shot_idx: 0, hitter: "near", stroke: "serve", call: "in", t_hit_s: 20.1, t_bounce_s: 20.8 },
+          { shot_idx: 1, hitter: "far", stroke: "bh", call: "in", t_hit_s: 21.5, t_bounce_s: 22.3 },
+        ],
+      }),
+      client,
+    );
+    const afterRally2 = await getTennisMatch(MATCH_ID, true, client);
+
+    expect({
+      statusAfterStatus: afterStatus?.status,
+      ralliesExpected: afterStatus?.ralliesExpected,
+      fps: afterStatus?.fps,
+      hasCourtCorners: (afterStatus?.court?.cornersPx?.length ?? 0) === 4,
+      statusAfterRally1: afterRally1?.status,
+      statusAfterRally2: afterRally2?.status,
+      originSource: afterRally2?.stats.originSource,
+      sourceBadge: formatSessionSource(afterRally2?.source, afterRally2?.stats as Record<string, unknown>),
+      rally0ShotsLen: afterRally2?.rallies[0]?.shots.length,
+      points: afterRally2?.points,
+    }).toEqual({
+      statusAfterStatus: "processing",
+      ralliesExpected: 2,
+      fps: 60,
+      hasCourtCorners: true,
+      statusAfterRally1: "processing",
+      statusAfterRally2: "ready",
+      originSource: "ios_library",
+      sourceBadge: "🖼️ Camera Roll",
+      rally0ShotsLen: 1,
+      points: [{ pointIdx: 0, winner: "me", server: "me", source: "auto", bookmarked: false, atS: 12.4 }],
+    });
+  });
+
+  it("preserves match.ready points and final score when a late rally.ready arrives with a stale N-1 point snapshot (W-B1)", async () => {
+    const client = createInMemorySupabase();
+
+    // match.ready lands first with 3 points and final score 40-0
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "match.ready",
+        match_id: MATCH_ID,
+        source: "ios",
+        session_type: "match",
+        score: { sets: [], games: [0, 0], points: [3, 0], formatted: "0-0 (40-0)" },
+        points: [
+          { point_idx: 0, winner: "me", server: "me", timestamp_s: 10 },
+          { point_idx: 1, winner: "me", server: "me", timestamp_s: 20 },
+          { point_idx: 2, winner: "me", server: "me", timestamp_s: 30 },
+        ],
+      }),
+      client,
+    );
+
+    // Late rally.ready arrives carrying the stale 2-point snapshot from create_job and pre-point score 30-0
+    await applyWebhookEvent(
+      parseWebhookEvent({
+        type: "rally.ready",
+        match_id: MATCH_ID,
+        source: "ios",
+        session_type: "match",
+        score: { sets: [], games: [0, 0], points: [2, 0], formatted: "0-0 (30-0)" },
+        points: [
+          { point_idx: 0, winner: "me", server: "me", timestamp_s: 10 },
+          { point_idx: 1, winner: "me", server: "me", timestamp_s: 20 },
+        ],
+        rally: { rally_idx: 2, start_s: 22, end_s: 29, shot_count: 2 },
+        shots: [
+          { shot_idx: 0, hitter: "near", stroke: "serve", call: "in", t_hit_s: 22.1, t_bounce_s: 22.8 },
+          { shot_idx: 1, hitter: "far", stroke: "fh", call: "out", t_hit_s: 23.4, t_bounce_s: 24.2 },
+        ],
+      }),
+      client,
+    );
+
+    const detail = await getTennisMatch(MATCH_ID, true, client);
+    expect({
+      pointsLen: detail?.points.length,
+      pointIdxs: detail?.points.map((p) => p.pointIdx),
+      scoreFormatted: formatScore(detail?.score),
+    }).toEqual({
+      pointsLen: 3,
+      pointIdxs: [0, 1, 2],
+      scoreFormatted: "0-0 (40-0)",
     });
   });
 });

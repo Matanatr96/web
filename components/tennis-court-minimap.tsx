@@ -484,17 +484,22 @@ export function TennisClipPlayer({
 }: TennisClipPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const [rate, setRate] = useState<number>(playbackRate);
+  const rateRef = useRef<number>(playbackRate);
+  const prevPropRateRef = useRef<number>(playbackRate);
 
   useEffect(() => {
-    setRate(playbackRate);
-  }, [playbackRate]);
+    const propChanged = prevPropRateRef.current !== playbackRate;
+    prevPropRateRef.current = playbackRate;
+    const effectiveRate = propChanged ? playbackRate : rateRef.current;
+    rateRef.current = effectiveRate;
+    setRate(effectiveRate);
 
-  useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
 
     const applySeekAndRate = () => {
-      video.playbackRate = playbackRate;
+      video.defaultPlaybackRate = rateRef.current;
+      video.playbackRate = rateRef.current;
       if (seekToS !== null && Number.isFinite(seekToS)) {
         const clamped =
           Number.isFinite(video.duration) && video.duration > 0
@@ -519,8 +524,10 @@ export function TennisClipPlayer({
   }, [src, seekToS, playbackRate, activeShotIdx]);
 
   const handleSpeedChange = (newRate: number) => {
+    rateRef.current = newRate;
     setRate(newRate);
     if (videoRef.current) {
+      videoRef.current.defaultPlaybackRate = newRate;
       videoRef.current.playbackRate = newRate;
     }
   };
