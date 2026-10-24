@@ -182,6 +182,12 @@ final class CourtGeometryTests: XCTestCase {
         XCTAssertEqual(BallKinematics.classifyImageEvent(pre: farHit.pre, post: farHit.post, racketSound: true), .hit)
         XCTAssertEqual(BallKinematics.classifyImageEvent(pre: Array(still.prefix(4)), post: Array(still.suffix(4))), .unknown)
         XCTAssertEqual(BallKinematics.classifyImageEvent(pre: apex.pre, post: apex.post), .unknown)
+        // A downward-to-upward image turn that fails the 0.6 bounce restitution threshold returns .unknown on first bounce,
+        // while after a bounce (bouncesSinceHit >= 1) it is classified as a near-player .hit.
+        let lowRestitutionPre = (0..<4).map { BallSample(t: Double($0) / 60.0, u: 960.0, v: 400.0 + Double($0) * 5.0) }
+        let lowRestitutionPost = (4..<8).map { BallSample(t: Double($0) / 60.0, u: 960.0, v: 415.0 - Double($0 - 3) * 1.5) }
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: lowRestitutionPre, post: lowRestitutionPost, bouncesSinceHit: 0), .unknown)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: lowRestitutionPre, post: lowRestitutionPost, bouncesSinceHit: 1), .hit)
     }
 
     func testCandidateSampleIsAssignedToTheBetterFittingArc() throws {

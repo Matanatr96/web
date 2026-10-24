@@ -80,12 +80,13 @@ final class WatchModel: NSObject, ObservableObject {
             workout.end()
             elapsedTimer?.invalidate()
             elapsedTimer = nil
-            builder?.endCollection(withEnd: Date()) { [weak self] _, _ in
-                self?.builder?.finishWorkout { _, _ in }
-            }
+            let activeBuilder = self.builder
             self.workout = nil
             self.builder = nil
             workoutRunning = false
+            activeBuilder?.endCollection(withEnd: Date()) { _, _ in
+                activeBuilder?.finishWorkout { _, _ in }
+            }
             WKInterfaceDevice.current().play(.stop)
             return
         }
@@ -227,13 +228,21 @@ extension WatchModel: HKLiveWorkoutBuilderDelegate, HKWorkoutSessionDelegate {
                         from fromState: HKWorkoutSessionState,
                         date: Date) {
         DispatchQueue.main.async { [weak self] in
-            self?.workoutRunning = (toState == .running)
+            guard let self else { return }
+            self.workoutRunning = (toState == .running)
+            if toState != .running {
+                self.elapsedTimer?.invalidate()
+                self.elapsedTimer = nil
+            }
         }
     }
 
     func workoutSession(_ workoutSession: HKWorkoutSession, didFailWithError error: Error) {
         DispatchQueue.main.async { [weak self] in
-            self?.workoutRunning = false
+            guard let self else { return }
+            self.workoutRunning = false
+            self.elapsedTimer?.invalidate()
+            self.elapsedTimer = nil
         }
     }
 }
@@ -297,7 +306,7 @@ struct WatchStatusHeader: View {
                     .frame(width: 6, height: 6)
                 Text(reachable ? "Phone" : "Queued")
                     .font(.system(size: 10, weight: .semibold, design: .rounded))
-                    .foregroundStyle(reachable ? .secondary : .orange)
+                    .foregroundStyle(reachable ? Color.secondary : Color.orange)
             }
 
             if isLive {
@@ -376,7 +385,7 @@ struct RallyWatchView: View {
                 Text("\(model.state.shotCount)")
                     .font(.system(size: 46, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(model.state.isLive ? .green : .primary)
+                    .foregroundStyle(model.state.isLive ? Color.green : Color.primary)
                     .minimumScaleFactor(0.7)
                     .lineLimit(1)
 

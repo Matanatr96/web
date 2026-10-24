@@ -37,9 +37,13 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     let session = AVCaptureSession()
     /// Raw 1080p frames for the line caller and drift tracker (called on the capture queue — keep it fast).
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
-    /// Camera intrinsics K for the 1920×1080 output (sample-buffer attachment, else derived from the FOV).
-    private(set) var intrinsics: Intrinsics?
     private let exposureLock = NSLock()
+    private var _intrinsics: Intrinsics?
+    /// Camera intrinsics K for the 1920×1080 output (sample-buffer attachment, else derived from the FOV).
+    private(set) var intrinsics: Intrinsics? {
+        get { exposureLock.withLock { _intrinsics } }
+        set { exposureLock.withLock { _intrinsics = newValue } }
+    }
     private var _exposureFrozen = false
     /// While true (rally `.live`), exposure stays frozen so the ball's brightness doesn't pump mid-rally.
     var exposureFrozen: Bool {
@@ -60,6 +64,7 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     private var ring: [CMSampleBuffer] = []
     private var formatHint: CMFormatDescription?
     private var rally: RallyWriter?
+    private var retiringWriters: [RallyWriter] = []
 
     // MARK: Configuration
 
@@ -196,6 +201,16 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
                     writer.cancel()
                 }
             }
+            let retiring = self.retiringWriters
+            self.retiringWriters.removeAll()
+            for writer in retiring {
+                if let stop = writer.stopAt {
+                    let endPTS = self.ring.last.map { CMTimeMinimum($0.presentationTimeStamp, stop) } ?? stop
+                    writer.finish(at: endPTS)
+                } else {
+                    writer.cancel()
+                }
+            }
         }
     }
 
@@ -209,13 +224,13 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
 
     // MARK: Rally clips
 
-    /// Opens `current_rally.mov` and seeds it from the ring buffer starting 1.5 s before `start`.
+    /// Opens a unique `current_rally_<uuid>.mov` scratch file and seeds it from the ring buffer starting 1.5 s before `start`.
     func beginRally(at start: CMTime) {
         writerQueue.async {
             self.rally?.cancel()
             self.rally = nil
             guard let hint = self.formatHint else { return }
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("current_rally.mov")
+            let url = FileManager.default.temporaryDirectory.appendingPathComponent("current_rally_\(UUID().uuidString).mov")
             try? FileManager.default.removeItem(at: url)
             guard let writer = try? RallyWriter(url: url, formatHint: hint) else { return }
             let from = CMTimeSubtract(start, CMTime(seconds: Self.preRollSeconds, preferredTimescale: 600))
@@ -232,6 +247,8 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     func endRally(lastActivity: CMTime, rallyIdx: Int, completion: @escaping (URL?) -> Void) {
         writerQueue.async {
             guard let writer = self.rally else { return completion(nil) }
+            self.rally = nil
+            self.retiringWriters.append(writer)
             writer.stopAt = CMTimeAdd(lastActivity, CMTime(seconds: Self.tailSeconds, preferredTimescale: 600))
             writer.onFinish = { url in
                 guard let url else { return completion(nil) }
@@ -297,11 +314,16 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
             writer.append(sample)
             finishIfPastTail(writer, newest: newest)
         }
+        for writer in retiringWriters {
+            writer.append(sample)
+            finishIfPastTail(writer, newest: newest)
+        }
     }
 
     private func finishIfPastTail(_ writer: RallyWriter, newest: CMTime) {
         guard let stop = writer.stopAt, CMTimeCompare(newest, stop) >= 0 else { return }
-        rally = nil
+        if rally === writer { rally = nil }
+        retiringWriters.removeAll { $0 === writer }
         writer.finish(at: stop)
     }
 

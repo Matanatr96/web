@@ -220,18 +220,29 @@ final class SessionController: NSObject, ObservableObject {
         let record = buildSessionRecord()
         SessionStore.shared.upsertLocalSession(record)
         finishSession()
-        _ = SessionStore.shared.uploadSession(record)
     }
 
     @MainActor
     func buildSessionRecord() -> LocalSessionRecord {
         let shots = max(totalSessionShots, shotCount)
         let best = max(sessionBest, inStreak)
-        let rallies = max(clipsSaved, sessionClips.count)
+        let syncedClips = sessionClips.map { clip -> RallyClipRecord in
+            var c = clip
+            if let live = RallySegmentUploader.shared.statusByKey[clip.id] {
+                c.uploadStatus = live
+            }
+            return c
+        }
+        sessionClips = syncedClips
+        let rallies = max(clipsSaved, syncedClips.count)
         let scoreStr = mode == .match ? score.formattedScore : nil
-        let status: ClipUploadState = RallySegmentUploader.hasValidCredentials
-            ? (sessionClips.isEmpty ? .localOnly : .uploading)
-            : .needsToken
+        let status: ClipUploadState = {
+            guard RallySegmentUploader.hasValidCredentials else { return .needsToken }
+            if syncedClips.isEmpty { return .localOnly }
+            if syncedClips.allSatisfy({ $0.uploadStatus == .uploaded }) { return .uploaded }
+            if syncedClips.contains(where: { $0.uploadStatus == .failed }) { return .failed }
+            return .uploading
+        }()
         return LocalSessionRecord(
             id: matchId,
             startedAt: sessionStartedAt,
@@ -244,7 +255,7 @@ final class SessionController: NSObject, ObservableObject {
             inCalls: inCalls,
             outCalls: outCalls,
             scoreFormatted: scoreStr,
-            clipFiles: sessionClips,
+            clipFiles: syncedClips,
             uploadStatus: status,
             court: calibration.map { RallySegmentUploader.CourtJSON($0) },
             source: "ios"
@@ -430,7 +441,10 @@ extension SessionController: LiveLineCallerEngineDelegate {
             let finalURL: URL
             if url.path != sessionClipURL.path {
                 try? FileManager.default.removeItem(at: sessionClipURL)
-                if (try? FileManager.default.copyItem(at: url, to: sessionClipURL)) != nil {
+                if (try? FileManager.default.moveItem(at: url, to: sessionClipURL)) != nil {
+                    finalURL = sessionClipURL
+                } else if (try? FileManager.default.copyItem(at: url, to: sessionClipURL)) != nil {
+                    try? FileManager.default.removeItem(at: url)
                     finalURL = sessionClipURL
                 } else {
                     finalURL = url
@@ -519,7 +533,13 @@ extension SessionController: WCSessionDelegate {
             case .pointMe: self.point(.me)
             case .pointOpp: self.point(.opp)
             case .undo: self.undoPoint()
-            case .toggleRally: self.toggleManualRally()
+            case .toggleRally:
+                Haptics.impact(.medium)
+                if self.engineState == .live {
+                    self.engine.endCurrentRally()
+                } else {
+                    self.engine.forceStartRally()
+                }
             }
         }
     }
@@ -644,7 +664,7 @@ struct RecordView: View {
                         .scaleEffect(c.engineState != .sleeping && pulseDot ? 1.28 : 0.92)
                     Text(c.engineState.rawValue.uppercased())
                         .font(.caption.monospaced().bold())
-                        .foregroundStyle(c.engineState == .live ? .green : .primary)
+                        .foregroundStyle(c.engineState == .live ? Color.green : Color.primary)
                     if c.currentBall != nil {
                         Text("· BALL")
                             .font(.caption2.monospaced().bold())
@@ -676,7 +696,7 @@ struct RecordView: View {
                             .padding(.vertical, 4)
                             .background(showCourtLines ? Color.green.opacity(0.28) : Color.white.opacity(0.12),
                                         in: Capsule())
-                            .foregroundStyle(showCourtLines ? .green : .secondary)
+                            .foregroundStyle(showCourtLines ? Color.green : Color.secondary)
                     }
                     .buttonStyle(.plain)
                 } else {
@@ -717,7 +737,7 @@ struct RecordView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: uploader.activeUploadsCount > 0 ? "icloud.and.arrow.up.fill" : "film.stack")
-                            .foregroundStyle(uploader.activeUploadsCount > 0 ? .cyan : .primary)
+                            .foregroundStyle(uploader.activeUploadsCount > 0 ? Color.cyan : Color.primary)
                         Text("Clips (\(c.clipsSaved))")
                             .monospacedDigit()
                     }

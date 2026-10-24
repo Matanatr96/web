@@ -175,10 +175,21 @@ final class SessionStore: ObservableObject {
     /// Inserts or updates a local session and persists `sessions.json`.
     func upsertLocalSession(_ record: LocalSessionRecord) {
         var updated = record
-        updated.uploadStatus = Self.deriveSessionUploadStatus(for: updated)
         if let idx = localSessions.firstIndex(where: { $0.id == updated.id }) {
+            let existingById = Dictionary(localSessions[idx].clipFiles.map { ($0.id, $0.uploadStatus) },
+                                          uniquingKeysWith: { a, _ in a })
+            for cIdx in updated.clipFiles.indices {
+                let cid = updated.clipFiles[cIdx].id
+                if existingById[cid] == .uploaded {
+                    updated.clipFiles[cIdx].uploadStatus = .uploaded
+                } else if let live = RallySegmentUploader.shared.statusByKey[cid] {
+                    updated.clipFiles[cIdx].uploadStatus = live
+                }
+            }
+            updated.uploadStatus = Self.deriveSessionUploadStatus(for: updated)
             localSessions[idx] = updated
         } else {
+            updated.uploadStatus = Self.deriveSessionUploadStatus(for: updated)
             localSessions.insert(updated, at: 0)
         }
         localSessions.sort { $0.startedAt > $1.startedAt }
@@ -253,6 +264,11 @@ final class SessionStore: ObservableObject {
         }
         var enqueuedAny = false
         for clip in session.clipFiles where clip.fileExistsOnDisk && (forceAll || clip.uploadStatus != .uploaded) {
+            if !forceAll,
+               let activeState = RallySegmentUploader.shared.statusByKey[clip.id],
+               activeState == .uploading || activeState == .queued {
+                continue
+            }
             updateClipStatus(matchId: session.id, rallyIdx: clip.rallyIdx, status: .uploading)
             RallySegmentUploader.shared.enqueue(
                 clip: clip.fileURL, rallyIdx: clip.rallyIdx, startS: clip.startS, config: config,
@@ -260,7 +276,9 @@ final class SessionStore: ObservableObject {
             )
             enqueuedAny = true
         }
-        RallySegmentUploader.shared.finalizeSession(config: config, score: nil, points: nil)
+        if src != "ios_library" {
+            RallySegmentUploader.shared.finalizeSession(config: config, score: nil, points: nil)
+        }
         return enqueuedAny
     }
 
@@ -399,11 +417,17 @@ final class SessionStore: ObservableObject {
                 localSessions[idx].ralliesCount = rCount
                 changed = true
             }
-            if r.status == "ready", localSessions[idx].uploadStatus != .uploaded {
+            if r.status == "ready", rCount > 0, localSessions[idx].uploadStatus != .uploaded {
                 for cIdx in localSessions[idx].clipFiles.indices {
-                    localSessions[idx].clipFiles[cIdx].uploadStatus = .uploaded
+                    let clipId = localSessions[idx].clipFiles[cIdx].id
+                    let liveState = RallySegmentUploader.shared.statusByKey[clipId]
+                    if liveState != .uploading && liveState != .queued && liveState != .failed {
+                        localSessions[idx].clipFiles[cIdx].uploadStatus = .uploaded
+                    }
                 }
-                localSessions[idx].uploadStatus = .uploaded
+                if localSessions[idx].clipFiles.allSatisfy({ $0.uploadStatus == .uploaded }) {
+                    localSessions[idx].uploadStatus = .uploaded
+                }
                 changed = true
             }
         }
@@ -416,6 +440,8 @@ final class SessionStore: ObservableObject {
         var items: [MergedSessionItem] = []
         var seenIds = Set<String>()
         let remoteById = Dictionary(uniqueKeysWithValues: remoteSessions.map { ($0.canonicalMatchId, $0) })
+        let isoFrac = ISO8601DateFormatter()
+        isoFrac.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
         let iso = ISO8601DateFormatter()
         let dayFmt = DateFormatter()
         dayFmt.dateFormat = "yyyy-MM-dd"
@@ -430,9 +456,10 @@ final class SessionStore: ObservableObject {
             let shots = max(local.totalShots, remote?.totalShots ?? 0)
             let streak = max(local.bestStreak, remote?.bestInStreak ?? 0)
             let rallies = max(local.ralliesCount, local.clipFiles.count, remote?.totalRallies ?? remote?.ralliesDone ?? 0)
-            let inPct = remote?.inPct ?? local.inCallPct
+            let remoteValidInPct = remote.flatMap { ($0.inPct ?? 0) > 0 || ($0.outCount ?? 0) > 0 ? $0.inPct : nil }
+            let inPct = remoteValidInPct ?? local.inCallPct
             let score = local.scoreFormatted ?? remote?.scoreFormatted
-            let status: ClipUploadState = (remote?.status == "ready") ? .uploaded : local.uploadStatus
+            let status: ClipUploadState = (remote?.status == "ready" && (remote?.totalRallies ?? remote?.ralliesDone ?? 0) > 0 && local.uploadStatus != .uploading && local.uploadStatus != .failed) ? .uploaded : local.uploadStatus
             let srcLabel = local.source == "ios_library" ? "CAMERA ROLL" : "ON-DEVICE"
             let defaultTitle = local.mode == .match ? "Match Session" : "Rally Session"
             items.append(MergedSessionItem(
@@ -459,12 +486,13 @@ final class SessionStore: ObservableObject {
             let id = remote.canonicalMatchId
             guard !seenIds.contains(id) else { continue }
             seenIds.insert(id)
-            let parsedDate = remote.createdAt.flatMap { iso.date(from: $0) }
+            let parsedDate = remote.createdAt.flatMap { isoFrac.date(from: $0) ?? iso.date(from: $0) }
                 ?? remote.playedOn.flatMap { dayFmt.date(from: $0) }
                 ?? Date.distantPast
             let mode: SessionMode = remote.sessionType == "match" ? .match : .rally
             let defaultTitle = mode == .match ? "Match Session" : "Rally Session"
             let dateStr = remote.playedOn ?? displayFmt.string(from: parsedDate)
+            let remoteValidInPct = (remote.inPct ?? 0) > 0 || (remote.outCount ?? 0) > 0 ? remote.inPct : nil
             items.append(MergedSessionItem(
                 id: id,
                 title: remote.title ?? defaultTitle,
@@ -476,7 +504,7 @@ final class SessionStore: ObservableObject {
                 totalShots: remote.totalShots ?? 0,
                 bestStreak: remote.bestInStreak ?? 0,
                 ralliesCount: remote.totalRallies ?? remote.ralliesDone ?? 0,
-                inPct: remote.inPct,
+                inPct: remoteValidInPct,
                 scoreFormatted: remote.scoreFormatted,
                 uploadStatus: .uploaded,
                 remoteStatus: remote.status,
@@ -916,7 +944,7 @@ struct HomeView: View {
                                 .overlay(
                                     Capsule().stroke(isSelected ? Color.green : Color.clear, lineWidth: 1)
                                 )
-                                .foregroundStyle(isSelected ? .green : .secondary)
+                                .foregroundStyle(isSelected ? Color.green : Color.secondary)
                         }
                         .buttonStyle(.plain)
                     }
@@ -1411,7 +1439,7 @@ struct SessionDetailSheet: View {
                         let bookmarkedCount = local.clipFiles.filter(\.bookmarked).count
                         Toggle(isOn: $bookmarkedOnly) {
                             Label("Bookmarked Rallies Only (\(bookmarkedCount))", systemImage: "star.fill")
-                                .foregroundStyle(bookmarkedOnly ? .yellow : .primary)
+                                .foregroundStyle(bookmarkedOnly ? Color.yellow : Color.primary)
                         }
                         .tint(.yellow)
                     }
@@ -1556,7 +1584,8 @@ struct SessionDetailSheet: View {
                             }
                         }
                     }
-                } else if item.ralliesCount > 0 {
+                }
+                if (currentLocal == nil || currentLocal?.source == "ios_library"), item.ralliesCount > 0 {
                     Section("Cloud Rally Clips (\(item.ralliesCount))") {
                         ForEach(0..<item.ralliesCount, id: \.self) { idx in
                             if let remoteClipURL = URL(
@@ -1650,7 +1679,7 @@ struct CloudSettingsSheet: View {
                         Text("Failed / Paused Uploads")
                         Spacer()
                         Text("\(uploader.failedUploadsCount)").monospacedDigit()
-                            .foregroundStyle(uploader.failedUploadsCount > 0 ? .red : .secondary)
+                            .foregroundStyle(uploader.failedUploadsCount > 0 ? Color.red : Color.secondary)
                     }
                     HStack {
                         Text("Pending Local Sessions")

@@ -801,11 +801,11 @@ public enum BallKinematics {
         if imgPre.dv < -40.0 && imgPost.dv > 40.0 {
             return .hit
         }
-        if imgPre.dv > 20.0 && imgPost.dv < -20.0 && -imgPost.dv >= 0.6 * imgPre.dv {
-            if bouncesSinceHit == 0 && imgPre.dv < 800.0 {
-                return .bounce
+        if imgPre.dv > 20.0 && imgPost.dv < -20.0 {
+            if bouncesSinceHit >= 1 || imgPre.dv >= 800.0 {
+                return .hit
             }
-            return .hit
+            return -imgPost.dv >= 0.6 * imgPre.dv ? .bounce : .unknown
         }
         return hasCusp ? .hit : .unknown
     }

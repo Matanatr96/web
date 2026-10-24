@@ -157,6 +157,7 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         var server: String
         var winner: String?
         var formatted: String
+        var display: String?
 
         init(_ sk: MatchScorekeeper) {
             let s = sk.score
@@ -169,6 +170,7 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
             server = s.server.rawValue
             winner = s.winner?.rawValue
             formatted = sk.formattedScore
+            display = sk.formattedScore
         }
     }
 
@@ -183,6 +185,24 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         var scoreBefore: String
         var scoreAfter: String
         var timestampS: Double?
+        var atS: Double?
+        var source: String? = "watch"
+
+        init(pointIdx: Int, rallyIdx: Int?, server: String, serveSide: String, winner: String,
+             endedBy: String?, scoreBefore: String, scoreAfter: String, timestampS: Double?,
+             source: String? = "watch") {
+            self.pointIdx = pointIdx
+            self.rallyIdx = rallyIdx
+            self.server = server
+            self.serveSide = serveSide
+            self.winner = winner
+            self.endedBy = endedBy
+            self.scoreBefore = scoreBefore
+            self.scoreAfter = scoreAfter
+            self.timestampS = timestampS
+            self.atS = timestampS
+            self.source = source
+        }
     }
 
     /// Persistent per-clip upload state, keyed by `"{matchId}_{rallyIdx}"`.
@@ -217,7 +237,14 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         config.sessionSendsLaunchEvents = true
         return URLSession(configuration: config, delegate: self, delegateQueue: delegateQueue)
     }()
+    private struct PendingFinalize: Codable {
+        var config: Config
+        var score: ScorePayload?
+        var points: [PointPayload]?
+    }
+
     private var uploads: [String: Upload] = [:]
+    private var pendingFinalizes: [String: PendingFinalize] = [:]
     private var responses: [Int: Data] = [:]
     private static let manifestURL = CameraCaptureManager.clipsDirectory.appendingPathComponent("uploads.json")
     private static let partsDirectory: URL = {
@@ -260,9 +287,13 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
                  score: ScorePayload? = nil, points: [PointPayload]? = nil) {
         delegateQueue.addOperation {
             let key = Self.uploadKey(matchId: config.matchId, rallyIdx: rallyIdx)
+            let existing = self.uploads[key]
+            let mid = config.matchId.uuidString.lowercased()
+            let pending = self.pendingFinalizes[mid]
             self.uploads[key] = Upload(key: key, rallyIdx: rallyIdx, clipPath: clip.path, startS: startS,
                                        config: config, bookmarked: bookmarked, liveCall: liveCall,
-                                       score: score, points: points)
+                                       score: score ?? existing?.score ?? pending?.score,
+                                       points: points ?? existing?.points ?? pending?.points)
             self.save()
             self.notifyStatus(matchId: config.matchId, rallyIdx: rallyIdx, state: .uploading)
             self.createJob(key)
@@ -270,37 +301,53 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
     }
 
     /// Updates Match Mode score/point metadata on any queued uploads for `config.matchId` and notifies the backend
-    /// when finalizing or updating a session.
+    /// when finalizing or updating a session (deferred until all queued clips for `config.matchId` commit; skipped for `ios_library`).
     func finalizeSession(config: Config, score: ScorePayload?, points: [PointPayload]?) {
+        guard config.source != "ios_library" else { return }
         delegateQueue.addOperation {
-            let prefix = config.matchId.uuidString.lowercased() + "_"
-            for k in self.uploads.keys where k.hasPrefix(prefix) {
-                self.uploads[k]?.score = score
-                self.uploads[k]?.points = points
-            }
-            self.save()
             let mid = config.matchId.uuidString.lowercased()
-            var req = URLRequest(url: config.baseURL.appendingPathComponent("sessions/\(mid)/finalize"))
-            req.httpMethod = "POST"
-            req.setValue(config.jobToken, forHTTPHeaderField: "X-Job-Token")
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let court = config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
-            var body: [String: Any] = [
-                "match_id": mid,
-                "source": config.source ?? "ios",
-                "session_type": config.sessionType.rawValue,
-                "doubles": config.doubles,
-                "court": court ?? NSNull(),
-            ]
-            if let score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
-                body["score"] = obj
+            let prefix = mid + "_"
+            for k in self.uploads.keys where k.hasPrefix(prefix) {
+                if let score { self.uploads[k]?.score = score }
+                if let points { self.uploads[k]?.points = points }
             }
-            if let points, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(points)) {
-                body["points"] = obj
+            let firstMatching = self.uploads.first(where: { $0.key.hasPrefix(prefix) })?.value
+            let effectiveScore = score ?? self.pendingFinalizes[mid]?.score ?? firstMatching?.score
+            let effectivePoints = points ?? self.pendingFinalizes[mid]?.points ?? firstMatching?.points
+            self.save()
+            let hasPendingUploads = self.uploads.keys.contains(where: { $0.hasPrefix(prefix) })
+            if hasPendingUploads {
+                self.pendingFinalizes[mid] = PendingFinalize(config: config, score: effectiveScore, points: effectivePoints)
+                return
             }
-            req.httpBody = try? JSONSerialization.data(withJSONObject: body)
-            URLSession.shared.dataTask(with: req).resume()
+            self.pendingFinalizes.removeValue(forKey: mid)
+            self.sendFinalizeRequest(config: config, score: effectiveScore, points: effectivePoints)
         }
+    }
+
+    private func sendFinalizeRequest(config: Config, score: ScorePayload?, points: [PointPayload]?) {
+        guard config.source != "ios_library" else { return }
+        let mid = config.matchId.uuidString.lowercased()
+        var req = URLRequest(url: config.baseURL.appendingPathComponent("sessions/\(mid)/finalize"))
+        req.httpMethod = "POST"
+        req.setValue(config.jobToken, forHTTPHeaderField: "X-Job-Token")
+        req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        let court = config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
+        var body: [String: Any] = [
+            "match_id": mid,
+            "source": config.source ?? "ios",
+            "session_type": config.sessionType.rawValue,
+            "doubles": config.doubles,
+            "court": court ?? NSNull(),
+        ]
+        if let score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
+            body["score"] = obj
+        }
+        if let points, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(points)) {
+            body["points"] = obj
+        }
+        req.httpBody = try? JSONSerialization.data(withJSONObject: body)
+        URLSession.shared.dataTask(with: req).resume()
     }
 
     /// Re-drives uploads that exhausted their retries (call when the app returns to the foreground or after
@@ -440,6 +487,14 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         pruneOldClipsIfNeeded()
         DispatchQueue.main.async { self.completedUploadsCount += 1 }
         notifyStatus(matchId: u.config.matchId, rallyIdx: u.rallyIdx, state: .uploaded)
+        let mid = u.config.matchId.uuidString.lowercased()
+        let prefix = mid + "_"
+        if !uploads.keys.contains(where: { $0.hasPrefix(prefix) }),
+           let pending = pendingFinalizes.removeValue(forKey: mid) {
+            sendFinalizeRequest(config: pending.config,
+                                score: pending.score ?? u.score,
+                                points: pending.points ?? u.points)
+        }
     }
 
     private func markFailed(_ key: String) {

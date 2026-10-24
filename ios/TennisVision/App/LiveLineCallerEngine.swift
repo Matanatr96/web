@@ -98,6 +98,7 @@ final class LiveLineCallerEngine: @unchecked Sendable {
     private var tripletIndex = 0
     private var inferenceBusy = false
     private var stationary: (p: Point2, count: Int)?
+    private var interruptionObserver: NSObjectProtocol?
 
     init() {
         queue.setSpecific(key: Self.queueKey, value: true)
@@ -111,8 +112,27 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 
     // MARK: Configuration (thread-safe setters)
 
+    private func resetSessionState() {
+        state = .sleeping
+        tracker = RallyTracker()
+        track.removeAll()
+        recentOnsets.removeAll()
+        lastEventT = -Double.infinity
+        lastCheckedT = -Double.infinity
+        lastHitterHalf = nil
+        bouncesThisRally = 0
+        armedAt = 0.0
+        cooldownUntil = 0.0
+        lastFramePTS = 0.0
+        pending.removeAll()
+        frameIndex = 0
+        tripletIndex = 0
+        stationary = nil
+    }
+
     /// Starts the audio engine (onset detection + preloaded call buffers).
     func start() throws {
+        queue.async { self.resetSessionState() }
         let session = AVAudioSession.sharedInstance()
         try session.setCategory(.playAndRecord, mode: .measurement,
                                 options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
@@ -120,12 +140,33 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         try session.setActive(true)
         onsets.install(on: audioEngine)
         try audioEngine.start()
+        if let obs = interruptionObserver {
+            NotificationCenter.default.removeObserver(obs)
+        }
+        interruptionObserver = NotificationCenter.default.addObserver(
+            forName: AVAudioSession.interruptionNotification,
+            object: session,
+            queue: .main
+        ) { [weak self] note in
+            guard let self,
+                  let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+                  AVAudioSession.InterruptionType(rawValue: raw) == .ended else { return }
+            try? AVAudioSession.sharedInstance().setActive(true)
+            if !self.audioEngine.isRunning {
+                try? self.audioEngine.start()
+            }
+        }
         Task { await announcer.prerenderSpeech() }
     }
 
     func stop() {
+        if let obs = interruptionObserver {
+            NotificationCenter.default.removeObserver(obs)
+            interruptionObserver = nil
+        }
         audioEngine.inputNode.removeTap(onBus: 0)
         audioEngine.stop()
+        queue.async { self.resetSessionState() }
     }
 
     func configure(mode: SessionMode, audioMode: AudioCallMode, doubles: Bool) {
@@ -505,7 +546,7 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         let lo = max(0, i - BallKinematics.fitSamples - 1), hi = min(track.count - 1, i + BallKinematics.fitSamples + 1)
         let window = Array(track[lo...hi])
         let estimate = BallKinematics.contactPoint(around: i - lo, in: window, hr: cal.hr, sigmaPx: sigmaPx)
-        let isServe = mode == .match && bouncesThisRally == 0
+        let isServe = mode == .match && tracker.shotCount <= 1 && bouncesThisRally == 0
         let region = isServe ? (serveRegion ?? .singles) : (doubles ? .doubles : .singles)
         var hitter = lastHitterHalf
         if hitter == nil, let first = track.first, i > 0 {
@@ -773,6 +814,7 @@ final class HitOnsetDetector {
 
     func install(on engine: AVAudioEngine) {
         let input = engine.inputNode
+        input.removeTap(onBus: 0)
         let format = input.outputFormat(forBus: 0)
         design(sampleRate: format.sampleRate)
         input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, time in
@@ -855,7 +897,11 @@ final class CallAnnouncer: @unchecked Sendable {
         lock.lock()
         let buffer = buffers[sound]
         lock.unlock()
-        guard let buffer else { return }
+        guard let buffer, let engine = player.engine else { return }
+        if !engine.isRunning {
+            try? engine.start()
+        }
+        guard engine.isRunning else { return }
         let duration = Double(buffer.frameLength) / format.sampleRate
         onPlayDuration?(duration)
         player.scheduleBuffer(buffer, at: nil, options: .interrupts)
