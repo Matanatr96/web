@@ -38,7 +38,8 @@ targets:
         NSMicrophoneUsageDescription: Listens for racket hits to wake the line caller between rallies.
         NSPhotoLibraryAddUsageDescription: Saves recorded rally clips to your Photos library.
         UIBackgroundModes: [audio]
-        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight]
+        UISupportedInterfaceOrientations: [UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationLandscapeLeft]
+        UISupportedInterfaceOrientations~ipad: [UIInterfaceOrientationLandscapeRight, UIInterfaceOrientationLandscapeLeft]
         UIRequiresFullScreen: true
         UILaunchScreen: {}
         ModalBaseURL: $(MODAL_BASE_URL)

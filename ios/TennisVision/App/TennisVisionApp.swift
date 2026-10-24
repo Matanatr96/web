@@ -33,12 +33,16 @@ struct TennisVisionApp: App {
     }
 }
 
-/// Hands background-upload completion events to the uploader.
+/// Hands background-upload completion events to the uploader and locks the app to landscape orientations.
 final class AppDelegate: NSObject, UIApplicationDelegate {
     func application(_ application: UIApplication, handleEventsForBackgroundURLSession identifier: String,
                      completionHandler: @escaping () -> Void) {
         guard identifier == RallySegmentUploader.sessionIdentifier else { return completionHandler() }
         RallySegmentUploader.shared.backgroundCompletionHandler = completionHandler
+    }
+
+    func application(_ application: UIApplication, supportedInterfaceOrientationsFor window: UIWindow?) -> UIInterfaceOrientationMask {
+        .landscape
     }
 }
 
@@ -160,6 +164,7 @@ final class SessionController: NSObject, ObservableObject {
             setupError = "Could not start camera preview: \(error)"
             return
         }
+        objectWillChange.send()
         camera.onFrame = nil
         camera.start()
         pushWatch()
@@ -459,7 +464,10 @@ struct RecordView: View {
 
     var body: some View {
         ZStack {
-            CameraPreview(session: c.camera.session).ignoresSafeArea()
+            CameraPreview(session: c.camera.session) { angle in
+                c.camera.setLandscapeRotationAngle(angle)
+            }
+            .ignoresSafeArea()
             if showCourtLines, let cal = c.calibration {
                 LiveCourtWireframeOverlay(calibration: cal, doubles: c.doubles)
                     .ignoresSafeArea()
@@ -813,23 +821,100 @@ private struct Banner: View {
     }
 }
 
-/// AVCaptureVideoPreviewLayer host.
+/// AVCaptureVideoPreviewLayer host locked to horizontal 16:9 landscape (`0°` for `.landscapeRight`, `180°` for `.landscapeLeft`).
 struct CameraPreview: UIViewRepresentable {
     let session: AVCaptureSession
+    var onLandscapeAngleChange: ((CGFloat) -> Void)? = nil
 
     final class PreviewView: UIView {
         override class var layerClass: AnyClass { AVCaptureVideoPreviewLayer.self }
         var previewLayer: AVCaptureVideoPreviewLayer { layer as! AVCaptureVideoPreviewLayer }
+        var onLandscapeAngleChange: ((CGFloat) -> Void)?
+        private var observers: [NSObjectProtocol] = []
+
+        override init(frame: CGRect) {
+            super.init(frame: frame)
+            installObservers()
+        }
+
+        required init?(coder: NSCoder) {
+            super.init(coder: coder)
+            installObservers()
+        }
+
+        deinit {
+            for obs in observers {
+                NotificationCenter.default.removeObserver(obs)
+            }
+        }
+
+        private func installObservers() {
+            let nc = NotificationCenter.default
+            observers.append(nc.addObserver(forName: .AVCaptureSessionDidStartRunning, object: nil, queue: .main) { [weak self] _ in
+                self?.syncLandscapeRotation()
+            })
+            observers.append(nc.addObserver(forName: UIDevice.orientationDidChangeNotification, object: nil, queue: .main) { [weak self] _ in
+                self?.syncLandscapeRotation()
+            })
+        }
+
+        override func didMoveToWindow() {
+            super.didMoveToWindow()
+            syncLandscapeRotation()
+        }
+
+        override func layoutSubviews() {
+            super.layoutSubviews()
+            syncLandscapeRotation()
+        }
+
+        /// Forces `previewLayer.connection` out of its default `90°` (`.portrait`) into `0°` (`.landscapeRight`) or `180°` (`.landscapeLeft`).
+        func syncLandscapeRotation() {
+            let angle = Self.currentLandscapeRotationAngle(for: window)
+            if let connection = previewLayer.connection, connection.isVideoRotationAngleSupported(angle) {
+                if connection.videoRotationAngle != angle {
+                    connection.videoRotationAngle = angle
+                }
+            }
+            onLandscapeAngleChange?(angle)
+        }
+
+        private static func currentLandscapeRotationAngle(for window: UIWindow?) -> CGFloat {
+            let sceneOrientation = window?.windowScene?.interfaceOrientation
+                ?? UIApplication.shared.connectedScenes
+                    .compactMap { $0 as? UIWindowScene }
+                    .first?.interfaceOrientation
+            if sceneOrientation == .landscapeLeft {
+                return 180
+            }
+            if sceneOrientation == .landscapeRight {
+                return 0
+            }
+            switch UIDevice.current.orientation {
+            case .landscapeRight:
+                return 180
+            default:
+                return 0
+            }
+        }
     }
 
     func makeUIView(context: Context) -> PreviewView {
         let view = PreviewView()
+        view.onLandscapeAngleChange = onLandscapeAngleChange
         view.previewLayer.session = session
         view.previewLayer.videoGravity = .resizeAspect
+        view.syncLandscapeRotation()
         return view
     }
 
-    func updateUIView(_ uiView: PreviewView, context: Context) {}
+    func updateUIView(_ uiView: PreviewView, context: Context) {
+        uiView.onLandscapeAngleChange = onLandscapeAngleChange
+        if uiView.previewLayer.session !== session {
+            uiView.previewLayer.session = session
+        }
+        uiView.syncLandscapeRotation()
+    }
 }
 
 // MARK: - Models

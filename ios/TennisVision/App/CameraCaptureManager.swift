@@ -53,6 +53,7 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
         set { exposureLock.withLock { _isRecording = newValue } }
     }
     private var _forceNextKeyframe = false
+    private var _landscapeRotationAngle: CGFloat = 0
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let captureQueue = DispatchQueue(label: "tennis.capture", qos: .userInteractive)
@@ -110,13 +111,35 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
         videoOutput.alwaysDiscardsLateVideoFrames = true
         videoOutput.setSampleBufferDelegate(self, queue: captureQueue)
         session.addOutput(videoOutput)
+        let initialAngle = exposureLock.withLock { _landscapeRotationAngle }
         if let connection = videoOutput.connection(with: .video) {
             if connection.isVideoStabilizationSupported { connection.preferredVideoStabilizationMode = .off }
             if connection.isCameraIntrinsicMatrixDeliverySupported { connection.isCameraIntrinsicMatrixDeliveryEnabled = true }
-            if connection.isVideoRotationAngleSupported(0) { connection.videoRotationAngle = 0 }   // sensor-native landscape
+            let targetAngle: CGFloat = connection.isVideoRotationAngleSupported(initialAngle) ? initialAngle : 0
+            if connection.isVideoRotationAngleSupported(targetAngle) {
+                connection.videoRotationAngle = targetAngle
+            }
         }
         try makeEncoder()
         observeExposure(cam)
+    }
+
+    /// Updates the `videoOutput` connection rotation to `0` (`.landscapeRight`) or `180` (`.landscapeLeft`).
+    /// Ignored while `isRecording` is true so an in-progress session recording never flips mid-stream.
+    func setLandscapeRotationAngle(_ angle: CGFloat) {
+        let clamped: CGFloat = (angle == 180) ? 180 : 0
+        let shouldUpdate = exposureLock.withLock { () -> Bool in
+            guard !_isRecording else { return false }
+            _landscapeRotationAngle = clamped
+            return true
+        }
+        guard shouldUpdate else { return }
+        captureQueue.async { [weak self] in
+            guard let self, let connection = self.videoOutput.connection(with: .video) else { return }
+            if connection.isVideoRotationAngleSupported(clamped), connection.videoRotationAngle != clamped {
+                connection.videoRotationAngle = clamped
+            }
+        }
     }
 
     /// Picks a 1920×1080 full-range format that supports 60 fps (prefers non-binned, highest max ISO).
