@@ -37,6 +37,25 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
+/// Lightweight tactile feedback helper for on-court button taps and `OUT` line-call alerts.
+enum Haptics {
+    static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
+        DispatchQueue.main.async {
+            let generator = UIImpactFeedbackGenerator(style: style)
+            generator.prepare()
+            generator.impactOccurred()
+        }
+    }
+
+    static func notify(_ type: UINotificationFeedbackGenerator.FeedbackType) {
+        DispatchQueue.main.async {
+            let generator = UINotificationFeedbackGenerator()
+            generator.prepare()
+            generator.notificationOccurred(type)
+        }
+    }
+}
+
 // MARK: - Session controller
 
 /// Owns the capture, live-caller, drift-tracker, uploader, SessionStore and Watch plumbing. All @Published state changes on main.
@@ -169,6 +188,7 @@ final class SessionController: NSObject, ObservableObject {
 
     /// Manually starts a rally clip or finishes the active rally clip.
     func toggleManualRally() {
+        Haptics.impact(.medium)
         if engineState == .live || engineState == .armed {
             engine.endCurrentRally()
         } else {
@@ -252,6 +272,7 @@ final class SessionController: NSObject, ObservableObject {
         callsPaused = false
         engine.setCallsPaused(false)
         apply(cal)
+        Haptics.notify(.success)
     }
 
     private func apply(_ cal: CourtCalibration) {
@@ -261,10 +282,14 @@ final class SessionController: NSObject, ObservableObject {
 
     // MARK: Watch & phone actions
 
-    func bookmark() { engine.bookmark() }
+    func bookmark() {
+        Haptics.impact(.medium)
+        engine.bookmark()
+    }
 
     /// Exports the last 6 s from the RAM ring and opens the slow-mo replay.
     func challenge() {
+        Haptics.impact(.heavy)
         let call = lastCall
         Task { @MainActor in
             guard let url = await camera.exportRecent(seconds: CameraCaptureManager.ringSeconds) else { return }
@@ -273,6 +298,7 @@ final class SessionController: NSObject, ObservableObject {
     }
 
     func point(_ winner: Player) {
+        Haptics.impact(.medium)
         let before = score.formattedScore
         let srv = score.score.server.rawValue
         let side = score.serverSide.rawValue
@@ -289,6 +315,7 @@ final class SessionController: NSObject, ObservableObject {
     }
 
     func undoPoint() {
+        Haptics.impact(.light)
         score.undo()
         if !pointsLog.isEmpty { pointsLog.removeLast() }
         updateServeRegion()
@@ -457,6 +484,7 @@ extension SessionController: LiveLineCallerEngineDelegate {
             inCalls += 1
         } else if result.call == .out {
             outCalls += 1
+            Haptics.notify(.warning)
         }
         pushWatch()
     }
@@ -491,6 +519,7 @@ extension SessionController: WCSessionDelegate {
             case .pointMe: self.point(.me)
             case .pointOpp: self.point(.opp)
             case .undo: self.undoPoint()
+            case .toggleRally: self.toggleManualRally()
             }
         }
     }
@@ -505,10 +534,17 @@ struct RecordView: View {
     var onEndSession: (() -> Void)? = nil
 
     @State private var showClipsSheet = false
+    @State private var showCourtLines = true
+    @State private var pulseDot = false
 
     var body: some View {
         ZStack {
             CameraPreview(session: c.camera.session).ignoresSafeArea()
+            if showCourtLines, let cal = c.calibration {
+                LiveCourtWireframeOverlay(calibration: cal, doubles: c.doubles, callsPaused: c.callsPaused)
+                    .ignoresSafeArea()
+                    .allowsHitTesting(false)
+            }
             BallTrackingOverlay(current: c.currentBall, trail: c.ballTrail)
                 .ignoresSafeArea()
                 .allowsHitTesting(false)
@@ -525,7 +561,12 @@ struct RecordView: View {
             .padding()
         }
         .preferredColorScheme(.dark)
-        .task { await c.start() }
+        .task {
+            withAnimation(.easeInOut(duration: 0.9).repeatForever(autoreverses: true)) {
+                pulseDot = true
+            }
+            await c.start()
+        }
         .fullScreenCover(item: $c.calibrationFrame) { frame in
             CourtCalibrationOverlay(image: frame.image, intrinsics: c.camera.intrinsics, initial: c.calibration,
                                     onDone: c.finishCalibration, onCancel: { c.calibrationFrame = nil })
@@ -555,78 +596,155 @@ struct RecordView: View {
         }
     }
 
+    private var stateDotColor: Color {
+        switch c.engineState {
+        case .live: return .green
+        case .armed: return .yellow
+        case .sleeping: return .gray
+        }
+    }
+
     private var topBar: some View {
         HStack(spacing: 10) {
-            Button(role: .destructive) {
-                Task {
-                    await c.endSession()
-                    onEndSession?()
-                    dismiss()
+            // Left Capsule Cluster: End Session + Rally/Match segmented pill
+            HStack(spacing: 8) {
+                Button(role: .destructive) {
+                    Haptics.impact(.medium)
+                    Task {
+                        await c.endSession()
+                        onEndSession?()
+                        dismiss()
+                    }
+                } label: {
+                    Label("End Session", systemImage: "stop.circle.fill")
+                        .font(.caption.bold())
                 }
-            } label: {
-                Label("End Session", systemImage: "stop.circle.fill")
-                    .font(.callout.bold())
-            }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
 
-            Picker("Mode", selection: $c.mode) {
-                Text("Rally").tag(SessionMode.rally)
-                Text("Match").tag(SessionMode.match)
-            }
-            .pickerStyle(.segmented)
-            .frame(maxWidth: 180)
-
-            Menu {
-                Picker("Audio", selection: $c.audioMode) {
-                    ForEach(AudioCallMode.allCases) { Text($0.rawValue).tag($0) }
+                Picker("Mode", selection: $c.mode) {
+                    Text("Rally").tag(SessionMode.rally)
+                    Text("Match").tag(SessionMode.match)
                 }
-                Toggle("Doubles lines", isOn: $c.doubles)
-            } label: {
-                Label(c.audioMode == .mute ? "Muted" : "Audio",
-                      systemImage: c.audioMode == .mute ? "speaker.slash" : "speaker.wave.2")
+                .pickerStyle(.segmented)
+                .frame(width: 140)
             }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
 
-            Button { c.beginCalibration() } label: {
-                Label(c.calibration == nil ? "Calibrate" : "Recalibrate", systemImage: "viewfinder")
-            }
+            Spacer(minLength: 4)
 
-            Button {
-                showClipsSheet = true
-            } label: {
-                HStack(spacing: 4) {
-                    Image(systemName: uploader.activeUploadsCount > 0 ? "icloud.and.arrow.up.fill" : "film.stack")
-                    Text("Clips (\(c.clipsSaved))")
-                        .monospacedDigit()
+            // Center Capsule Cluster: Live Tracking & Calibration Status Pill + Court Lines Overlay toggle
+            HStack(spacing: 10) {
+                HStack(spacing: 6) {
+                    Circle()
+                        .fill(stateDotColor)
+                        .frame(width: 9, height: 9)
+                        .scaleEffect(c.engineState != .sleeping && pulseDot ? 1.28 : 0.92)
+                    Text(c.engineState.rawValue.uppercased())
+                        .font(.caption.monospaced().bold())
+                        .foregroundStyle(c.engineState == .live ? .green : .primary)
+                    if c.currentBall != nil {
+                        Text("· BALL")
+                            .font(.caption2.monospaced().bold())
+                            .foregroundStyle(.yellow)
+                    }
                 }
-                .font(.caption.bold())
-            }
 
-            Spacer()
+                Divider().frame(height: 16)
 
-            if c.currentBall != nil {
-                HStack(spacing: 4) {
-                    Circle().fill(Color.yellow).frame(width: 7, height: 7)
-                    Text("BALL")
-                        .font(.caption2.monospaced().bold())
+                if c.calibration != nil {
+                    Button {
+                        Haptics.impact(.light)
+                        c.beginCalibration()
+                    } label: {
+                        Label("Calibrated ✓", systemImage: "checkmark.seal.fill")
+                            .font(.caption.bold())
+                            .foregroundStyle(.green)
+                    }
+                    .buttonStyle(.plain)
+
+                    Button {
+                        Haptics.impact(.light)
+                        showCourtLines.toggle()
+                    } label: {
+                        Label(showCourtLines ? "Court Lines On" : "Court Lines",
+                              systemImage: showCourtLines ? "squareshape.split.2x2" : "squareshape")
+                            .font(.caption2.bold())
+                            .padding(.horizontal, 8)
+                            .padding(.vertical, 4)
+                            .background(showCourtLines ? Color.green.opacity(0.28) : Color.white.opacity(0.12),
+                                        in: Capsule())
+                            .foregroundStyle(showCourtLines ? .green : .secondary)
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button {
+                        Haptics.impact(.medium)
+                        c.beginCalibration()
+                    } label: {
+                        Label("Calibrate Court", systemImage: "viewfinder")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.blue)
                 }
-                .padding(.horizontal, 7)
-                .padding(.vertical, 4)
-                .background(Color.yellow.opacity(0.25), in: Capsule())
             }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
 
-            Text(c.engineState.rawValue.uppercased())
-                .font(.caption.monospaced().bold())
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(c.engineState == .live ? Color.green : Color.gray.opacity(0.6), in: Capsule())
+            Spacer(minLength: 4)
+
+            // Right Capsule Cluster: Audio Mode menu, Clips Saved / Upload badge, and Manual Start/Finish Rally button
+            HStack(spacing: 8) {
+                Menu {
+                    Picker("Audio", selection: $c.audioMode) {
+                        ForEach(AudioCallMode.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    Toggle("Doubles lines", isOn: $c.doubles)
+                } label: {
+                    Label(c.audioMode == .mute ? "Muted" : "Audio",
+                          systemImage: c.audioMode == .mute ? "speaker.slash.fill" : "speaker.wave.2.fill")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    Haptics.impact(.light)
+                    showClipsSheet = true
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: uploader.activeUploadsCount > 0 ? "icloud.and.arrow.up.fill" : "film.stack")
+                            .foregroundStyle(uploader.activeUploadsCount > 0 ? .cyan : .primary)
+                        Text("Clips (\(c.clipsSaved))")
+                            .monospacedDigit()
+                    }
+                    .font(.caption.bold())
+                }
+                .buttonStyle(.bordered)
+
+                Button {
+                    c.toggleManualRally()
+                } label: {
+                    Label(c.engineState == .live || c.engineState == .armed ? "Finish Rally" : "Start Rally",
+                          systemImage: c.engineState == .live || c.engineState == .armed ? "checkmark.circle.fill" : "record.circle")
+                        .font(.caption.bold())
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(c.engineState == .live || c.engineState == .armed ? .green : .blue)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(.ultraThinMaterial, in: Capsule())
         }
-        .buttonStyle(.bordered)
     }
 
     @ViewBuilder private var banners: some View {
         if let error = c.setupError { Banner(text: error, color: .red) }
         if c.calibration == nil {
-            Banner(text: "Ball tracking active — tap Calibrate (4 corners + 2 net posts) to enable metric IN/OUT line calls",
+            Banner(text: "Ball tracking active — tap Calibrate Court (4 corners + 2 net posts) to enable metric IN/OUT line calls",
                    color: .blue)
         }
         if c.callsPaused { Banner(text: "Camera moved more than 15 px — live calls paused. Recalibrate.", color: .orange) }
@@ -659,7 +777,7 @@ struct RecordView: View {
             .foregroundStyle(.secondary)
         }
         .padding(12)
-        .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
     }
 
     @ViewBuilder private var actionButtons: some View {
@@ -686,6 +804,70 @@ struct RecordView: View {
             }
             Button { c.challenge() } label: { Label("Challenge", systemImage: "flag.fill") }
                 .buttonStyle(.borderedProminent).tint(.red)
+        }
+        .padding(10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+/// Draws the calibrated ITF court wireframe + net line directly over `CameraPreview` so the player can visually verify
+/// tripod alignment on court at any time.
+struct LiveCourtWireframeOverlay: View {
+    let calibration: CourtCalibration
+    let doubles: Bool
+    let callsPaused: Bool
+
+    private static let courtLinePairs = [
+        (0, 1), (2, 3), (0, 2), (1, 3), // doubles outer rectangle
+        (4, 5), (6, 7),                 // singles sidelines
+        (8, 9), (10, 11),               // far & near service lines
+        (12, 13),                       // centre service line
+    ]
+
+    var body: some View {
+        Canvas { ctx, size in
+            let imageW = CGFloat(CameraCaptureManager.width)
+            let imageH = CGFloat(CameraCaptureManager.height)
+            guard imageW > 0, imageH > 0, size.width > 0, size.height > 0 else { return }
+            let scale = min(size.width / imageW, size.height / imageH)
+            let fitW = imageW * scale
+            let fitH = imageH * scale
+            let originX = (size.width - fitW) / 2
+            let originY = (size.height - fitH) / 2
+            func toView(_ p: Point2) -> CGPoint {
+                CGPoint(x: originX + CGFloat(p.x) * scale, y: originY + CGFloat(p.y) * scale)
+            }
+
+            guard let courtToImage = calibration.h0.inverse
+                ?? Homography.fit(from: Court.cornerIndices.map { Court.points[$0] }, to: calibration.corners) else {
+                return
+            }
+
+            let lineColor: Color = callsPaused ? .orange : .green
+            var courtPath = Path()
+            for (a, b) in Self.courtLinePairs {
+                guard let pa = courtToImage.apply(Court.points[a]),
+                      let pb = courtToImage.apply(Court.points[b]) else { continue }
+                courtPath.move(to: toView(pa))
+                courtPath.addLine(to: toView(pb))
+            }
+            ctx.stroke(courtPath, with: .color(lineColor.opacity(0.85)),
+                       style: StrokeStyle(lineWidth: 2.0, lineCap: .round, lineJoin: .round))
+
+            if let posts = calibration.netPosts, posts.count == 2 {
+                var netPath = Path()
+                netPath.move(to: toView(posts[0]))
+                netPath.addLine(to: toView(posts[1]))
+                ctx.stroke(netPath, with: .color(.cyan.opacity(0.85)),
+                           style: StrokeStyle(lineWidth: 2.0, lineCap: .round, dash: [6, 4]))
+            }
+
+            for corner in calibration.corners {
+                let pt = toView(corner)
+                let rect = CGRect(x: pt.x - 4, y: pt.y - 4, width: 8, height: 8)
+                ctx.fill(Path(ellipseIn: rect), with: .color(.yellow))
+                ctx.stroke(Path(ellipseIn: rect.insetBy(dx: -2, dy: -2)), with: .color(lineColor), lineWidth: 1.5)
+            }
         }
     }
 }

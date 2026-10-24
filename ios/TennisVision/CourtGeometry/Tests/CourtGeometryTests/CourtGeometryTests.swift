@@ -420,6 +420,10 @@ final class CourtGeometryTests: XCTestCase {
                            serverSide: .ad, lastCall: .close, isLive: true)
         XCTAssertEqual(WatchState(message: s.message), s)
         XCTAssertEqual(WatchCommand(message: WatchCommand.undo.message), .undo)
+        XCTAssertEqual(WatchCommand(message: WatchCommand.toggleRally.message), .toggleRally)
+        for cmd in WatchCommand.allCases {
+            XCTAssertEqual(WatchCommand(message: cmd.message), cmd)
+        }
         XCTAssertNil(WatchCommand(message: ["cmd": "nope"]))
     }
 

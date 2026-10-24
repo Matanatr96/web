@@ -12,8 +12,10 @@ public enum WatchCommand: String, Codable, Sendable, CaseIterable {
     case pointMe
     /// Match Mode: my opponent won the point.
     case pointOpp
-    /// Match Mode: undo the last point (long press).
+    /// Match Mode: undo the last point (long press or 1-tap Undo button).
     case undo
+    /// Manually start or end the active rally clip on the phone.
+    case toggleRally
 
     /// Message dictionary key carrying the raw command.
     public static let key = "cmd"

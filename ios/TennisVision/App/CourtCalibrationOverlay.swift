@@ -6,7 +6,17 @@ import CourtGeometry
 import SwiftUI
 
 /// The six handles, in `Court.cornerIndices` order followed by the left / right net posts.
-private let handleNames = ["Far L", "Far R", "Near L", "Near R", "Post L", "Post R"]
+private let handleNames = ["1: Far-L", "2: Far-R", "3: Near-L", "4: Near-R", "5: Post-L", "6: Post-R"]
+
+/// Detailed descriptions shown in the top Corner Order Legend Card when a handle is dragged.
+private let handleDescriptions = [
+    "Far-Left Doubles Corner",
+    "Far-Right Doubles Corner",
+    "Near-Left Doubles Corner",
+    "Near-Right Doubles Corner",
+    "Left Net-Post Top (1.07 m)",
+    "Right Net-Post Top (1.07 m)",
+]
 
 /// Court lines as pairs of `Court.points` indices (same as `dsa.scene.court.LINES`).
 private let courtLines = [(0, 1), (2, 3), (0, 2), (1, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13)]
@@ -20,6 +30,17 @@ struct CourtCalibrationOverlay: View {
     @State private var handles: [CGPoint]
     @State private var dragging: Int?
 
+    private static func defaultHandles(width w: CGFloat, height h: CGFloat) -> [CGPoint] {
+        [
+            CGPoint(x: 0.38 * w, y: 0.30 * h),
+            CGPoint(x: 0.62 * w, y: 0.30 * h),
+            CGPoint(x: 0.10 * w, y: 0.92 * h),
+            CGPoint(x: 0.90 * w, y: 0.92 * h),
+            CGPoint(x: 0.18 * w, y: 0.50 * h),
+            CGPoint(x: 0.82 * w, y: 0.50 * h),
+        ]
+    }
+
     init(image: CGImage, intrinsics: Intrinsics?, initial: CourtCalibration? = nil,
          onDone: @escaping (CourtCalibration) -> Void, onCancel: @escaping () -> Void) {
         self.image = image
@@ -27,12 +48,17 @@ struct CourtCalibrationOverlay: View {
         self.onDone = onDone
         self.onCancel = onCancel
         let w = CGFloat(image.width), h = CGFloat(image.height)
-        let corners = initial?.corners.map { CGPoint(x: $0.x, y: $0.y) }
-            ?? [CGPoint(x: 0.38 * w, y: 0.30 * h), CGPoint(x: 0.62 * w, y: 0.30 * h),
-                CGPoint(x: 0.10 * w, y: 0.92 * h), CGPoint(x: 0.90 * w, y: 0.92 * h)]
-        let posts = initial?.netPosts?.map { CGPoint(x: $0.x, y: $0.y) }
-            ?? [CGPoint(x: 0.18 * w, y: 0.50 * h), CGPoint(x: 0.82 * w, y: 0.50 * h)]
+        let defaults = Self.defaultHandles(width: w, height: h)
+        let corners = initial?.corners.map { CGPoint(x: $0.x, y: $0.y) } ?? Array(defaults[0..<4])
+        let posts = initial?.netPosts?.map { CGPoint(x: $0.x, y: $0.y) } ?? Array(defaults[4..<6])
         _handles = State(initialValue: corners + posts)
+    }
+
+    private func resetPositions() {
+        let w = CGFloat(image.width), h = CGFloat(image.height)
+        handles = Self.defaultHandles(width: w, height: h)
+        dragging = nil
+        Haptics.impact(.light)
     }
 
     /// Current solve (or the validation error) for the taps.
@@ -54,8 +80,13 @@ struct CourtCalibrationOverlay: View {
                     .position(x: fit.origin.x + fit.size.width / 2, y: fit.origin.y + fit.size.height / 2)
                 wireframe(fit)
                 ForEach(0..<6, id: \.self) { i in handle(i, fit: fit) }
-                if let i = dragging { loupe(around: handles[i]).padding(.top, 8) }
-                VStack {
+                VStack(spacing: 8) {
+                    cornerOrderLegendCard
+                        .padding(.horizontal, 16)
+                        .padding(.top, 12)
+                    if let i = dragging {
+                        loupe(around: handles[i], index: i)
+                    }
                     Spacer()
                     statusBar
                 }
@@ -63,6 +94,55 @@ struct CourtCalibrationOverlay: View {
         }
         .background(Color.black)
         .ignoresSafeArea()
+    }
+
+    /// Corner Order Legend Card (`1: Far-L` .. `6: Post-R`) with active drag highlight and Reset Positions button.
+    private var cornerOrderLegendCard: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 10) {
+                Image(systemName: "viewfinder")
+                    .foregroundStyle(.yellow)
+                if let i = dragging, handleDescriptions.indices.contains(i) {
+                    Text("Dragging \(handleNames[i]) — \(handleDescriptions[i])")
+                        .font(.caption.bold())
+                        .foregroundStyle(.yellow)
+                } else {
+                    Text("Drag 4 Doubles Corners (1–4) + 2 Net-Post Tops (5–6)")
+                        .font(.caption.bold())
+                        .foregroundStyle(.primary)
+                }
+                Spacer()
+                Button(action: resetPositions) {
+                    Label("Reset Positions", systemImage: "arrow.counterclockwise")
+                        .font(.caption2.bold())
+                }
+                .buttonStyle(.bordered)
+                .tint(.orange)
+            }
+
+            HStack(spacing: 6) {
+                ForEach(0..<6, id: \.self) { i in
+                    let isSelected = dragging == i
+                    let baseColor: Color = i < 4 ? .yellow : .cyan
+                    Text(handleNames[i])
+                        .font(.caption2.monospacedDigit().bold())
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 5)
+                        .background(
+                            isSelected ? baseColor.opacity(0.9) : baseColor.opacity(0.18),
+                            in: Capsule()
+                        )
+                        .overlay(
+                            Capsule().stroke(isSelected ? Color.white : baseColor.opacity(0.55),
+                                             lineWidth: isSelected ? 2 : 1)
+                        )
+                        .foregroundStyle(isSelected ? Color.black : baseColor)
+                }
+            }
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 10)
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 14))
     }
 
     private func wireframe(_ fit: AspectFit) -> some View {
@@ -76,41 +156,60 @@ struct CourtCalibrationOverlay: View {
                 path.addLine(to: fit.toView(CGPoint(x: pb.x, y: pb.y)))
             }
             let ok = (try? solve.get()) != nil
-            ctx.stroke(path, with: .color(ok ? .green : .red), lineWidth: 1.5)
+            ctx.stroke(path, with: .color(ok ? .green : .red), lineWidth: 1.8)
         }
         .allowsHitTesting(false)
     }
 
     private func handle(_ i: Int, fit: AspectFit) -> some View {
         let p = fit.toView(handles[i])
+        let isDragging = dragging == i
+        let color: Color = i < 4 ? .yellow : .cyan
         return ZStack {
-            Circle().stroke(i < 4 ? Color.yellow : Color.cyan, lineWidth: 2).frame(width: 28, height: 28)
-            Circle().fill(Color.white).frame(width: 3, height: 3)
-            Text(handleNames[i]).font(.caption2.bold()).foregroundStyle(.white).offset(y: -24)
+            Circle()
+                .fill(isDragging ? color.opacity(0.35) : Color.black.opacity(0.45))
+                .frame(width: isDragging ? 36 : 30, height: isDragging ? 36 : 30)
+            Circle()
+                .stroke(color, lineWidth: isDragging ? 3 : 2)
+                .frame(width: isDragging ? 36 : 30, height: isDragging ? 36 : 30)
+            Circle()
+                .fill(Color.white)
+                .frame(width: 4, height: 4)
+            Text(handleNames[i])
+                .font(.caption2.bold())
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.black.opacity(0.75), in: Capsule())
+                .foregroundStyle(isDragging ? color : .white)
+                .offset(y: -26)
         }
         .contentShape(Circle().inset(by: -16))
         .position(p)
         .gesture(DragGesture(minimumDistance: 0)
             .onChanged { g in
-                dragging = i
+                if dragging != i {
+                    dragging = i
+                    Haptics.impact(.light)
+                }
                 handles[i] = fit.toImage(g.location, clampTo: CGSize(width: image.width, height: image.height))
             }
             .onEnded { _ in dragging = nil })
     }
 
     /// 3× magnified 80×80-pixel crop under the finger.
-    private func loupe(around p: CGPoint) -> some View {
+    private func loupe(around p: CGPoint, index i: Int) -> some View {
         let side: CGFloat = 80
         let rect = CGRect(x: p.x - side / 2, y: p.y - side / 2, width: side, height: side).integral
+        let color: Color = i < 4 ? .yellow : .cyan
         return Group {
             if let crop = image.cropping(to: rect) {
                 Image(decorative: crop, scale: 1)
                     .resizable()
                     .interpolation(.none)
-                    .frame(width: side * 3, height: side * 3)
+                    .frame(width: side * 2.4, height: side * 2.4)
                     .overlay(Image(systemName: "plus").foregroundStyle(.red))
                     .clipShape(Circle())
-                    .overlay(Circle().stroke(.white, lineWidth: 2))
+                    .overlay(Circle().stroke(color, lineWidth: 2.5))
             }
         }
     }
@@ -118,16 +217,30 @@ struct CourtCalibrationOverlay: View {
     private var statusBar: some View {
         HStack(spacing: 12) {
             Button("Cancel", role: .cancel, action: onCancel)
+                .buttonStyle(.bordered)
+            Button("Reset Positions", action: resetPositions)
+                .buttonStyle(.bordered)
+                .tint(.orange)
             Spacer()
             switch solve {
             case .success(let cal):
-                VStack(alignment: .trailing) {
-                    if let h = cal.cameraHeight { Text(String(format: "Camera height %.1f m", h)).font(.caption) }
-                    ForEach(cal.warnings.indices, id: \.self) { Text(Self.describe(cal.warnings[$0])).font(.caption).foregroundStyle(.orange) }
+                VStack(alignment: .trailing, spacing: 2) {
+                    if let h = cal.cameraHeight {
+                        Text(String(format: "Camera height %.1f m · RMS %.1f px", h, cal.reprojectionRMS))
+                            .font(.caption.monospacedDigit())
+                    }
+                    ForEach(cal.warnings.indices, id: \.self) {
+                        Text(Self.describe(cal.warnings[$0])).font(.caption).foregroundStyle(.orange)
+                    }
                 }
-                Button("Use Calibration") { onDone(cal) }.buttonStyle(.borderedProminent)
+                Button("Use Calibration") {
+                    Haptics.notify(.success)
+                    onDone(cal)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
             case .failure(let error):
-                Text(Self.describe(error)).font(.caption).foregroundStyle(.red)
+                Text(Self.describe(error)).font(.caption.bold()).foregroundStyle(.red)
             }
         }
         .padding()

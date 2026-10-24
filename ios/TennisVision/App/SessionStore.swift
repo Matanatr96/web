@@ -6,6 +6,7 @@ import AVFoundation
 import AVKit
 import CoreImage
 import CourtGeometry
+import Photos
 import PhotosUI
 import SwiftUI
 import UniformTypeIdentifiers
@@ -193,6 +194,20 @@ final class SessionStore: ObservableObject {
         }
         localSessions.removeAll { $0.id == id }
         saveLocal()
+    }
+
+    /// Deletes a local session by UUID (`deleteSession(_:)` alias used by swipe-to-delete in `HomeView`).
+    func deleteSession(_ id: UUID) {
+        deleteLocalSession(id)
+    }
+
+    /// Deletes a merged session item's local record and on-disk clips.
+    func deleteSession(_ item: MergedSessionItem) {
+        if let local = item.localRecord {
+            deleteLocalSession(local.id)
+        } else if let uuid = UUID(uuidString: item.id) {
+            deleteLocalSession(uuid)
+        }
     }
 
     /// Updates the upload status of one clip when `RallySegmentUploader` reports progress.
@@ -527,6 +542,14 @@ struct PickedVideoFile: Transferable {
 
 // MARK: - HomeView (Root Screen)
 
+enum SessionModeFilter: String, CaseIterable, Identifiable {
+    case all = "All"
+    case rally = "Rally"
+    case match = "Match"
+
+    var id: String { rawValue }
+}
+
 struct HomeView: View {
     @EnvironmentObject private var controller: SessionController
     @ObservedObject private var store = SessionStore.shared
@@ -535,6 +558,7 @@ struct HomeView: View {
     @State private var isRecordingSession = false
     @State private var launchMode: SessionMode = .rally
     @State private var launchDoubles = false
+    @State private var modeFilter: SessionModeFilter = .all
     @State private var showCloudSettings = false
     @State private var selectedSession: MergedSessionItem?
     @State private var pickedPhotoItem: PhotosPickerItem?
@@ -550,11 +574,24 @@ struct HomeView: View {
         let durationS: Double
     }
 
+    private var filteredSessions: [MergedSessionItem] {
+        let all = store.mergedSessions
+        switch modeFilter {
+        case .all:
+            return all
+        case .rally:
+            return all.filter { $0.mode == .rally }
+        case .match:
+            return all.filter { $0.mode == .match }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
+                VStack(alignment: .leading, spacing: 18) {
                     headerSection
+                    readinessPillBar
                     statsDashboard
                     primaryActionsSection
                     recentSessionsSection
@@ -594,7 +631,7 @@ struct HomeView: View {
         }
     }
 
-    // MARK: Header
+    // MARK: Header & On-Court Readiness / Cloud Sync Pill Bar
 
     private var headerSection: some View {
         HStack(alignment: .center, spacing: 12) {
@@ -606,22 +643,13 @@ struct HomeView: View {
                     Text("TennisVision")
                         .font(.title2.bold())
                 }
-                Text("Live WASB Line Caller · Rally Streak Counter · Cloud Studio")
+                Text("Live On-Court Line Caller · Rally Streak Counter · Cloud Studio")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
             Spacer()
-            if uploader.activeUploadsCount > 0 {
-                HStack(spacing: 6) {
-                    ProgressView().controlSize(.small)
-                    Text("Uploading \(uploader.activeUploadsCount)")
-                        .font(.caption.bold())
-                }
-                .padding(.horizontal, 10)
-                .padding(.vertical, 6)
-                .background(Color.blue.opacity(0.25), in: Capsule())
-            }
             Button {
+                Haptics.impact(.light)
                 Task { await store.refreshRemote() }
             } label: {
                 Label(store.isFetchingRemote ? "Syncing…" : "Sync", systemImage: "arrow.clockwise")
@@ -631,17 +659,88 @@ struct HomeView: View {
             .disabled(store.isFetchingRemote)
 
             Button {
+                Haptics.impact(.light)
                 showCloudSettings = true
             } label: {
-                HStack(spacing: 6) {
-                    Circle()
-                        .fill(RallySegmentUploader.hasValidCredentials ? Color.green : Color.orange)
-                        .frame(width: 8, height: 8)
-                    Text(RallySegmentUploader.hasValidCredentials ? "Cloud Settings" : "Set Upload Token")
-                        .font(.caption.bold())
-                }
+                Label("Settings", systemImage: "gearshape.fill")
+                    .font(.caption.bold())
             }
             .buttonStyle(.bordered)
+        }
+    }
+
+    private var readinessPillBar: some View {
+        let isCloudReady = RallySegmentUploader.hasValidCredentials
+        let webDashboardURL = URL(string: "\(RallySegmentUploader.webBaseURLString)/tennis")
+            ?? URL(string: "https://www.thelastmattapalli.com/tennis")!
+        return HStack(spacing: 10) {
+            Button {
+                Haptics.impact(.light)
+                showCloudSettings = true
+            } label: {
+                HStack(spacing: 7) {
+                    Circle()
+                        .fill(isCloudReady ? Color.green : Color.orange)
+                        .frame(width: 8, height: 8)
+                    Text(isCloudReady ? "Cloud Sync Ready" : "Local Only — Tap to Configure")
+                        .font(.caption.bold())
+                        .foregroundStyle(isCloudReady ? .green : .orange)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(
+                    (isCloudReady ? Color.green : Color.orange).opacity(0.16),
+                    in: Capsule()
+                )
+            }
+            .buttonStyle(.plain)
+
+            if uploader.activeUploadsCount > 0 {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Uploading \(uploader.activeUploadsCount) clip\(uploader.activeUploadsCount == 1 ? "" : "s")…")
+                        .font(.caption.monospacedDigit().bold())
+                        .foregroundStyle(.cyan)
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.cyan.opacity(0.16), in: Capsule())
+            } else if store.pendingLocalSessionsCount > 0 {
+                Button {
+                    Haptics.impact(.light)
+                    if isCloudReady {
+                        store.retryAllPendingUploads()
+                    } else {
+                        showCloudSettings = true
+                    }
+                } label: {
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.up.circle.fill")
+                        Text("\(store.pendingLocalSessionsCount) Pending Upload\(store.pendingLocalSessionsCount == 1 ? "" : "s")")
+                            .monospacedDigit()
+                    }
+                    .font(.caption.bold())
+                    .padding(.horizontal, 12)
+                    .padding(.vertical, 7)
+                    .background(Color.orange.opacity(0.18), in: Capsule())
+                    .foregroundStyle(.orange)
+                }
+                .buttonStyle(.plain)
+            }
+
+            Spacer()
+
+            Link(destination: webDashboardURL) {
+                HStack(spacing: 5) {
+                    Image(systemName: "globe")
+                    Text("Web Dashboard ↗")
+                        .font(.caption.bold())
+                }
+                .padding(.horizontal, 12)
+                .padding(.vertical, 7)
+                .background(Color.white.opacity(0.08), in: Capsule())
+                .foregroundStyle(.primary)
+            }
         }
     }
 
@@ -776,9 +875,12 @@ struct HomeView: View {
     // MARK: Recent Sessions List
 
     private var recentSessionsSection: some View {
-        let sessions = store.mergedSessions
-        return VStack(alignment: .leading, spacing: 10) {
-            HStack {
+        let allSessions = store.mergedSessions
+        let sessions = filteredSessions
+        let rallyCount = allSessions.filter { $0.mode == .rally }.count
+        let matchCount = allSessions.filter { $0.mode == .match }.count
+        return VStack(alignment: .leading, spacing: 12) {
+            HStack(spacing: 10) {
                 Text("RECENT SESSIONS & RALLY CLIPS")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
@@ -788,6 +890,37 @@ struct HomeView: View {
                         .font(.caption2)
                         .foregroundStyle(.secondary)
                 }
+                // Mode Filter Pills (All / Rally / Match)
+                HStack(spacing: 6) {
+                    ForEach(SessionModeFilter.allCases) { filter in
+                        let isSelected = modeFilter == filter
+                        let count: Int = {
+                            switch filter {
+                            case .all: return allSessions.count
+                            case .rally: return rallyCount
+                            case .match: return matchCount
+                            }
+                        }()
+                        Button {
+                            Haptics.impact(.light)
+                            modeFilter = filter
+                        } label: {
+                            Text("\(filter.rawValue) (\(count))")
+                                .font(.caption2.monospacedDigit().bold())
+                                .padding(.horizontal, 10)
+                                .padding(.vertical, 5)
+                                .background(
+                                    isSelected ? Color.green.opacity(0.28) : Color.white.opacity(0.08),
+                                    in: Capsule()
+                                )
+                                .overlay(
+                                    Capsule().stroke(isSelected ? Color.green : Color.clear, lineWidth: 1)
+                                )
+                                .foregroundStyle(isSelected ? .green : .secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
 
             if sessions.isEmpty {
@@ -795,7 +928,7 @@ struct HomeView: View {
                     Image(systemName: "tennis.racket")
                         .font(.largeTitle)
                         .foregroundStyle(.secondary)
-                    Text("No sessions yet")
+                    Text(modeFilter == .all ? "No sessions yet" : "No \(modeFilter.rawValue.lowercased()) sessions yet")
                         .font(.headline)
                     Text("Tap \"Start Court Session\" to record live rallies with on-device line calls, or tap \"Upload Video / Rally from Photos\" to analyze an existing video.")
                         .font(.caption)
@@ -811,8 +944,12 @@ struct HomeView: View {
                     ForEach(sessions) { item in
                         SessionRowCard(
                             item: item,
-                            onSelect: { selectedSession = item },
+                            onSelect: {
+                                Haptics.impact(.light)
+                                selectedSession = item
+                            },
                             onUploadTap: {
+                                Haptics.impact(.medium)
                                 if let local = item.localRecord {
                                     if !RallySegmentUploader.hasValidCredentials {
                                         showCloudSettings = true
@@ -820,8 +957,46 @@ struct HomeView: View {
                                         _ = store.uploadSession(local, forceAll: true)
                                     }
                                 }
-                            }
+                            },
+                            onDeleteTap: item.localRecord != nil ? {
+                                Haptics.notify(.warning)
+                                store.deleteSession(item)
+                            } : nil
                         )
+                        .swipeActions(edge: .trailing, allowsFullSwipe: true) {
+                            if item.localRecord != nil {
+                                Button(role: .destructive) {
+                                    Haptics.notify(.warning)
+                                    store.deleteSession(item)
+                                } label: {
+                                    Label("Delete Session", systemImage: "trash.fill")
+                                }
+                            }
+                        }
+                        .contextMenu {
+                            Button {
+                                selectedSession = item
+                            } label: {
+                                Label("View Clips & Details", systemImage: "film.stack")
+                            }
+                            if let local = item.localRecord {
+                                Button {
+                                    if RallySegmentUploader.hasValidCredentials {
+                                        _ = store.uploadSession(local, forceAll: true)
+                                    } else {
+                                        showCloudSettings = true
+                                    }
+                                } label: {
+                                    Label("Upload Clips to Cloud", systemImage: "icloud.and.arrow.up")
+                                }
+                                Button(role: .destructive) {
+                                    Haptics.notify(.warning)
+                                    store.deleteSession(item)
+                                } label: {
+                                    Label("Delete Local Session", systemImage: "trash")
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -895,6 +1070,7 @@ private struct SessionRowCard: View {
     let item: MergedSessionItem
     let onSelect: () -> Void
     let onUploadTap: () -> Void
+    var onDeleteTap: (() -> Void)? = nil
 
     var body: some View {
         HStack(spacing: 14) {
@@ -968,6 +1144,16 @@ private struct SessionRowCard: View {
                 }
             }
             .buttonStyle(.bordered)
+
+            if let onDeleteTap {
+                Button(role: .destructive, action: onDeleteTap) {
+                    Image(systemName: "trash")
+                        .font(.caption)
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .help("Delete local session")
+            }
         }
         .padding(14)
         .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
@@ -1105,13 +1291,16 @@ struct VideoLibraryUploadSheet: View {
     }
 }
 
-// MARK: - SessionDetailSheet (Replay, ShareLink to Camera Roll, Re-upload)
+// MARK: - SessionDetailSheet (Replay, Save Clip to Photos, ShareLink, Call & Shot Breakdown, Re-upload)
 
 struct SessionDetailSheet: View {
     let item: MergedSessionItem
     @ObservedObject private var store = SessionStore.shared
     @Environment(\.dismiss) private var dismiss
     @State private var playingURL: IdentifiableURL?
+    @State private var bookmarkedOnly = false
+    @State private var savedClipIds: Set<String> = []
+    @State private var photoSaveMessage: String?
 
     struct IdentifiableURL: Identifiable {
         let id = UUID()
@@ -1123,28 +1312,116 @@ struct SessionDetailSheet: View {
         return store.localSessions.first { $0.id == id } ?? item.localRecord
     }
 
+    private var inCallsCount: Int {
+        if let local = currentLocal, local.inCalls + local.outCalls > 0 {
+            return local.inCalls
+        }
+        if let remote = item.remoteRecord {
+            let outs = remote.outCount ?? 0
+            let total = max(outs, item.totalShots)
+            return max(0, total - outs)
+        }
+        return 0
+    }
+
+    private var outCallsCount: Int {
+        if let local = currentLocal, local.inCalls + local.outCalls > 0 {
+            return local.outCalls
+        }
+        return item.remoteRecord?.outCount ?? 0
+    }
+
+    private var effectiveInPct: Double {
+        if let pct = currentLocal?.inCallPct ?? item.inPct {
+            return max(0, min(100, pct))
+        }
+        let total = inCallsCount + outCallsCount
+        guard total > 0 else { return 100.0 }
+        return Double(inCallsCount) / Double(total) * 100.0
+    }
+
+    private func saveClipToPhotos(_ clip: RallyClipRecord) {
+        guard clip.fileExistsOnDisk else { return }
+        Haptics.impact(.medium)
+        PHPhotoLibrary.requestAuthorization(for: .addOnly) { status in
+            guard status == .authorized || status == .limited else {
+                DispatchQueue.main.async {
+                    self.photoSaveMessage = "Photos permission is required to save clips to Camera Roll."
+                }
+                return
+            }
+            PHPhotoLibrary.shared().performChanges({
+                PHAssetChangeRequest.creationRequestForAssetFromVideo(atFileURL: clip.fileURL)
+            }) { success, error in
+                DispatchQueue.main.async {
+                    if success {
+                        self.savedClipIds.insert(clip.id)
+                        self.photoSaveMessage = "Saved Rally #\(clip.rallyIdx + 1) to Photos."
+                        Haptics.notify(.success)
+                    } else {
+                        self.photoSaveMessage = "Could not save video: \(error?.localizedDescription ?? "Unknown error")"
+                    }
+                }
+            }
+        }
+    }
+
     var body: some View {
         NavigationStack {
             List {
+                Section("Call & Shot Breakdown") {
+                    VStack(alignment: .leading, spacing: 10) {
+                        HStack {
+                            Label(String(format: "%.1f%% IN", effectiveInPct), systemImage: "checkmark.circle.fill")
+                                .font(.headline.monospacedDigit().bold())
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Text("\(inCallsCount) In-Calls · \(outCallsCount) Out-Calls")
+                                .font(.caption.monospacedDigit().bold())
+                                .foregroundStyle(.secondary)
+                        }
+
+                        GeometryReader { geo in
+                            let w = max(1, geo.size.width)
+                            let inW = w * CGFloat(effectiveInPct / 100.0)
+                            HStack(spacing: 2) {
+                                RoundedRectangle(cornerRadius: 5)
+                                    .fill(Color.green)
+                                    .frame(width: max(6, inW))
+                                if effectiveInPct < 99.9 {
+                                    RoundedRectangle(cornerRadius: 5)
+                                        .fill(Color.red)
+                                        .frame(maxWidth: .infinity)
+                                }
+                            }
+                        }
+                        .frame(height: 10)
+
+                        HStack(spacing: 16) {
+                            Label("\(item.totalShots) Total Shots", systemImage: "bolt.fill")
+                            Label("Best Streak: \(item.bestStreak)", systemImage: "flame.fill")
+                            Label("\(item.ralliesCount) Rallies", systemImage: "film.stack")
+                        }
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+
+                    if let local = currentLocal, !local.clipFiles.isEmpty {
+                        let bookmarkedCount = local.clipFiles.filter(\.bookmarked).count
+                        Toggle(isOn: $bookmarkedOnly) {
+                            Label("Bookmarked Rallies Only (\(bookmarkedCount))", systemImage: "star.fill")
+                                .foregroundStyle(bookmarkedOnly ? .yellow : .primary)
+                        }
+                        .tint(.yellow)
+                    }
+                }
+
                 Section("Session Summary") {
                     HStack {
                         Text("Mode")
                         Spacer()
                         Text("\(item.mode.rawValue.capitalized)\(item.doubles ? " (Doubles)" : " (Singles)")")
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Text("Total Shots / Best Streak")
-                        Spacer()
-                        Text("\(item.totalShots) shots · \(item.bestStreak) best in-streak")
-                            .monospacedDigit()
-                            .foregroundStyle(.secondary)
-                    }
-                    HStack {
-                        Text("Rallies")
-                        Spacer()
-                        Text("\(item.ralliesCount)")
-                            .monospacedDigit()
                             .foregroundStyle(.secondary)
                     }
                     if let score = item.scoreFormatted, !score.isEmpty {
@@ -1156,13 +1433,13 @@ struct SessionDetailSheet: View {
                     }
                     if let webURL = URL(string: "\(RallySegmentUploader.webBaseURLString)/tennis/\(item.id)") {
                         Link(destination: webURL) {
-                            Label("Open Session in Web Dashboard", systemImage: "safari")
+                            Label("Open Session in Web Dashboard ↗", systemImage: "safari")
                         }
                     }
                 }
 
                 if let local = currentLocal {
-                    Section("Cloud Upload") {
+                    Section("Cloud Upload & Session Actions") {
                         HStack {
                             Text("Status")
                             Spacer()
@@ -1170,78 +1447,112 @@ struct SessionDetailSheet: View {
                                 .bold()
                         }
                         Button {
+                            Haptics.impact(.medium)
                             _ = store.uploadSession(local, forceAll: true)
                         } label: {
                             Label(local.uploadStatus == .uploaded ? "Re-Upload All Clips to Cloud" : "Upload Session Clips Now",
                                   systemImage: "icloud.and.arrow.up")
                         }
                         .disabled(!RallySegmentUploader.hasValidCredentials)
+
+                        Button(role: .destructive) {
+                            Haptics.notify(.warning)
+                            store.deleteLocalSession(local.id)
+                            dismiss()
+                        } label: {
+                            Label("Delete Local Session & Clips", systemImage: "trash")
+                        }
                     }
 
-                    Section("Saved On-Device Rally Clips (\(local.clipFiles.count))") {
-                        if local.clipFiles.isEmpty {
-                            Text("No local clip files recorded for this session.")
+                    let visibleClips = bookmarkedOnly ? local.clipFiles.filter(\.bookmarked) : local.clipFiles
+                    Section("Saved On-Device Rally Clips (\(visibleClips.count))") {
+                        if let photoSaveMessage {
+                            Text(photoSaveMessage)
+                                .font(.caption.bold())
+                                .foregroundStyle(.green)
+                        }
+                        if visibleClips.isEmpty {
+                            Text(bookmarkedOnly ? "No bookmarked rally clips in this session." : "No local clip files recorded for this session.")
                                 .foregroundStyle(.secondary)
                         } else {
-                            ForEach(local.clipFiles) { clip in
-                                HStack(spacing: 12) {
-                                    VStack(alignment: .leading, spacing: 3) {
-                                        HStack(spacing: 6) {
-                                            Text(clip.source == "ios_library" ? "Full Video" : "Rally #\(clip.rallyIdx + 1)")
-                                                .font(.subheadline.bold())
-                                            if clip.bookmarked {
-                                                Image(systemName: "star.fill").foregroundStyle(.yellow).font(.caption)
-                                            }
-                                            if let call = clip.liveCall {
-                                                Text(call.uppercased())
-                                                    .font(.caption2.bold())
-                                                    .padding(.horizontal, 5)
-                                                    .padding(.vertical, 1)
-                                                    .background(call == "out" ? Color.red.opacity(0.3) : Color.green.opacity(0.3),
-                                                                in: Capsule())
-                                            }
+                            ForEach(visibleClips) { clip in
+                                VStack(alignment: .leading, spacing: 8) {
+                                    HStack(spacing: 8) {
+                                        Text(clip.source == "ios_library" ? "Full Video" : "Rally #\(clip.rallyIdx + 1)")
+                                            .font(.subheadline.bold())
+                                        if clip.bookmarked {
+                                            Label("Bookmarked", systemImage: "star.fill")
+                                                .font(.caption2.bold())
+                                                .foregroundStyle(.yellow)
                                         }
-                                        Text("\(clip.shotCount) shots · in-streak \(clip.inStreak) · \(clip.uploadStatus.label)")
-                                            .font(.caption)
+                                        if let call = clip.liveCall {
+                                            Text(call.uppercased())
+                                                .font(.caption2.bold())
+                                                .padding(.horizontal, 6)
+                                                .padding(.vertical, 2)
+                                                .background(call == "out" ? Color.red.opacity(0.3) : Color.green.opacity(0.3),
+                                                            in: Capsule())
+                                                .foregroundStyle(call == "out" ? .red : .green)
+                                        }
+                                        Spacer()
+                                        Text("\(clip.shotCount) shots · streak \(clip.inStreak) · \(clip.uploadStatus.label)")
+                                            .font(.caption.monospacedDigit())
                                             .foregroundStyle(.secondary)
                                     }
-                                    Spacer()
-                                    if clip.fileExistsOnDisk {
-                                        Button {
-                                            playingURL = IdentifiableURL(url: clip.fileURL)
-                                        } label: {
-                                            Image(systemName: "play.circle.fill")
-                                                .font(.title3)
-                                        }
-                                        .buttonStyle(.borderless)
 
-                                        ShareLink(item: clip.fileURL) {
-                                            Image(systemName: "square.and.arrow.up")
-                                                .font(.title3)
-                                        }
-                                        .buttonStyle(.borderless)
-
-                                        if clip.uploadStatus != .uploaded {
+                                    HStack(spacing: 10) {
+                                        if clip.fileExistsOnDisk {
                                             Button {
-                                                _ = store.uploadClip(clip, in: local)
+                                                Haptics.impact(.light)
+                                                playingURL = IdentifiableURL(url: clip.fileURL)
                                             } label: {
-                                                Image(systemName: "icloud.and.arrow.up")
-                                                    .font(.title3)
+                                                Label("Play", systemImage: "play.fill")
+                                                    .font(.caption.bold())
                                             }
-                                            .buttonStyle(.borderless)
+                                            .buttonStyle(.borderedProminent)
+                                            .tint(.green)
+
+                                            Button {
+                                                saveClipToPhotos(clip)
+                                            } label: {
+                                                Label(savedClipIds.contains(clip.id) ? "Saved to Photos ✓" : "Save Clip to Photos",
+                                                      systemImage: savedClipIds.contains(clip.id) ? "checkmark.circle.fill" : "photo.badge.arrow.down")
+                                                    .font(.caption.bold())
+                                            }
+                                            .buttonStyle(.bordered)
+                                            .tint(savedClipIds.contains(clip.id) ? .green : .blue)
+
+                                            ShareLink(item: clip.fileURL) {
+                                                Label("Share", systemImage: "square.and.arrow.up")
+                                                    .font(.caption.bold())
+                                            }
+                                            .buttonStyle(.bordered)
+
+                                            if clip.uploadStatus != .uploaded {
+                                                Button {
+                                                    Haptics.impact(.light)
+                                                    _ = store.uploadClip(clip, in: local)
+                                                } label: {
+                                                    Label("Upload", systemImage: "icloud.and.arrow.up")
+                                                        .font(.caption.bold())
+                                                }
+                                                .buttonStyle(.bordered)
+                                                .tint(.orange)
+                                            }
+                                        } else if let remoteClipURL = URL(
+                                            string: "\(RallySegmentUploader.modalBaseURLString)/clips/\(item.id)/\(clip.rallyIdx).mp4"
+                                        ) {
+                                            Button {
+                                                playingURL = IdentifiableURL(url: remoteClipURL)
+                                            } label: {
+                                                Label("Stream from Cloud", systemImage: "play.circle")
+                                                    .font(.caption.bold())
+                                            }
+                                            .buttonStyle(.bordered)
                                         }
-                                    } else if let remoteClipURL = URL(
-                                        string: "\(RallySegmentUploader.modalBaseURLString)/clips/\(item.id)/\(clip.rallyIdx).mp4"
-                                    ) {
-                                        Button {
-                                            playingURL = IdentifiableURL(url: remoteClipURL)
-                                        } label: {
-                                            Label("Stream", systemImage: "play.circle")
-                                                .font(.caption)
-                                        }
-                                        .buttonStyle(.bordered)
                                     }
                                 }
+                                .padding(.vertical, 4)
                             }
                         }
                     }
@@ -1251,16 +1562,20 @@ struct SessionDetailSheet: View {
                             if let remoteClipURL = URL(
                                 string: "\(RallySegmentUploader.modalBaseURLString)/clips/\(item.id)/\(idx).mp4"
                             ) {
-                                Button {
-                                    playingURL = IdentifiableURL(url: remoteClipURL)
-                                } label: {
-                                    HStack {
-                                        Label("Rally #\(idx + 1)", systemImage: "play.circle.fill")
-                                        Spacer()
-                                        Text("Stream from Cloud")
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
+                                HStack {
+                                    Button {
+                                        playingURL = IdentifiableURL(url: remoteClipURL)
+                                    } label: {
+                                        Label("Play Rally #\(idx + 1)", systemImage: "play.circle.fill")
+                                            .font(.subheadline.bold())
                                     }
+                                    .buttonStyle(.borderless)
+                                    Spacer()
+                                    ShareLink(item: remoteClipURL) {
+                                        Label("Share Link", systemImage: "square.and.arrow.up")
+                                            .font(.caption.bold())
+                                    }
+                                    .buttonStyle(.bordered)
                                 }
                             }
                         }
