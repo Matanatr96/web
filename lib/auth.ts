@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from "node:crypto";
-import { cookies } from "next/headers";
+import { cookies, headers } from "next/headers";
 
 const COOKIE_MAX_AGE = 60 * 60 * 24 * 30; // 30 days
 
@@ -21,18 +21,82 @@ function safeEqual(a: string, b: string): boolean {
   return timingSafeEqual(ab, bb);
 }
 
+/**
+ * Verify a candidate admin token or raw password against a target scope's
+ * configured password environment variable using constant-time comparison.
+ *
+ * @param candidate - Either the SHA-256 hex token or raw password string.
+ * @param scope - Permission scope to check ("admin" or "stonks").
+ * @returns True if `candidate` matches either the hashed token or raw password.
+ */
+export function verifyScopeToken(candidate: string, scope: Scope = "admin"): boolean {
+  const { envVar } = SCOPES[scope];
+  const pw = process.env[envVar];
+  if (!pw || !candidate) return false;
+  const trimmed = candidate.trim();
+  if (!trimmed) return false;
+  try {
+    return safeEqual(trimmed, tokenFor(pw)) || safeEqual(trimmed, pw);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Verify an admin token or password string directly.
+ *
+ * @param token - Candidate SHA-256 token or raw `ADMIN_PASSWORD`.
+ * @returns True when valid.
+ */
+export function verifyAdminToken(token: string): boolean {
+  return verifyScopeToken(token, "admin");
+}
+
+/**
+ * Return the canonical SHA-256 hex token for the configured `ADMIN_PASSWORD`,
+ * or null if `ADMIN_PASSWORD` is not set.
+ *
+ * @returns SHA-256 hex string or null.
+ */
+export function getAdminSessionToken(): string | null {
+  const pw = process.env[SCOPES.admin.envVar];
+  if (!pw) return null;
+  return tokenFor(pw);
+}
+
 async function hasScope(scope: Scope): Promise<boolean> {
   const { cookie, envVar } = SCOPES[scope];
   const pw = process.env[envVar];
   if (!pw) return false;
-  const jar = await cookies();
-  const val = jar.get(cookie)?.value;
-  if (!val) return false;
+
   try {
-    return safeEqual(val, tokenFor(pw));
+    const jar = await cookies();
+    const cookieVal = jar.get(cookie)?.value;
+    if (cookieVal && verifyScopeToken(cookieVal, scope)) {
+      return true;
+    }
   } catch {
-    return false;
+    // Ignore cookie read errors outside request contexts.
   }
+
+  try {
+    const hdrs = await headers();
+    const authHeader = hdrs.get("authorization");
+    if (authHeader) {
+      const bearer = authHeader.replace(/^Bearer\s+/i, "").trim();
+      if (bearer && verifyScopeToken(bearer, scope)) {
+        return true;
+      }
+    }
+    const customHeader = hdrs.get("x-admin-token");
+    if (customHeader && verifyScopeToken(customHeader, scope)) {
+      return true;
+    }
+  } catch {
+    // Ignore header read errors outside request contexts.
+  }
+
+  return false;
 }
 
 export async function isAdmin(): Promise<boolean> {

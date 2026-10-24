@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServiceClient, getSupabase } from "@/lib/supabase";
+import { isAdmin } from "@/lib/auth";
 
 export const dynamic = "force-dynamic";
 
@@ -20,9 +21,12 @@ export async function GET() {
 /**
  * Creates or updates a diner record. When `id` is provided, renames that
  * specific diner row in place (updating all linked historical receipts);
- * otherwise upserts by `name`.
+ * otherwise upserts by `name`. Requires admin authentication.
  */
 export async function POST(req: Request) {
+  if (!(await isAdmin())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
   const { id, name } = (await req.json()) as { id?: number; name?: string };
   const trimmed = (name ?? "").trim();
   if (!trimmed) return NextResponse.json({ error: "name required" }, { status: 400 });
@@ -49,9 +53,12 @@ export async function POST(req: Request) {
 }
 
 /**
- * Deletes an unused, non-self diner row by `id`.
+ * Deletes an unused, non-self diner row by `id`. Requires admin authentication.
  */
 export async function DELETE(req: Request) {
+  if (!(await isAdmin())) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
   const { id } = (await req.json()) as { id?: number };
   if (typeof id !== "number" || !Number.isFinite(id)) {
     return NextResponse.json({ error: "id required" }, { status: 400 });

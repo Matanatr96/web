@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
+import {
+  RESTAURANT_SELECT,
+  isRatedRestaurant,
+  mapRestaurantRow,
+} from "@/lib/restaurants-query";
 import RestaurantsMap from "@/components/restaurants-map";
 
 export const dynamic = "force-dynamic";
@@ -28,7 +32,7 @@ export default async function MapPage() {
     );
   }
 
-  const restaurants = (data ?? []).map(mapRestaurantRow);
+  const restaurants = (data ?? []).map(mapRestaurantRow).filter(isRatedRestaurant);
   const withCoords = restaurants.filter((r) => r.lat !== null && r.lng !== null);
   const missing = restaurants.length - withCoords.length;
 

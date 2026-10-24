@@ -1,6 +1,10 @@
 import Link from "next/link";
 import { getSupabase } from "@/lib/supabase";
-import { RESTAURANT_SELECT, mapRestaurantRow } from "@/lib/restaurants-query";
+import {
+  RESTAURANT_SELECT,
+  isRatedRestaurant,
+  mapRestaurantRow,
+} from "@/lib/restaurants-query";
 import RestaurantsTable from "@/components/restaurants-table";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +23,7 @@ export default async function RestaurantsTablePage() {
     );
   }
 
-  const restaurants = (data ?? []).map(mapRestaurantRow);
+  const restaurants = (data ?? []).map(mapRestaurantRow).filter(isRatedRestaurant);
 
   return (
     <div>

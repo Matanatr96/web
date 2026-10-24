@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { getServiceClient, getSupabase } from "@/lib/supabase";
+import { bayesianScore } from "@/lib/restaurants-query";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -32,12 +33,6 @@ type PlacesV1Place = {
   location?: { latitude: number; longitude: number };
   googleMapsUri?: string;
 };
-
-function bayesianScore(rating: number, reviewCount: number): number {
-  const v = reviewCount;
-  const m = BAYESIAN_PRIOR_WEIGHT;
-  return (v / (v + m)) * rating + (m / (v + m)) * BAYESIAN_PRIOR_MEAN;
-}
 
 export async function POST(req: Request) {
   const body = await req.json().catch(() => null);
@@ -166,8 +161,8 @@ export async function POST(req: Request) {
     }))
     .sort(
       (a, b) =>
-        bayesianScore(b.rating, b.user_rating_count) -
-        bayesianScore(a.rating, a.user_rating_count),
+        bayesianScore(b.rating, b.user_rating_count, BAYESIAN_PRIOR_WEIGHT, BAYESIAN_PRIOR_MEAN) -
+        bayesianScore(a.rating, a.user_rating_count, BAYESIAN_PRIOR_WEIGHT, BAYESIAN_PRIOR_MEAN),
     )
     .slice(0, MAX_RESULTS);
 
