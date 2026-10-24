@@ -837,7 +837,7 @@ except ImportError:
 if modal is not None:
     from dsa.gpu.volume import image, volume
 
-    app = modal.App("tennis-rally", image=image("catboost==1.2.10", "fastapi>=0.115", "httpx>=0.27", "av>=12"))
+    app = modal.App("tennis-rally", image=image("catboost==1.2.10", "fastapi>=0.115", "httpx>=0.27", "av>=12", core=True))
     secrets = [modal.Secret.from_name("tennis-rally")]
     TENNIS = Path("/vol/tennis")
 

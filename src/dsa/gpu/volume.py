@@ -20,12 +20,19 @@ volume = modal.Volume.from_name(NAME, create_if_missing=True)
 SKIP = {".git", "__pycache__", ".DS_Store", "annotation-tool"}
 
 
-def image(*extra: str) -> modal.Image:
-    """The project's pinned dependencies (pyproject.toml) plus `extra`, with dsa.paths rooted at /vol."""
+CORE = ("torch", "opencv-python", "scipy", "pyyaml", "numpy")   # what WASB, TennisCourtDetector and dsa.physics import
+
+
+def image(*extra: str, core: bool = False) -> modal.Image:
+    """The project's pinned dependencies (pyproject.toml) plus `extra`, with dsa.paths rooted at /vol. core: only
+    CORE's pins (the ball and court models' runtime), not the broadcast pipeline's (rfdetr, transformers, rtmlib,
+    scenedetect, yt-dlp, anthropic, ...): the tennis-rally image, whose upload endpoint shares it."""
     deps = []
     if modal.is_local():
         import tomllib
         deps = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
+        if core:
+            deps = [d for d in deps if d.split("==")[0].split(">=")[0].strip() in CORE]
     img = (modal.Image.debian_slim(python_version="3.11")
            .apt_install("libgl1", "libglib2.0-0", "ffmpeg")
            .uv_pip_install(*deps, *extra))
