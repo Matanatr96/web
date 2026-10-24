@@ -408,6 +408,49 @@ export function applyHomography(H: HomographyMatrix, pt: Point2D): Point2D {
 }
 
 /**
+ * Converts 4 tapped court corners from the UI's `[Far-Left, Far-Right, Near-Left, Near-Right]`
+ * tap order into the `[Near-Left, Near-Right, Far-Right, Far-Left]` counter-clockwise order
+ * consumed by `validateCourtCalibration`. If the first pair of taps is already on the near
+ * baseline (lower in the image frame, larger `v`), returns the points unchanged.
+ *
+ * @param cornersPx - Up to 4 tapped corner points `[u, v]` in image pixels.
+ * @returns Corners ordered as `[Near-Left, Near-Right, Far-Right, Far-Left]` when 4 points are present.
+ */
+export function normalizeTappedCornersToQuad(cornersPx: Point2D[]): Point2D[] {
+  if (cornersPx.length !== 4) return cornersPx;
+  const [p0, p1, p2, p3] = cornersPx;
+  const firstPairMidY = 0.5 * (p0[1] + p1[1]);
+  const secondPairMidY = 0.5 * (p2[1] + p3[1]);
+  if (firstPairMidY < secondPairMidY) {
+    return [p2, p3, p1, p0];
+  }
+  return cornersPx;
+}
+
+/**
+ * Formats a session's capture source into a human-friendly badge label
+ * (`"📱 iPhone Live"`, `"🖼️ Camera Roll"`, or `"💻 Web Upload"`).
+ *
+ * @param source - Stored session `source` (`"ios"`, `"ios_library"`, or `"web"`).
+ * @param stats - Optional session `stats` record that may carry `originSource` / `source`.
+ * @returns Display badge string with icon.
+ */
+export function formatSessionSource(
+  source: string | null | undefined,
+  stats?: Record<string, unknown> | null,
+): string {
+  const raw =
+    source === "ios_library" ||
+    stats?.originSource === "ios_library" ||
+    stats?.source === "ios_library"
+      ? "ios_library"
+      : source;
+  if (raw === "ios_library") return "🖼️ Camera Roll";
+  if (raw === "ios") return "📱 iPhone Live";
+  return "💻 Web Upload";
+}
+
+/**
  * Validates the Frame-0 taps (4 outer corners in `[nearLeft, nearRight, farRight, farLeft]` order,
  * plus optionally the `[left, right]` net-post tops) and computes both `Z = 0` homographies.
  *

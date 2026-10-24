@@ -8,12 +8,14 @@ import {
   computeInStreak,
   courtToSvg,
   formatScore,
+  formatSessionSource,
   getOuterCourtCornersM,
   getTennisMatch,
   getUploadResumeKey,
   invertHomography,
   isValidUuid,
   listTennisMatches,
+  normalizeTappedCornersToQuad,
   parseWebhookEvent,
   type Point2D,
   type Quad,
@@ -364,6 +366,32 @@ describe("calibration & clip-time helpers", () => {
       alreadyLocal: 1.75,
       zeroStart: 2.1,
       missing: null,
+    });
+  });
+
+  it("normalizes Far-Left -> Far-Right -> Near-Left -> Near-Right taps into calibration Quad order and formats session source badges", () => {
+    const farFirstTaps: Point2D[] = [
+      CORNERS_PX[3],
+      CORNERS_PX[2],
+      CORNERS_PX[0],
+      CORNERS_PX[1],
+    ];
+    expect({
+      fromFarFirst: normalizeTappedCornersToQuad(farFirstTaps),
+      alreadyNearFirst: normalizeTappedCornersToQuad(CORNERS_PX),
+      incomplete: normalizeTappedCornersToQuad(farFirstTaps.slice(0, 2)),
+      iosLive: formatSessionSource("ios"),
+      cameraRollDirect: formatSessionSource("ios_library"),
+      cameraRollFromStats: formatSessionSource("ios", { originSource: "ios_library" }),
+      webUpload: formatSessionSource("web"),
+    }).toEqual({
+      fromFarFirst: CORNERS_PX,
+      alreadyNearFirst: CORNERS_PX,
+      incomplete: farFirstTaps.slice(0, 2),
+      iosLive: "📱 iPhone Live",
+      cameraRollDirect: "🖼️ Camera Roll",
+      cameraRollFromStats: "🖼️ Camera Roll",
+      webUpload: "💻 Web Upload",
     });
   });
 });

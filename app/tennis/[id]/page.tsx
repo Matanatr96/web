@@ -8,6 +8,7 @@ import TennisCourtMinimap, {
 import { isAdmin } from "@/lib/auth";
 import {
   formatScore,
+  formatSessionSource,
   getTennisMatch,
   resolveClipUrl,
   summarizeSession,
@@ -118,9 +119,26 @@ export default async function TennisSessionDetailPage({
 
   const clipSeekTimeS =
     activeRally && activeShot
-      ? toClipLocalTimeS(activeShot.tBounceS ?? activeShot.tHitS, activeRally.startS)
+      ? (toClipLocalTimeS(activeShot.tHitS, activeRally.startS) ??
+        toClipLocalTimeS(activeShot.tBounceS, activeRally.startS))
       : null;
   const playbackRate = resolvedSearch.slowmo === "1" ? 0.25 : 1;
+
+  const activeRallyPos = activeRally
+    ? filteredRallies.findIndex((r) => r.rallyIdx === activeRally.rallyIdx)
+    : -1;
+  const prevRally =
+    activeRallyPos > 0 ? filteredRallies[activeRallyPos - 1] : null;
+  const nextRally =
+    activeRallyPos >= 0 && activeRallyPos < filteredRallies.length - 1
+      ? filteredRallies[activeRallyPos + 1]
+      : null;
+  const prevRallyHref = prevRally
+    ? `/tennis/${detail.id}?filter=${activeFilter}&rally=${prevRally.rallyIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`
+    : null;
+  const nextRallyHref = nextRally
+    ? `/tennis/${detail.id}?filter=${activeFilter}&rally=${nextRally.rallyIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`
+    : null;
 
   const allShots: TennisShot[] = detail.rallies.flatMap((r) => r.shots);
   const minimapShots = activeRally ? activeRally.shots : allShots;
@@ -136,6 +154,10 @@ export default async function TennisSessionDetailPage({
     : null;
 
   const isRallyMode = detail.sessionType === "rally";
+  const sourceBadgeLabel = formatSessionSource(
+    detail.source,
+    detail.stats as Record<string, unknown>,
+  );
   const rallyStartByIdx = new Map<number, number>(
     detail.rallies.map((r) => [r.rallyIdx, r.startS]),
   );
@@ -169,9 +191,9 @@ export default async function TennisSessionDetailPage({
               {detail.title ?? (isRallyMode ? "Cooperative Rally Session" : "Scored Match")}
             </h1>
           </div>
-          <p className="mt-1 text-sm text-stone-500 flex flex-wrap items-center">
+          <p className="mt-1 text-sm text-stone-500 flex flex-wrap items-center gap-1.5">
             <span>
-              Played on {detail.playedOn} · Source: {detail.source.toUpperCase()} · Status:{" "}
+              Played on {detail.playedOn} · {sourceBadgeLabel} · Status:{" "}
               <span className="font-medium text-stone-700 dark:text-stone-300">
                 {detail.status}
               </span>
@@ -368,6 +390,9 @@ export default async function TennisSessionDetailPage({
                     src={clipSrc}
                     seekToS={clipSeekTimeS}
                     playbackRate={playbackRate}
+                    prevRallyHref={prevRallyHref}
+                    nextRallyHref={nextRallyHref}
+                    activeShotIdx={selectedShotIdx}
                   />
                 ) : (
                   <div className="flex w-full aspect-video items-center justify-center rounded-md bg-stone-950 text-xs text-stone-400">
@@ -377,94 +402,158 @@ export default async function TennisSessionDetailPage({
                   </div>
                 )}
 
-                {/* Shot-by-Shot Strip inside Active Rally */}
+                {/* Interactive Shot-by-Shot Scrubber Chip Strip & Table */}
                 {activeRally.shots.length > 0 && (
-                  <div className="mt-4 overflow-x-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead>
-                        <tr className="border-b border-stone-200 dark:border-stone-800 text-stone-500">
-                          <th className="py-1.5 pr-3">#</th>
-                          <th className="py-1.5 pr-3">Hitter</th>
-                          <th className="py-1.5 pr-3">Stroke</th>
-                          <th className="py-1.5 pr-3">Direction</th>
-                          <th className="py-1.5 pr-3">Speed</th>
-                          <th className="py-1.5 pr-3">Net Clearance</th>
-                          <th className="py-1.5 pr-3">Depth Zone</th>
-                          <th className="py-1.5">Line Call (Z=0.033m)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-stone-100 dark:divide-stone-800 tabular-nums">
-                        {activeRally.shots.map((s) => (
-                          <tr
-                            key={s.shotIdx}
-                            className={
-                              selectedShotIdx === s.shotIdx
-                                ? "bg-emerald-50/70 dark:bg-emerald-950/30"
-                                : undefined
-                            }
+                  <div className="mt-4 space-y-3">
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="text-[11px] font-medium uppercase tracking-wider text-stone-400 mr-1">
+                        Shot Scrubber:
+                      </span>
+                      {activeRally.shots.map((s) => {
+                        const isSelectedShot = selectedShotIdx === s.shotIdx;
+                        const hitLocalS = toClipLocalTimeS(s.tHitS, activeRally.startS);
+                        const shotHref = `/tennis/${detail.id}?filter=${activeFilter}&rally=${activeRally.rallyIdx}&shot=${s.shotIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`;
+                        return (
+                          <Link
+                            key={`chip-${s.shotIdx}`}
+                            href={shotHref}
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium tabular-nums transition ${
+                              isSelectedShot
+                                ? "border-emerald-500 bg-emerald-600 text-white"
+                                : "border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950/60 text-stone-700 dark:text-stone-300 hover:border-stone-400"
+                            }`}
                           >
-                            <td className="py-1.5 pr-3 font-medium">
-                              <Link
-                                href={`/tennis/${detail.id}?filter=${activeFilter}&rally=${activeRally.rallyIdx}&shot=${s.shotIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`}
-                                className="hover:underline"
-                              >
-                                {s.shotIdx + 1}
-                              </Link>
-                            </td>
-                            <td className="py-1.5 pr-3 uppercase text-stone-500">
-                              {s.hitter ?? "—"}
-                            </td>
-                            <td className="py-1.5 pr-3 font-medium uppercase">
-                              {s.stroke ?? "shot"}
-                            </td>
-                            <td className="py-1.5 pr-3 uppercase text-stone-500">
-                              {s.direction ?? "—"}
-                            </td>
-                            <td className="py-1.5 pr-3">
-                              {s.speedMph !== null ? `${s.speedMph} mph` : "—"}
-                            </td>
-                            <td className="py-1.5 pr-3">
-                              {s.netClearanceM !== null
-                                ? `${(s.netClearanceM * 100).toFixed(0)} cm`
-                                : "—"}
-                            </td>
-                            <td className="py-1.5 pr-3">
+                            <span>#{s.shotIdx + 1}</span>
+                            <span className="uppercase">{s.stroke ?? "shot"}</span>
+                            {s.speedMph !== null && <span>{s.speedMph} mph</span>}
+                            {hitLocalS !== null && (
                               <span
-                                className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
-                                  s.depthZone === "deep"
-                                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                    : s.depthZone === "short"
-                                      ? "bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300"
-                                      : "bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
-                                }`}
+                                className={
+                                  isSelectedShot
+                                    ? "text-emerald-100 text-[10px]"
+                                    : "text-stone-400 text-[10px]"
+                                }
                               >
-                                {s.depthZone ?? "unknown"}
+                                {hitLocalS.toFixed(1)}s
                               </span>
-                            </td>
-                            <td className="py-1.5">
-                              <span
-                                className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
-                                  s.call === "in"
-                                    ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
-                                    : s.call === "close"
-                                      ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-                                      : s.call === "out"
-                                        ? "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
-                                        : "bg-stone-100 text-stone-600"
-                                }`}
-                              >
-                                {s.call}
-                              </span>
-                              {s.marginM !== null && (
-                                <span className="ml-1.5 text-stone-400">
-                                  ({(s.marginM * 100).toFixed(1)} cm)
-                                </span>
-                              )}
-                            </td>
+                            )}
+                          </Link>
+                        );
+                      })}
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead>
+                          <tr className="border-b border-stone-200 dark:border-stone-800 text-stone-500">
+                            <th className="py-1.5 pr-3">#</th>
+                            <th className="py-1.5 pr-3">Hitter</th>
+                            <th className="py-1.5 pr-3">Stroke</th>
+                            <th className="py-1.5 pr-3">Direction</th>
+                            <th className="py-1.5 pr-3">Speed</th>
+                            <th className="py-1.5 pr-3">Net Clearance</th>
+                            <th className="py-1.5 pr-3">Depth Zone</th>
+                            <th className="py-1.5">Line Call</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-stone-100 dark:divide-stone-800 tabular-nums">
+                          {activeRally.shots.map((s) => {
+                            const isSelectedShot = selectedShotIdx === s.shotIdx;
+                            const hitLocalS = toClipLocalTimeS(s.tHitS, activeRally.startS);
+                            const shotHref = `/tennis/${detail.id}?filter=${activeFilter}&rally=${activeRally.rallyIdx}&shot=${s.shotIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`;
+                            return (
+                              <tr
+                                key={s.shotIdx}
+                                className={
+                                  isSelectedShot
+                                    ? "bg-emerald-50/70 dark:bg-emerald-950/30"
+                                    : "hover:bg-stone-50 dark:hover:bg-stone-800/40 transition"
+                                }
+                              >
+                                <td className="py-1.5 pr-3 font-medium">
+                                  <Link
+                                    href={shotHref}
+                                    className="inline-flex items-center gap-1 font-semibold text-emerald-700 dark:text-emerald-400 hover:underline"
+                                  >
+                                    <span>{isSelectedShot ? "◆" : "▶"}</span>
+                                    <span>#{s.shotIdx + 1}</span>
+                                    {hitLocalS !== null && (
+                                      <span className="text-[10px] font-normal text-stone-400">
+                                        ({hitLocalS.toFixed(1)}s)
+                                      </span>
+                                    )}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3 uppercase text-stone-500">
+                                  <Link href={shotHref} className="block">
+                                    {s.hitter ?? "—"}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3 font-medium uppercase">
+                                  <Link href={shotHref} className="block">
+                                    {s.stroke ?? "shot"}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3 uppercase text-stone-500">
+                                  <Link href={shotHref} className="block">
+                                    {s.direction ?? "—"}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3">
+                                  <Link href={shotHref} className="block">
+                                    {s.speedMph !== null ? `${s.speedMph} mph` : "—"}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3">
+                                  <Link href={shotHref} className="block">
+                                    {s.netClearanceM !== null
+                                      ? `${(s.netClearanceM * 100).toFixed(0)} cm`
+                                      : "—"}
+                                  </Link>
+                                </td>
+                                <td className="py-1.5 pr-3">
+                                  <Link href={shotHref} className="inline-block">
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${
+                                        s.depthZone === "deep"
+                                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                          : s.depthZone === "short"
+                                            ? "bg-sky-100 text-sky-800 dark:bg-sky-950/60 dark:text-sky-300"
+                                            : "bg-stone-100 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
+                                      }`}
+                                    >
+                                      {s.depthZone ?? "unknown"}
+                                    </span>
+                                  </Link>
+                                </td>
+                                <td className="py-1.5">
+                                  <Link href={shotHref} className="inline-flex items-center">
+                                    <span
+                                      className={`rounded px-1.5 py-0.5 text-[11px] font-semibold uppercase ${
+                                        s.call === "in"
+                                          ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                                          : s.call === "close"
+                                            ? "bg-amber-100 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                                            : s.call === "out"
+                                              ? "bg-rose-100 text-rose-800 dark:bg-rose-950/60 dark:text-rose-300"
+                                              : "bg-stone-100 text-stone-600"
+                                      }`}
+                                    >
+                                      {s.call}
+                                    </span>
+                                    {s.marginM !== null && (
+                                      <span className="ml-1.5 text-stone-400">
+                                        ({(s.marginM * 100).toFixed(1)} cm)
+                                      </span>
+                                    )}
+                                  </Link>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
                 )}
               </>
