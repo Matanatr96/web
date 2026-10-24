@@ -75,3 +75,7 @@ schemes:
     build:
       targets:
         TennisVision: [run, archive]
+  TennisVisionWatch:
+    build:
+      targets:
+        TennisVisionWatch: [run, archive]

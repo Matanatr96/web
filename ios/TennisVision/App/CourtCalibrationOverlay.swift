@@ -180,7 +180,7 @@ struct CourtCalibrationOverlay: View {
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
                 .background(Color.black.opacity(0.75), in: Capsule())
-                .foregroundStyle(isDragging ? color : .white)
+                .foregroundStyle(isDragging ? color : Color.white)
                 .offset(y: -26)
         }
         .contentShape(Circle().inset(by: -16))

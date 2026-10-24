@@ -1,0 +1,55 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "amattapalli/**"]
+  pull_request:
+    branches: ["main"]
+
+jobs:
+  ios-xcodebuild:
+    name: iOS & watchOS Xcode Build + CourtGeometry Tests
+    if: github.repository == 'amattapalli/tennis-vision'
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run CourtGeometry Swift Package Tests
+        working-directory: ios/TennisVision/CourtGeometry
+        run: swift test
+
+      - name: Generate Xcode Project with XcodeGen
+        working-directory: ios/TennisVision
+        run: |
+          if ! command -v xcodegen >/dev/null 2>&1; then
+            brew install xcodegen
+          fi
+          xcodegen generate
+
+      - name: Build TennisVision + Embedded TennisVisionWatch (Xcode)
+        working-directory: ios/TennisVision
+        run: |
+          xcodebuild \
+            -project TennisVision.xcodeproj \
+            -scheme TennisVision \
+            -configuration Debug \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+  python-pytest:
+    name: Python Physics & Modal Rally API Tests
+    if: github.repository == 'amattapalli/tennis-vision'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install dependencies & run pytest
+        run: |
+          python -m pip install --upgrade pip
+          pip install numpy scipy opencv-python-headless pytest fastapi pydantic
+          PYTHONPATH=src pytest -q tests/physics

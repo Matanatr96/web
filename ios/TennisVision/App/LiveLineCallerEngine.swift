@@ -296,7 +296,14 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 
     private static func hasReversal(_ v: [Double]) -> Bool {
         guard v.count >= 3 else { return false }
-        return (1..<(v.count - 1)).contains { (v[$0] - v[$0 - 1]) * (v[$0 + 1] - v[$0]) < 0 }
+        for i in 1..<(v.count - 1) {
+            let dvPrev = v[i] - v[i - 1]
+            let dvNext = v[i + 1] - v[i]
+            if dvPrev * dvNext < 0 {
+                return true
+            }
+        }
+        return false
     }
 
     // MARK: State machine
@@ -912,10 +919,10 @@ final class CallAnnouncer: @unchecked Sendable {
     func prerenderSpeech() async {
         let out = await Self.speak("Out!", format: format)
         let close = await Self.speak("Close", format: format)
-        lock.lock()
-        if let out { buffers[.outVoice] = out }
-        if let close { buffers[.closeVoice] = close }
-        lock.unlock()
+        lock.withLock {
+            if let out { buffers[.outVoice] = out }
+            if let close { buffers[.closeVoice] = close }
+        }
     }
 
     private func tones(_ parts: [(hz: Double, seconds: Double)]) -> AVAudioPCMBuffer? {
