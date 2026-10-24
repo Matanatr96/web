@@ -339,3 +339,28 @@ def test_ball_track_streams_frames_and_timestamps():
     assert np.allclose(tr[:, 0], [i / 59.94 for i in range(8)])
     assert np.allclose(tr[:, 2], [(20 + 10 * i) * 1280 / 512 for i in range(8)], atol=0.5)
     assert B.ball_track(iter([]), [], model).shape == (0, 5)
+
+
+def test_ball_track_hysteresis_recovers_blurred_peaks_along_trajectory():
+    """Two-stage hysteresis: unseeded weak blobs (< 0.5) are ignored, while motion-blurred frames (0.28..0.48)
+    within 0.1 s and max_jump_px of the constant-velocity prediction are recovered without picking up distant noise."""
+    def weak_model(x):
+        out = np.zeros((len(x), 3, 288, 512), np.float32)
+        for b in range(len(x)):
+            for k in range(3):
+                level = (x[b, 3 * k:3 * k + 3].mean(axis=(1, 2)) * B.STD + B.MEAN).mean() * 255
+                i = int(round((level - 10) / 2))
+                cx = 40 + 12 * i
+                if i == 0:
+                    cv2.circle(out[b, k], (cx, 120), 2, 0.36, -1)               # unseeded weak blob -> ignored
+                elif i in (1, 2, 5):
+                    cv2.circle(out[b, k], (cx, 120), 2, 0.85, -1)               # strong blobs
+                elif i in (3, 4):
+                    cv2.circle(out[b, k], (cx, 120), 2, 0.34, -1)               # motion-blurred fast ball -> recovered
+                    cv2.circle(out[b, k], (450, 250), 4, 0.45, -1)              # stronger distant distractor -> gated out
+        return out
+
+    tr = B.ball_track(_frames(6), [i / 60 for i in range(6)], weak_model, step=3)
+    assert tr[0, 1] == 0.0
+    assert tr[1:, 1].tolist() == [1.0] * 5
+    assert np.allclose(tr[1:, 2], [(40 + 12 * i) * 1280 / 512 for i in range(1, 6)], atol=0.6)

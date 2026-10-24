@@ -24,8 +24,8 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     static let preRollSeconds = 1.5
     static let tailSeconds = 2.0
     /// Exposure re-metering cadence and dead-band while no rally is live.
-    static let exposureMinInterval = 0.5
-    static let exposureDeadbandEV: Float = 0.3
+    static let exposureMinInterval = 0.25
+    static let exposureDeadbandEV: Float = 0.25
 
     enum CaptureError: Error {
         case noCamera
@@ -88,7 +88,8 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
             cam.isVideoHDREnabled = false
         }
         if cam.isFocusModeSupported(.continuousAutoFocus) { cam.focusMode = .continuousAutoFocus }
-        cam.setExposureModeCustom(duration: Self.shutter, iso: Self.isoFor1000(cam), completionHandler: nil)
+        let initialExp = Self.exposureSettings(for: cam, evAdjustment: -cam.exposureTargetOffset)
+        cam.setExposureModeCustom(duration: initialExp.duration, iso: initialExp.iso, completionHandler: nil)
         cam.unlockForConfiguration()
         intrinsics = Intrinsics(horizontalFOVDegrees: Double(format.videoFieldOfView),
                                 width: Double(Self.width), height: Double(Self.height))
@@ -120,15 +121,26 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
         return best
     }
 
-    /// ISO that keeps the current auto-exposure brightness at a 1/1000 s shutter.
-    private static func isoFor1000(_ cam: AVCaptureDevice) -> Float {
-        let ratio = Float(CMTimeGetSeconds(cam.exposureDuration) / CMTimeGetSeconds(shutter))
-        return min(max(cam.iso * ratio, cam.activeFormat.minISO), cam.activeFormat.maxISO)
+    /// Computes custom `(duration, iso)` to achieve the target EV: prefers locked 1/1000 s shutter in daylight, and
+    /// smoothly lengthens shutter up to 1/60 s indoors or under dim night lights when `maxISO` alone would underexpose.
+    private static func exposureSettings(for cam: AVCaptureDevice, evAdjustment: Float = 0) -> (duration: CMTime, iso: Float) {
+        let currentDuration = max(CMTimeGetSeconds(cam.exposureDuration), 0.0001)
+        let targetExposure = currentDuration * Double(cam.iso) * Double(powf(2, evAdjustment))
+        let minShutterS = CMTimeGetSeconds(shutter)
+        let maxShutterS = min(1.0 / Double(fps), CMTimeGetSeconds(cam.activeFormat.maxExposureDuration))
+        let minISO = cam.activeFormat.minISO
+        let maxISO = cam.activeFormat.maxISO
+        let isoAtFastShutter = Float(targetExposure / minShutterS)
+        if isoAtFastShutter <= maxISO {
+            return (shutter, min(max(isoAtFastShutter, minISO), maxISO))
+        }
+        let relaxedDurationS = min(max(targetExposure / Double(maxISO), minShutterS), maxShutterS)
+        return (CMTime(seconds: relaxedDurationS, preferredTimescale: 1_000_000), maxISO)
     }
 
-    /// KVO on `exposureTargetOffset`: between rallies, nudge ISO (never the shutter) towards 0 EV; frozen while live.
+    /// KVO on `exposureTargetOffset`: between rallies, nudge ISO (and shutter when ISO saturates indoors) towards 0 EV; frozen while live.
     private func observeExposure(_ cam: AVCaptureDevice) {
-        exposureObservation = cam.observe(\.exposureTargetOffset, options: [.new]) { [weak self] cam, _ in
+        exposureObservation = cam.observe(\.exposureTargetOffset, options: [.initial, .new]) { [weak self] cam, _ in
             guard let self else { return }
             let offset = cam.exposureTargetOffset
             let now = Date()
@@ -140,9 +152,9 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
                 return true
             }
             guard shouldUpdate else { return }
-            let iso = min(max(cam.iso * powf(2, -offset), cam.activeFormat.minISO), cam.activeFormat.maxISO)
+            let exp = Self.exposureSettings(for: cam, evAdjustment: -offset)
             guard (try? cam.lockForConfiguration()) != nil else { return }
-            cam.setExposureModeCustom(duration: Self.shutter, iso: iso, completionHandler: nil)
+            cam.setExposureModeCustom(duration: exp.duration, iso: exp.iso, completionHandler: nil)
             cam.unlockForConfiguration()
         }
     }
@@ -171,10 +183,20 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     /// Starts capture (off the main thread, as AVFoundation requires).
     func start() { captureQueue.async { self.session.startRunning() } }
 
-    /// Stops capture and drops any live rally.
+    /// Stops capture, flushes any rally clip that has already been marked for ending (`stopAt != nil`), and discards unended scratch clips.
     func stop() {
         captureQueue.async { self.session.stopRunning() }
-        discardRally()
+        writerQueue.async {
+            if let writer = self.rally {
+                self.rally = nil
+                if let stop = writer.stopAt {
+                    let endPTS = self.ring.last.map { CMTimeMinimum($0.presentationTimeStamp, stop) } ?? stop
+                    writer.finish(at: endPTS)
+                } else {
+                    writer.cancel()
+                }
+            }
+        }
     }
 
     /// Latest full-resolution frame (calibration snapshot + drift-tracker reference).

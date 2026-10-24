@@ -1,25 +1,116 @@
-// RallySegmentUploader.swift — uploads each trimmed `rally_{idx}.mov` to the Modal `tennis-rally` app in 32 MiB
-// parts on a background URLSession, then deletes the local clip once Modal confirms receipt (commit 200).
+// RallySegmentUploader.swift — uploads each trimmed `rally_{idx}.mov` (or imported Camera Roll video) to the Modal
+// `tennis-rally` app in 32 MiB parts on a background URLSession, while retaining local clips in
+// `Application Support/Rallies/` (up to a 2 GiB cap) so players can replay, ShareLink-export, or re-upload clips
+// from the Home Screen.
 //
 // Clip = −1.5 s pre-roll (RAM ring) + active rally + 2.0 s tail, produced by CameraCaptureManager. One Modal job
 // per clip (job_id = "{match_id}.r{rally_idx}"), all calls carry the device `X-Job-Token` ("any" scope):
-//   POST /jobs                     {match_id, rally_idx, source:"ios", session_type, court, doubles, size_bytes,
-//                                   content_type, start_s} → {job_id, part_size, parts_expected, received_parts}
+//   POST /jobs                     {match_id, rally_idx, source:"ios"|"ios_library", session_type, court, doubles,
+//                                   size_bytes, content_type, start_s} → {job_id, part_size, parts_expected, received_parts}
 //   PUT  /jobs/{job_id}/parts/{n}  raw bytes (0-based n, X-Part-Sha256) — one background upload task per part file
 //   GET  /jobs/{job_id}            → {received_parts} (resume after relaunch, E5)
-//   POST /jobs/{job_id}/commit     200 → assembled on the Modal volume → delete clip + parts; 409 {missing} → re-send
+//   POST /jobs/{job_id}/commit     200 → assembled on the Modal volume → delete temporary part chunks; 409 {missing} → re-send
 // Each request is retried 3× with exponential backoff (`earliestBeginDate`); state survives relaunch in uploads.json.
 import CourtGeometry
 import CryptoKit
 import Foundation
 
-final class RallySegmentUploader: NSObject, @unchecked Sendable {
+/// Per-clip or per-session upload lifecycle state surfaced in `HomeView` and `RecordView`.
+enum ClipUploadState: String, Codable, Sendable {
+    case localOnly = "local_only"
+    case queued = "queued"
+    case uploading = "uploading"
+    case uploaded = "uploaded"
+    case failed = "failed"
+    case needsToken = "needs_token"
+
+    var label: String {
+        switch self {
+        case .localOnly: return "Local Only"
+        case .queued: return "Queued"
+        case .uploading: return "Uploading…"
+        case .uploaded: return "Uploaded"
+        case .failed: return "Retry Upload"
+        case .needsToken: return "Needs Token"
+        }
+    }
+}
+
+final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendable {
     static let shared = RallySegmentUploader()
     static let defaultPartSize = 33_554_432                // 32 MiB
     static let maxAttempts = 3
+    static let maxRetainedClipsBytes: Int64 = 2 * 1024 * 1024 * 1024 // 2 GiB local clip retention cap
     static let sessionIdentifier = "com.thelastmattapalli.tennisvision.rally-upload"
 
-    /// Where and as what to upload. `ModalBaseURL` / `ModalJobToken` come from Info.plist via an untracked xcconfig.
+    static let defaultModalBaseURL = "https://thelastmattapalli--tennis-rally-web.modal.run"
+    static let defaultWebBaseURL = "https://www.thelastmattapalli.com"
+    private static let modalBaseURLDefaultsKey = "tennis.modalBaseURL"
+    private static let modalJobTokenDefaultsKey = "tennis.modalJobToken"
+    private static let webBaseURLDefaultsKey = "tennis.webBaseURL"
+
+    // MARK: Cloud endpoint & token configuration (UserDefaults + Info.plist fallback)
+
+    private static func cleanedSetting(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty, !trimmed.hasPrefix("$(") else { return nil }
+        return trimmed
+    }
+
+    static var modalBaseURLString: String {
+        get {
+            cleanedSetting(UserDefaults.standard.string(forKey: modalBaseURLDefaultsKey))
+                ?? cleanedSetting(Bundle.main.object(forInfoDictionaryKey: "ModalBaseURL") as? String)
+                ?? defaultModalBaseURL
+        }
+        set {
+            let clean = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(clean.isEmpty ? defaultModalBaseURL : clean, forKey: modalBaseURLDefaultsKey)
+        }
+    }
+
+    static var modalJobToken: String {
+        get {
+            cleanedSetting(UserDefaults.standard.string(forKey: modalJobTokenDefaultsKey))
+                ?? cleanedSetting(Bundle.main.object(forInfoDictionaryKey: "ModalJobToken") as? String)
+                ?? ""
+        }
+        set {
+            UserDefaults.standard.set(newValue.trimmingCharacters(in: .whitespacesAndNewlines),
+                                      forKey: modalJobTokenDefaultsKey)
+        }
+    }
+
+    static var webBaseURLString: String {
+        get {
+            cleanedSetting(UserDefaults.standard.string(forKey: webBaseURLDefaultsKey))
+                ?? cleanedSetting(Bundle.main.object(forInfoDictionaryKey: "WebBaseURL") as? String)
+                ?? defaultWebBaseURL
+        }
+        set {
+            let clean = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            UserDefaults.standard.set(clean.isEmpty ? defaultWebBaseURL : clean, forKey: webBaseURLDefaultsKey)
+        }
+    }
+
+    static var webBaseURL: URL {
+        URL(string: webBaseURLString) ?? URL(string: defaultWebBaseURL)!
+    }
+
+    static var hasValidCredentials: Bool {
+        URL(string: modalBaseURLString) != nil && !modalJobToken.isEmpty
+    }
+
+    /// Published upload counters for live SwiftUI badges in `HomeView`, `RecordView`, and `CloudSettingsSheet`.
+    @Published private(set) var activeUploadsCount = 0
+    @Published private(set) var failedUploadsCount = 0
+    @Published private(set) var completedUploadsCount = 0
+    @Published private(set) var statusByKey: [String: ClipUploadState] = [:]
+
+    /// Invoked on the main thread whenever a clip's upload state changes: `(matchId, rallyIdx, newState)`.
+    var onClipStatusChanged: ((UUID, Int, ClipUploadState) -> Void)?
+
+    /// Where and as what to upload. `ModalBaseURL` / `ModalJobToken` come from `UserDefaults` or `Info.plist`.
     struct Config: Codable {
         var baseURL: URL
         var jobToken: String
@@ -27,25 +118,29 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         var sessionType: SessionMode
         var doubles: Bool
         var court: CourtJSON?
+        var source: String? = "ios"
 
-        /// Reads the Modal endpoint + device token from Info.plist; nil when not configured (clips stay local).
-        static func fromBundle(matchId: UUID, sessionType: SessionMode, doubles: Bool, court: CourtJSON?) -> Config? {
-            guard let base = (Bundle.main.object(forInfoDictionaryKey: "ModalBaseURL") as? String).flatMap({ URL(string: $0) }),
-                  let token = Bundle.main.object(forInfoDictionaryKey: "ModalJobToken") as? String, !token.isEmpty
-            else { return nil }
-            return Config(baseURL: base, jobToken: token, matchId: matchId, sessionType: sessionType, doubles: doubles,
-                          court: court)
+        /// Reads the Modal endpoint + device token from `UserDefaults` or `Info.plist`; nil when token is empty.
+        static func fromBundle(matchId: UUID, sessionType: SessionMode, doubles: Bool, court: CourtJSON?,
+                               source: String = "ios") -> Config? {
+            guard let base = URL(string: RallySegmentUploader.modalBaseURLString) else { return nil }
+            let token = RallySegmentUploader.modalJobToken
+            guard !token.isEmpty else { return nil }
+            return Config(baseURL: base, jobToken: token, matchId: matchId, sessionType: sessionType,
+                          doubles: doubles, court: court, source: source)
         }
     }
 
     /// `court` input of `POST /jobs`: `{size:[w,h], court_px:[[u,v]×4 in COURT_M order 0..3], posts_px}`.
-    struct CourtJSON: Codable {
+    struct CourtJSON: Codable, Equatable {
         var size: [Int]
         var courtPx: [[Double]]
         var postsPx: [[Double]]?
 
-        init(_ cal: CourtCalibration) {
-            size = [Int(CameraCaptureManager.width), Int(CameraCaptureManager.height)]
+        init(_ cal: CourtCalibration,
+             width: Int = Int(CameraCaptureManager.width),
+             height: Int = Int(CameraCaptureManager.height)) {
+            size = [width, height]
             courtPx = cal.corners.map { [$0.x, $0.y] }
             postsPx = cal.netPosts?.map { [$0.x, $0.y] }
         }
@@ -131,7 +226,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         return dir
     }()
 
-    private static func uploadKey(matchId: UUID, rallyIdx: Int) -> String {
+    static func uploadKey(matchId: UUID, rallyIdx: Int) -> String {
         "\(matchId.uuidString.lowercased())_\(rallyIdx)"
     }
 
@@ -142,16 +237,17 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
                let saved = try? JSONDecoder().decode([String: Upload].self, from: data) {
                 self.uploads = saved
             }
+            self.syncPublishedCounts()
             _ = self.session                                // reconnect to tasks from a previous launch
         }
     }
 
     // MARK: Public API
 
-    /// Queues a finished rally clip for upload.
+    /// Queues a finished rally clip (or Camera Roll video) for upload.
     ///
     /// - Parameters:
-    ///   - clip: `rally_{idx}.mov` in Application Support.
+    ///   - clip: `.mov` or `.mp4` file in Application Support/Rallies.
     ///   - rallyIdx: Rally index within the session.
     ///   - startS: Clip start relative to the session start (seconds).
     ///   - config: Endpoint, token and session metadata.
@@ -168,6 +264,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
                                        config: config, bookmarked: bookmarked, liveCall: liveCall,
                                        score: score, points: points)
             self.save()
+            self.notifyStatus(matchId: config.matchId, rallyIdx: rallyIdx, state: .uploading)
             self.createJob(key)
         }
     }
@@ -190,7 +287,7 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
             let court = config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
             var body: [String: Any] = [
                 "match_id": mid,
-                "source": "ios",
+                "source": config.source ?? "ios",
                 "session_type": config.sessionType.rawValue,
                 "doubles": config.doubles,
                 "court": court ?? NSNull(),
@@ -206,15 +303,22 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Re-drives uploads that exhausted their retries (call when the app returns to the foreground).
+    /// Re-drives uploads that exhausted their retries (call when the app returns to the foreground or after
+    /// updating credentials in Cloud Settings).
     func resumePending() {
+        let latestURL = URL(string: Self.modalBaseURLString)
+        let latestToken = Self.modalJobToken
         delegateQueue.addOperation {
             for (key, u) in self.uploads where u.failed {
                 self.uploads[key]?.failed = false
                 self.uploads[key]?.attempts = [:]
+                if let latestURL { self.uploads[key]?.config.baseURL = latestURL }
+                if !latestToken.isEmpty { self.uploads[key]?.config.jobToken = latestToken }
+                self.notifyStatus(matchId: u.config.matchId, rallyIdx: u.rallyIdx, state: .uploading)
                 if let jobId = u.jobId { self.fetchReceivedParts(key, jobId: jobId) } else { self.createJob(key) }
             }
             self.save()
+            self.syncPublishedCounts()
         }
     }
 
@@ -223,12 +327,21 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
     private func createJob(_ key: String, delay: TimeInterval = 0) {
         guard let u = uploads[key] else { return }
         let size = (try? FileManager.default.attributesOfItem(atPath: u.clipPath)[.size] as? Int) ?? 0
+        guard size > 0 else { return markFailed(key) }
+        let contentType = u.clipPath.lowercased().hasSuffix(".mp4") ? "video/mp4" : "video/quicktime"
         let court = u.config.court.flatMap { try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode($0)) }
         var body: [String: Any] = [
-            "match_id": u.config.matchId.uuidString.lowercased(), "rally_idx": u.rallyIdx, "source": "ios",
-            "session_type": u.config.sessionType.rawValue, "court": court ?? NSNull(), "doubles": u.config.doubles,
-            "size_bytes": size, "content_type": "video/quicktime", "start_s": u.startS,
-            "bookmarked": u.bookmarked, "live_call": u.liveCall ?? NSNull(),
+            "match_id": u.config.matchId.uuidString.lowercased(),
+            "rally_idx": u.rallyIdx,
+            "source": u.config.source ?? "ios",
+            "session_type": u.config.sessionType.rawValue,
+            "court": court ?? NSNull(),
+            "doubles": u.config.doubles,
+            "size_bytes": size,
+            "content_type": contentType,
+            "start_s": u.startS,
+            "bookmarked": u.bookmarked,
+            "live_call": u.liveCall ?? NSNull(),
         ]
         if let score = u.score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
             body["score"] = obj
@@ -315,19 +428,83 @@ final class RallySegmentUploader: NSObject, @unchecked Sendable {
              delay: delay)
     }
 
-    /// Modal confirmed the file is assembled on its volume: the phone keeps nothing.
+    /// Modal confirmed the file is assembled on its volume: clean up temporary upload part chunks,
+    /// while retaining the `.mov` clip in `Application Support/Rallies/` (up to `maxRetainedClipsBytes`)
+    /// so the user can replay, ShareLink-export, or inspect clips from `HomeView`.
     private func didCommit(_ key: String) {
         guard let u = uploads.removeValue(forKey: key) else { return }
-        try? FileManager.default.removeItem(atPath: u.clipPath)
         (0..<u.partCount).forEach { try? FileManager.default.removeItem(at: partURL(key, $0)) }
         try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("create_\(key).json"))
         try? FileManager.default.removeItem(at: Self.partsDirectory.appendingPathComponent("commit_\(key).json"))
         save()
+        pruneOldClipsIfNeeded()
+        DispatchQueue.main.async { self.completedUploadsCount += 1 }
+        notifyStatus(matchId: u.config.matchId, rallyIdx: u.rallyIdx, state: .uploaded)
     }
 
     private func markFailed(_ key: String) {
-        uploads[key]?.failed = true
+        guard var u = uploads[key] else { return }
+        u.failed = true
+        uploads[key] = u
         save()
+        notifyStatus(matchId: u.config.matchId, rallyIdx: u.rallyIdx, state: .failed)
+    }
+
+    private func notifyStatus(matchId: UUID, rallyIdx: Int, state: ClipUploadState) {
+        let key = Self.uploadKey(matchId: matchId, rallyIdx: rallyIdx)
+        syncPublishedCounts(updatingKey: key, state: state)
+        DispatchQueue.main.async {
+            self.onClipStatusChanged?(matchId, rallyIdx, state)
+        }
+    }
+
+    private func syncPublishedCounts(updatingKey: String? = nil, state: ClipUploadState? = nil) {
+        let active = uploads.values.filter { !$0.failed }.count
+        let failed = uploads.values.filter(\.failed).count
+        var snapshot: [String: ClipUploadState] = [:]
+        for (k, u) in uploads {
+            snapshot[k] = u.failed ? .failed : .uploading
+        }
+        DispatchQueue.main.async {
+            self.activeUploadsCount = active
+            self.failedUploadsCount = failed
+            for (k, v) in snapshot { self.statusByKey[k] = v }
+            if let updatingKey, let state {
+                self.statusByKey[updatingKey] = state
+            }
+        }
+    }
+
+    /// Bounds local clip storage in `Application Support/Rallies/` to `maxRetainedClipsBytes` (2 GiB),
+    /// evicting oldest non-queued clip files first.
+    private func pruneOldClipsIfNeeded() {
+        let fm = FileManager.default
+        let activePaths = Set(uploads.values.map(\.clipPath))
+        guard let urls = try? fm.contentsOfDirectory(
+            at: CameraCaptureManager.clipsDirectory,
+            includingPropertiesForKeys: [.fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles]
+        ) else { return }
+        let clips = urls.filter {
+            let ext = $0.pathExtension.lowercased()
+            return (ext == "mov" || ext == "mp4") && !activePaths.contains($0.path)
+        }
+        var entries: [(url: URL, size: Int64, date: Date)] = []
+        var totalBytes: Int64 = 0
+        for url in clips {
+            let vals = try? url.resourceValues(forKeys: [.fileSizeKey, .contentModificationDateKey])
+            let sz = Int64(vals?.fileSize ?? 0)
+            let dt = vals?.contentModificationDate ?? .distantPast
+            totalBytes += sz
+            entries.append((url, sz, dt))
+        }
+        guard totalBytes > Self.maxRetainedClipsBytes else { return }
+        for entry in entries.sorted(by: { $0.date < $1.date }) {
+            guard totalBytes > Self.maxRetainedClipsBytes else { break }
+            if (try? fm.removeItem(at: entry.url)) != nil {
+                totalBytes -= entry.size
+            }
+        }
     }
 
     // MARK: Plumbing

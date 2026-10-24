@@ -713,14 +713,15 @@ public enum BallKinematics {
         let hasCusp = isCusp(pre: preFit, post: postFit)
         guard let lastPre = pre.last, let firstPost = post.first,
               racketSound || hasCusp,
-              let before = courtYVelocity(preFit),
-              let after = courtYVelocity(postFit),
               let imgPre = imageVelocity(preFit),
-              let imgPost = imageVelocity(postFit),
-              max(abs(before), abs(after)) >= minCourtSpeed else { return .unknown }
+              let imgPost = imageVelocity(postFit) else { return .unknown }
         guard let ground = h0.apply(Point2((lastPre.u + firstPost.u) / 2, (lastPre.v + firstPost.v) / 2)) else {
-            return .hit                                    // above the horizon: certainly airborne
+            // Above the horizon: certainly airborne (serve / overhead / high lob hit) when moving.
+            return max(hypot(imgPre.du, imgPre.dv), hypot(imgPost.du, imgPost.dv)) >= 120.0 ? .hit : .unknown
         }
+        guard let before = courtYVelocity(preFit),
+              let after = courtYVelocity(postFit),
+              max(abs(before), abs(after)) >= minCourtSpeed else { return .unknown }
         // Image-v bounce signature: descending in image (dv > 0) before impact and kicking up (dv < 0) after impact.
         // On the far half, +v_Y and +v_Z both push the image point up after a bounce (`-imgPost.dv >= 0.6 * imgPre.dv`),
         // whereas a downward near-baseline serve/smash (`v_Z < 0`) that projects onto `ground.y > 0` has weak upward
@@ -764,6 +765,49 @@ public enum BallKinematics {
         if (before > 0) != (after > 0) { return .hit }
         if before > 0 && after > before + 5.0 && !imageBounceTurn { return .hit }
         return .bounce
+    }
+
+    /// Classifies a trajectory event purely from 2D image kinematics + optional racket audio onset when court
+    /// calibration (`H0`) is not yet available, allowing live shot counting before 6-point calibration.
+    public static func classifyImageEvent(pre: [BallSample], post: [BallSample],
+                                          racketSound: Bool = false, bouncesSinceHit: Int = 0) -> TrackEvent {
+        let preFit = Array(pre.suffix(fitSamples)), postFit = Array(post.prefix(fitSamples))
+        func imageVelocity(_ s: [BallSample]) -> (du: Double, dv: Double)? {
+            guard s.count >= 2, let t0 = s.first?.t,
+                  let u = Polynomial2.fit(t: s.map(\.t), y: s.map(\.u), t0: t0, degree: 1),
+                  let v = Polynomial2.fit(t: s.map(\.t), y: s.map(\.v), t0: t0, degree: 1) else { return nil }
+            return (u.b, v.b)
+        }
+        let hasCusp = isCusp(pre: preFit, post: postFit)
+        guard let lastPre = pre.last,
+              racketSound || hasCusp,
+              let imgPre = imageVelocity(preFit),
+              let imgPost = imageVelocity(postFit) else { return .unknown }
+        let speedPre = hypot(imgPre.du, imgPre.dv)
+        let speedPost = hypot(imgPost.du, imgPost.dv)
+        let minSpeed = racketSound ? 20.0 : 80.0
+        guard max(speedPre, speedPost) >= minSpeed else { return .unknown }
+        let all = preFit + postFit
+        if !hasCusp,
+           let uAll = Polynomial2.fit(t: all.map(\.t), y: all.map(\.u), t0: lastPre.t, degree: 2),
+           let vAll = Polynomial2.fit(t: all.map(\.t), y: all.map(\.v), t0: lastPre.t, degree: 2),
+           hypot(uAll.rms, vAll.rms) < 0.1 {
+            return .unknown
+        }
+        if racketSound { return .hit }
+        if imgPre.du * imgPost.du < 0 && max(abs(imgPre.du), abs(imgPost.du)) >= 100.0 {
+            return .hit
+        }
+        if imgPre.dv < -40.0 && imgPost.dv > 40.0 {
+            return .hit
+        }
+        if imgPre.dv > 20.0 && imgPost.dv < -20.0 && -imgPost.dv >= 0.6 * imgPre.dv {
+            if bouncesSinceHit == 0 && imgPre.dv < 800.0 {
+                return .bounce
+            }
+            return .hit
+        }
+        return hasCusp ? .hit : .unknown
     }
 
     /// Infers which half of the court a hitter struck the ball from using post-hit ball flight direction

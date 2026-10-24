@@ -34,6 +34,8 @@ from dsa.physics.homography import (BALL_R, CENTRE_HALF_W, DOUBLES_HALF_W, HALF_
 STEP = 3
 SMALL_W, SMALL_H = 512, 288
 HEAT_THRESHOLD = 0.5
+HYSTERESIS_THRESHOLD = 0.28
+HYSTERESIS_DT_S = 0.1
 MEAN, STD = np.float32([0.485, 0.456, 0.406]), np.float32([0.229, 0.224, 0.225])
 GATE_PX, STILL_FRAMES, STILL_PX, REACQUIRE = 60.0, 10, 2.0, 6
 MIN_SIDE, FULL_SIDE = 3, 4
@@ -67,17 +69,37 @@ def small(bgr: np.ndarray) -> np.ndarray:
     return (cv2.resize(bgr[:, :, ::-1], (SMALL_W, SMALL_H)).astype(np.float32) / 255 - MEAN) / STD
 
 
-def blob(m: np.ndarray, W: int, H: int, threshold: float = HEAT_THRESHOLD) -> tuple[float, float, float, float]:
+def blob(m: np.ndarray, W: int, H: int, threshold: float = HEAT_THRESHOLD,
+         center_512: tuple[float, float] | None = None,
+         max_jump_px: float = GATE_PX) -> tuple[float, float, float, float]:
     """One heatmap (288, 512) of probabilities -> found, u, v, score: the heaviest connected blob above threshold,
-    its probability-weighted centroid mapped to the W x H frame (as dsa.gpu.models.Ball.locate)."""
-    if m.max() <= threshold:
+    its probability-weighted centroid mapped to the W x H frame (as dsa.gpu.models.Ball.locate). When center_512 is
+    given (secondary hysteresis recovery), only blobs whose 512x288 centroid lies within max_jump_px of center_512
+    are considered."""
+    if center_512 is None:
+        if m.max() <= threshold:
+            return 0.0, 0.0, 0.0, float(m.max())
+        n, lab = cv2.connectedComponents((m > threshold).astype(np.uint8))
+        best = max(range(1, n), key=lambda k: m[lab == k].sum())
+        ys, xs = np.nonzero(lab == best)
+        w = m[ys, xs]
+        return 1.0, float((xs * w).sum() / w.sum() * W / SMALL_W), float((ys * w).sum() / w.sum() * H / SMALL_H), \
+            float(w.sum())
+    if m.max() < threshold:
         return 0.0, 0.0, 0.0, float(m.max())
-    n, lab = cv2.connectedComponents((m > threshold).astype(np.uint8))
-    best = max(range(1, n), key=lambda k: m[lab == k].sum())
-    ys, xs = np.nonzero(lab == best)
-    w = m[ys, xs]
-    return 1.0, float((xs * w).sum() / w.sum() * W / SMALL_W), float((ys * w).sum() / w.sum() * H / SMALL_H), \
-        float(w.sum())
+    n, lab = cv2.connectedComponents((m >= threshold).astype(np.uint8))
+    near: list[tuple[float, float, float]] = []
+    for k in range(1, n):
+        ys, xs = np.nonzero(lab == k)
+        w = m[ys, xs]
+        w_sum = float(w.sum())
+        cx, cy = float((xs * w).sum() / w_sum), float((ys * w).sum() / w_sum)
+        if np.hypot(cx - center_512[0], cy - center_512[1]) <= max_jump_px:
+            near.append((w_sum, cx, cy))
+    if not near:
+        return 0.0, 0.0, 0.0, float(m.max())
+    w_sum, cx, cy = max(near, key=lambda item: item[0])
+    return 1.0, float(cx * W / SMALL_W), float(cy * H / SMALL_H), w_sum
 
 
 def windows(n: int, step: int = STEP) -> list[tuple[list[int], list[int]]]:
@@ -96,18 +118,23 @@ def windows(n: int, step: int = STEP) -> list[tuple[list[int], list[int]]]:
 
 
 def ball_track(frames: Iterable[np.ndarray], pts_s: Sequence[float], heatmaps: Callable[[np.ndarray], np.ndarray],
-               step: int = STEP, batch: int = 8) -> np.ndarray:
+               step: int = STEP, batch: int = 8, threshold: float = HEAT_THRESHOLD,
+               low_threshold: float = HYSTERESIS_THRESHOLD, max_jump_px: float = GATE_PX) -> np.ndarray:
     """Native BGR frames and their presentation timestamps -> (n, 5) pts_s, found, u, v, score.
 
     heatmaps: (B, 9, 288, 512) float32 (3 small() frames, channels-first, stacked oldest first) ->
     (B, 3, 288, 512) probabilities, head k for the k-th stacked frame (wasb_heatmaps on a GPU, the CoreML
     model on a phone, a stand-in in tests). Frames stream: only the 512 x 288 inputs of the windows waiting for
-    the next batch are held, so a whole session fits in memory; pts_s may fill up while frames are read."""
+    the next batch are held, so a whole session fits in memory; pts_s may fill up while frames are read.
+    Two-stage hysteresis: unseeded detections require >= threshold (0.5); if a frame has no blob >= threshold
+    but the previous frame had a valid detection within 0.1 s, a local blob >= low_threshold (0.28) within
+    max_jump_px (at 512 x 288) of the constant-velocity prediction is recovered."""
     if step not in (1, 3):
         raise ValueError("step must be 3 (all three heads) or 1 (middle head)")
     smalls: dict[int, np.ndarray] = {}
     rows: dict[int, tuple[float, float, float, float]] = {}
     queue: list[tuple[list[int], list[tuple[int, int]]]] = []
+    history: list[tuple[float, float, float]] = []
     shape = {"W": 0, "H": 0}
 
     def run(force: bool, n: int) -> None:
@@ -115,9 +142,25 @@ def ball_track(frames: Iterable[np.ndarray], pts_s: Sequence[float], heatmaps: C
             chunk = queue[:batch]
             del queue[:batch]
             x = np.stack([np.concatenate([smalls[i] for i in idx], 0) for idx, _ in chunk]).astype(np.float32)
+            W, H = shape["W"], shape["H"]
             for (_, reads), m in zip(chunk, np.asarray(heatmaps(x))):
                 for head, f in reads:
-                    rows[f] = blob(m[head], shape["W"], shape["H"])
+                    t_f = float(pts_s[f]) if f < len(pts_s) else f / 60.0
+                    r = blob(m[head], W, H, threshold)
+                    if r[0] == 0.0 and low_threshold < threshold and history:
+                        t_b, x_b, y_b = history[-1]
+                        dt = t_f - t_b
+                        if 0.0 < dt <= HYSTERESIS_DT_S + 1e-6:
+                            if len(history) >= 2 and 0.0 < t_b - history[-2][0] <= 2 * HYSTERESIS_DT_S:
+                                t_a, x_a, y_a = history[-2]
+                                dt_ab = t_b - t_a
+                                pred = (x_b + (x_b - x_a) * (dt / dt_ab), y_b + (y_b - y_a) * (dt / dt_ab))
+                            else:
+                                pred = (x_b, y_b)
+                            r = blob(m[head], W, H, low_threshold, center_512=pred, max_jump_px=max_jump_px)
+                    if r[0] > 0.0:
+                        history.append((t_f, r[1] * SMALL_W / max(W, 1), r[2] * SMALL_H / max(H, 1)))
+                    rows[f] = r
             keep = min([min(idx) for idx, _ in queue] + [n - 2])
             for i in [k for k in smalls if k < keep]:
                 del smalls[i]
@@ -234,11 +277,13 @@ def kink_scores(track: np.ndarray, look: int = LOOK) -> dict[int, float]:
     where the velocity jumps, score high."""
     ok = np.flatnonzero(track[:, 1] > 0)
     s, t = track[:, [0, 2, 3]], track[:, 0]
+    dt_step = max(1 / 60, float(np.median(np.diff(t[ok]))) if len(ok) > 1 else 1 / 60)
+    max_span = 2 * look * 2.5 * min(dt_step, 1 / 24)
     var = noise_px(track) ** 2
     out = {}
     for j in range(look, len(ok) - look):
         w = ok[j - look:j + look + 1]
-        if t[w[-1]] - t[w[0]] > 2 * look * 2.5 / 60:                       # a gap in the track
+        if t[w[-1]] - t[w[0]] > max_span:                                   # a gap in the track
             continue
         rss1 = _rss_quad(s[w])
         rss2 = min(_rss_quad(s[w[:k]]) + _rss_quad(s[w[k:]]) for k in (look, look + 1))
@@ -307,9 +352,9 @@ def _quad(t: np.ndarray, y: np.ndarray, t0: float) -> np.ndarray:
     return np.polyfit(t - t0, y, min(2, len(t) - 1))
 
 
-def refine_roi(bgr: np.ndarray, uv, size: int = ROI) -> np.ndarray:
+def refine_roi(bgr: np.ndarray, uv, size: int = ROI, max_shift_px: float = 16.0) -> np.ndarray:
     """A coarse ball position (from the 512 x 288 heatmap) -> the centroid of the optic-yellow blob in the
-    size x size crop of the native frame around it; unchanged when no blob stands out."""
+    size x size crop of the native frame around it (within max_shift_px of uv); unchanged when no blob stands out."""
     u, v = float(uv[0]), float(uv[1])
     h, w = bgr.shape[:2]
     x0, y0 = int(round(u)) - size // 2, int(round(v)) - size // 2
@@ -319,14 +364,22 @@ def refine_roi(bgr: np.ndarray, uv, size: int = ROI) -> np.ndarray:
     c = bgr[ya:yb, xa:xb].astype(np.float32)
     s = (c[:, :, 1] + c[:, :, 2]) / 2 - c[:, :, 0]                    # (G + R) / 2 - B: yellow
     s -= np.median(s)
-    if s.max() < 40:
+    if s.max() < 25:
         return np.array([u, v])
     m = np.where(s >= 0.5 * s.max(), s, 0)
     n, lab = cv2.connectedComponents((m > 0).astype(np.uint8))
-    best = max(range(1, n), key=lambda k: m[lab == k].sum())
-    ys, xs = np.nonzero(lab == best)
-    wt = m[ys, xs]
-    return np.array([xa + (xs * wt).sum() / wt.sum(), ya + (ys * wt).sum() / wt.sum()])
+    candidates_k: list[tuple[float, float, float]] = []
+    for k in range(1, n):
+        ys, xs = np.nonzero(lab == k)
+        wt = m[ys, xs]
+        w_sum = float(wt.sum())
+        cx, cy = float(xa + (xs * wt).sum() / w_sum), float(ya + (ys * wt).sum() / w_sum)
+        if np.hypot(cx - u, cy - v) <= max_shift_px:
+            candidates_k.append((w_sum, cx, cy))
+    if not candidates_k:
+        return np.array([u, v])
+    _, cx, cy = max(candidates_k, key=lambda item: item[0])
+    return np.array([cx, cy])
 
 
 def jacobian(H: np.ndarray, uv) -> np.ndarray:

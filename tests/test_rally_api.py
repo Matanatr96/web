@@ -353,3 +353,13 @@ def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, m
         assert tr_item["pro_std"] > 0
         assert tr_item["z_score"] == pytest.approx((tr_item["user_value"] - tr_item["pro_mean"]) / tr_item["pro_std"],
                                                    abs=0.02)
+
+    # Full unsegmented Camera Roll / web upload with rally_idx == 0 routes to segment_match
+    mid_lib = str(uuid.uuid4())
+    lib_body = {"match_id": mid_lib, "source": "ios_library", "rally_idx": 0, "size_bytes": 600,
+                "content_type": "video/quicktime", "session_type": "rally"}
+    assert client.post("/jobs", json=lib_body, headers=tok(scope="any")).status_code == 201
+    client.put(f"/jobs/{mid_lib}.r0/parts/0", content=b"\0" * 600, headers=tok(scope="any"))
+    assert client.post(f"/jobs/{mid_lib}.r0/commit", headers=tok(scope="any")).status_code == 200
+    assert spawned[-1][0] == "segment_match"
+    assert spawned[-1][1]["path"] == f"{mid_lib}/source.mov"

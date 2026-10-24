@@ -175,6 +175,13 @@ final class CourtGeometryTests: XCTestCase {
         XCTAssertEqual(BallKinematics.classifyEvent(pre: nearServe.pre, post: nearServe.post, h0: cal.h0, racketSound: true), .hit)
         let servePx = Point2(nearServe.pre.last!.u, nearServe.pre.last!.v)
         XCTAssertEqual(BallKinematics.inferHitterHalf(at: servePx, post: nearServe.post, calibration: cal), .near)
+        // Uncalibrated image-space event classification distinguishes bounces from hits and rejects smooth arcs / still blobs.
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: bounce.pre, post: bounce.post, bouncesSinceHit: 0), .bounce)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: bounce.pre, post: bounce.post, bouncesSinceHit: 1), .hit)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: hit.pre, post: hit.post, bouncesSinceHit: 0), .hit)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: farHit.pre, post: farHit.post, racketSound: true), .hit)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: Array(still.prefix(4)), post: Array(still.suffix(4))), .unknown)
+        XCTAssertEqual(BallKinematics.classifyImageEvent(pre: apex.pre, post: apex.post), .unknown)
     }
 
     func testCandidateSampleIsAssignedToTheBetterFittingArc() throws {

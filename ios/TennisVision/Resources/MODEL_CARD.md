@@ -61,17 +61,17 @@ Spec: `{"inputs": [["frame_t0", [288, 512]], ["frame_t1", [288, 512]], ["frame_t
       ]
     },
     "metadata": {
-      "threshold": "0.5",
-      "com.github.apple.coremltools.source_dialect": "TorchScript",
-      "weights": "wasb_tennis_best.pth.tar",
-      "com.github.apple.coremltools.version": "9.0",
-      "com.github.apple.coremltools.conversion_date": "2026-10-23",
-      "heads": "frame_t0,frame_t1,frame_t2",
-      "weights_sha256": "9d391239ab10c733f8e5bfadf16ab72838e7a8ebc88e8ae2038501c03d42b4bb",
+      "input": "RGB 512x288",
       "com.github.apple.coremltools.source": "torch==2.14.0+cu130",
-      "normalisation": "ImageNet (baked in)",
+      "com.github.apple.coremltools.conversion_date": "2026-10-23",
+      "com.github.apple.coremltools.source_dialect": "TorchScript",
+      "weights_sha256": "9d391239ab10c733f8e5bfadf16ab72838e7a8ebc88e8ae2038501c03d42b4bb",
+      "weights": "wasb_tennis_best.pth.tar",
+      "threshold": "0.5",
       "step": "3",
-      "input": "RGB 512x288"
+      "normalisation": "ImageNet (baked in)",
+      "heads": "frame_t0,frame_t1,frame_t2",
+      "com.github.apple.coremltools.version": "9.0"
     }
   },
   "coreml": {

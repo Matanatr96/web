@@ -1,6 +1,6 @@
-// TennisVisionApp.swift — app entry point, the session controller that wires capture → live caller → clip
-// uploader → Watch, and the landscape RecordView (Rally Mode default / Match Mode, streak HUD, 6-second slow-mo
-// challenge replay, Bluetooth audio-latency warning).
+// TennisVisionApp.swift — app entry point (`HomeView` root dashboard + full-screen `RecordView`), the session
+// controller that wires capture → live caller → clip uploader → local/cloud `SessionStore` → Watch, live WASB
+// ball-tracking reticle + trail overlay, explicit End Session flow, and 6-second slow-mo challenge replay.
 import AVFoundation
 import AVKit
 import CourtGeometry
@@ -16,11 +16,13 @@ struct TennisVisionApp: App {
 
     var body: some Scene {
         WindowGroup {
-            RecordView()
+            HomeView()
                 .environmentObject(controller)
-                .task { await controller.start() }
                 .onChange(of: scenePhase) { _, phase in
-                    if phase == .active { RallySegmentUploader.shared.resumePending() }
+                    if phase == .active {
+                        RallySegmentUploader.shared.resumePending()
+                        Task { await SessionStore.shared.refreshRemote() }
+                    }
                 }
         }
     }
@@ -37,7 +39,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
 
 // MARK: - Session controller
 
-/// Owns the capture, live-caller, drift-tracker, uploader and Watch plumbing. All @Published state changes on main.
+/// Owns the capture, live-caller, drift-tracker, uploader, SessionStore and Watch plumbing. All @Published state changes on main.
 final class SessionController: NSObject, ObservableObject {
     @Published var mode: SessionMode = .rally { didSet { reconfigure() } }
     @Published var audioMode: AudioCallMode = .softChime { didSet { reconfigure() } }
@@ -46,6 +48,9 @@ final class SessionController: NSObject, ObservableObject {
     @Published private(set) var shotCount = 0
     @Published private(set) var inStreak = 0
     @Published private(set) var sessionBest = 0
+    @Published private(set) var totalSessionShots = 0
+    @Published private(set) var inCalls = 0
+    @Published private(set) var outCalls = 0
     @Published private(set) var lastCall: LineCallResult?
     @Published private(set) var lastLatencyMs: Double?
     @Published private(set) var calibration: CourtCalibration?
@@ -53,6 +58,9 @@ final class SessionController: NSObject, ObservableObject {
     @Published private(set) var audioLatencyWarning: String?
     @Published private(set) var score = MatchScorekeeper()
     @Published private(set) var clipsSaved = 0
+    @Published private(set) var sessionClips: [RallyClipRecord] = []
+    @Published private(set) var currentBall: BallSample?
+    @Published private(set) var ballTrail: [BallSample] = []
     @Published private(set) var setupError: String?
     @Published var calibrationFrame: CalibrationFrame?
     @Published var replay: ReplayItem?
@@ -60,12 +68,15 @@ final class SessionController: NSObject, ObservableObject {
     let camera = CameraCaptureManager()
     private let engine = LiveLineCallerEngine()
     private let drift = CourtDriftTracker()
-    private let matchId = UUID()
+    private(set) var matchId = UUID()
+    private var sessionStartedAt = Date()
     private var sessionStartS: Double?
     private var savedBrightness: CGFloat?
     private var pointsLog: [RallySegmentUploader.PointPayload] = []
     private var lastCompletedRallyIdx: Int?
     private var lastCompletedEndS: Double?
+    private var isEndingSession = false
+    private var observersInstalled = false
 
     /// A frozen frame for the calibration overlay.
     struct CalibrationFrame: Identifiable {
@@ -83,15 +94,46 @@ final class SessionController: NSObject, ObservableObject {
 
     // MARK: Lifecycle
 
+    /// Resets per-session counters and mints a fresh `matchId` before presenting `RecordView`.
+    @MainActor
+    func prepareNewSession(mode: SessionMode, doubles: Bool) {
+        matchId = UUID()
+        sessionStartedAt = Date()
+        sessionStartS = nil
+        isEndingSession = false
+        shotCount = 0
+        inStreak = 0
+        sessionBest = 0
+        totalSessionShots = 0
+        inCalls = 0
+        outCalls = 0
+        clipsSaved = 0
+        sessionClips = []
+        pointsLog = []
+        lastCompletedRallyIdx = nil
+        lastCompletedEndS = nil
+        lastCall = nil
+        lastLatencyMs = nil
+        currentBall = nil
+        ballTrail = []
+        score = MatchScorekeeper()
+        setupError = nil
+        self.mode = mode
+        self.doubles = doubles
+    }
+
     /// Requests permissions, configures capture + audio, and starts everything.
     @MainActor
     func start() async {
+        isEndingSession = false
         guard await AVCaptureDevice.requestAccess(for: .video), await AVAudioApplication.requestRecordPermission() else {
             setupError = "Camera and microphone access are required."
             return
         }
         do {
-            try camera.configure()
+            if camera.session.inputs.isEmpty {
+                try camera.configure()
+            }
             try engine.start()
         } catch {
             setupError = "Could not start capture: \(error)"
@@ -115,11 +157,78 @@ final class SessionController: NSObject, ObservableObject {
             WCSession.default.delegate = self
             WCSession.default.activate()
         }
-        NotificationCenter.default.addObserver(self, selector: #selector(routeChanged),
-                                               name: AVAudioSession.routeChangeNotification, object: nil)
-        NotificationCenter.default.addObserver(self, selector: #selector(thermalChanged),
-                                               name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        if !observersInstalled {
+            observersInstalled = true
+            NotificationCenter.default.addObserver(self, selector: #selector(routeChanged),
+                                                   name: AVAudioSession.routeChangeNotification, object: nil)
+            NotificationCenter.default.addObserver(self, selector: #selector(thermalChanged),
+                                                   name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
+        }
         routeChanged()
+    }
+
+    /// Manually starts a rally clip or finishes the active rally clip.
+    func toggleManualRally() {
+        if engineState == .live || engineState == .armed {
+            engine.endCurrentRally()
+        } else {
+            engine.forceStartRally()
+        }
+    }
+
+    /// Ends the active court session: flushes any live rally clip, saves the session to `SessionStore`,
+    /// queues pending clip uploads, finalizes with Modal, and stops the camera + audio engines cleanly.
+    @MainActor
+    func endSession() async {
+        guard !isEndingSession else { return }
+        isEndingSession = true
+        let wasActiveRally = (engineState == .live || engineState == .armed)
+        engine.endCurrentRally()
+        if wasActiveRally {
+            try? await Task.sleep(nanoseconds: 250_000_000)
+        }
+        engine.stop()
+        camera.stop()
+        currentBall = nil
+        ballTrail = []
+        if let b = savedBrightness {
+            UIScreen.main.brightness = b
+            savedBrightness = nil
+        }
+        UIApplication.shared.isIdleTimerDisabled = false
+
+        let record = buildSessionRecord()
+        SessionStore.shared.upsertLocalSession(record)
+        finishSession()
+        _ = SessionStore.shared.uploadSession(record)
+    }
+
+    @MainActor
+    func buildSessionRecord() -> LocalSessionRecord {
+        let shots = max(totalSessionShots, shotCount)
+        let best = max(sessionBest, inStreak)
+        let rallies = max(clipsSaved, sessionClips.count)
+        let scoreStr = mode == .match ? score.formattedScore : nil
+        let status: ClipUploadState = RallySegmentUploader.hasValidCredentials
+            ? (sessionClips.isEmpty ? .localOnly : .uploading)
+            : .needsToken
+        return LocalSessionRecord(
+            id: matchId,
+            startedAt: sessionStartedAt,
+            endedAt: Date(),
+            mode: mode,
+            doubles: doubles,
+            totalShots: shots,
+            bestStreak: best,
+            ralliesCount: rallies,
+            inCalls: inCalls,
+            outCalls: outCalls,
+            scoreFormatted: scoreStr,
+            clipFiles: sessionClips,
+            uploadStatus: status,
+            court: calibration.map { RallySegmentUploader.CourtJSON($0) },
+            source: "ios"
+        )
     }
 
     private func reconfigure() {
@@ -191,7 +300,7 @@ final class SessionController: NSObject, ObservableObject {
     func finishSession() {
         guard let config = RallySegmentUploader.Config.fromBundle(
             matchId: matchId, sessionType: mode, doubles: doubles,
-            court: calibration.map(RallySegmentUploader.CourtJSON.init)) else { return }
+            court: calibration.map { RallySegmentUploader.CourtJSON($0) }) else { return }
         let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
         let matchPoints = mode == .match ? pointsLog : nil
         RallySegmentUploader.shared.finalizeSession(config: config, score: matchScore, points: matchPoints)
@@ -256,6 +365,11 @@ extension SessionController: LiveLineCallerEngineDelegate {
         pushWatch()
     }
 
+    func engine(_ engine: LiveLineCallerEngine, didUpdateBall current: BallSample?, trail: [BallSample]) {
+        currentBall = current
+        ballTrail = trail
+    }
+
     func engine(_ engine: LiveLineCallerEngine, rallyStartedAt pts: CMTime) {
         if sessionStartS == nil { sessionStartS = pts.seconds - CameraCaptureManager.preRollSeconds }
         lastCall = nil
@@ -264,22 +378,66 @@ extension SessionController: LiveLineCallerEngineDelegate {
 
     func engine(_ engine: LiveLineCallerEngine, rallyEnded summary: RallySummary?, lastActivity: CMTime) {
         guard let summary else { return camera.discardRally() }
+        totalSessionShots += summary.shotCount
+        sessionBest = max(sessionBest, summary.inStreak, summary.shotCount)
         let startS = max(0, summary.startS - CameraCaptureManager.preRollSeconds - (sessionStartS ?? 0))
         let endS = max(0, summary.endS - (sessionStartS ?? 0))
+        let durationS = max(0, summary.endS - summary.startS + CameraCaptureManager.preRollSeconds + CameraCaptureManager.tailSeconds)
         lastCompletedRallyIdx = summary.rallyIdx
         lastCompletedEndS = endS
         let rallyCall = lastCall?.call.rawValue
         let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
         let matchPoints = mode == .match ? pointsLog : nil
+        let sessionMatchId = matchId
         let config = RallySegmentUploader.Config.fromBundle(
-            matchId: matchId, sessionType: mode, doubles: doubles,
-            court: calibration.map(RallySegmentUploader.CourtJSON.init))
-        camera.endRally(lastActivity: lastActivity, rallyIdx: summary.rallyIdx) { [weak self] url in
+            matchId: sessionMatchId, sessionType: mode, doubles: doubles,
+            court: calibration.map { RallySegmentUploader.CourtJSON($0) })
+        // When flushing on "End Session", commit immediately without waiting 2.0 s for future frames.
+        let effectiveLast = isEndingSession
+            ? CMTimeSubtract(lastActivity, CMTime(seconds: CameraCaptureManager.tailSeconds, preferredTimescale: 600))
+            : lastActivity
+        camera.endRally(lastActivity: effectiveLast, rallyIdx: summary.rallyIdx) { [weak self] url in
             guard let url else { return }
-            DispatchQueue.main.async { self?.clipsSaved += 1 }
+            let uniqueFileName = "rally_\(sessionMatchId.uuidString.lowercased())_\(summary.rallyIdx).mov"
+            let sessionClipURL = CameraCaptureManager.clipsDirectory.appendingPathComponent(uniqueFileName)
+            let finalURL: URL
+            if url.path != sessionClipURL.path {
+                try? FileManager.default.removeItem(at: sessionClipURL)
+                if (try? FileManager.default.copyItem(at: url, to: sessionClipURL)) != nil {
+                    finalURL = sessionClipURL
+                } else {
+                    finalURL = url
+                }
+            } else {
+                finalURL = url
+            }
+            let clipRecord = RallyClipRecord(
+                id: RallySegmentUploader.uploadKey(matchId: sessionMatchId, rallyIdx: summary.rallyIdx),
+                rallyIdx: summary.rallyIdx,
+                fileName: finalURL.lastPathComponent,
+                startS: startS,
+                durationS: durationS,
+                shotCount: summary.shotCount,
+                inStreak: summary.inStreak,
+                bookmarked: summary.bookmarked,
+                liveCall: rallyCall,
+                source: "ios",
+                uploadStatus: config != nil ? .uploading : .needsToken
+            )
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.clipsSaved += 1
+                if let idx = self.sessionClips.firstIndex(where: { $0.rallyIdx == summary.rallyIdx }) {
+                    self.sessionClips[idx] = clipRecord
+                } else {
+                    self.sessionClips.append(clipRecord)
+                }
+                let record = self.buildSessionRecord()
+                SessionStore.shared.upsertLocalSession(record)
+            }
             if let config {
                 RallySegmentUploader.shared.enqueue(
-                    clip: url, rallyIdx: summary.rallyIdx, startS: startS, config: config,
+                    clip: finalURL, rallyIdx: summary.rallyIdx, startS: startS, config: config,
                     bookmarked: summary.bookmarked, liveCall: rallyCall,
                     score: matchScore, points: matchPoints)
             }
@@ -288,13 +446,18 @@ extension SessionController: LiveLineCallerEngineDelegate {
     }
 
     func engine(_ engine: LiveLineCallerEngine, didUpdateShots shotCount: Int, inStreak: Int, sessionBest: Int) {
-        (self.shotCount, self.inStreak, self.sessionBest) = (shotCount, inStreak, sessionBest)
+        (self.shotCount, self.inStreak, self.sessionBest) = (shotCount, inStreak, max(self.sessionBest, sessionBest))
         pushWatch()
     }
 
     func engine(_ engine: LiveLineCallerEngine, didCall result: LineCallResult, latencyMs: Double) {
         lastCall = result
         lastLatencyMs = latencyMs
+        if result.call == .in || result.call == .close {
+            inCalls += 1
+        } else if result.call == .out {
+            outCalls += 1
+        }
         pushWatch()
     }
 }
@@ -337,10 +500,18 @@ extension SessionController: WCSessionDelegate {
 
 struct RecordView: View {
     @EnvironmentObject private var c: SessionController
+    @ObservedObject private var uploader = RallySegmentUploader.shared
+    @Environment(\.dismiss) private var dismiss
+    var onEndSession: (() -> Void)? = nil
+
+    @State private var showClipsSheet = false
 
     var body: some View {
         ZStack {
             CameraPreview(session: c.camera.session).ignoresSafeArea()
+            BallTrackingOverlay(current: c.currentBall, trail: c.ballTrail)
+                .ignoresSafeArea()
+                .allowsHitTesting(false)
             VStack(spacing: 8) {
                 topBar
                 banners
@@ -354,33 +525,96 @@ struct RecordView: View {
             .padding()
         }
         .preferredColorScheme(.dark)
+        .task { await c.start() }
         .fullScreenCover(item: $c.calibrationFrame) { frame in
             CourtCalibrationOverlay(image: frame.image, intrinsics: c.camera.intrinsics, initial: c.calibration,
                                     onDone: c.finishCalibration, onCancel: { c.calibrationFrame = nil })
         }
         .sheet(item: $c.replay) { ReplayView(item: $0) }
+        .sheet(isPresented: $showClipsSheet) {
+            let record = c.buildSessionRecord()
+            let merged = MergedSessionItem(
+                id: record.id.uuidString.lowercased(),
+                title: record.mode == .match ? "Current Match Session" : "Current Rally Session",
+                date: record.startedAt,
+                dateLabel: "Active Session",
+                mode: record.mode,
+                doubles: record.doubles,
+                sourceLabel: "ON-DEVICE",
+                totalShots: record.totalShots,
+                bestStreak: record.bestStreak,
+                ralliesCount: record.ralliesCount,
+                inPct: record.inCallPct,
+                scoreFormatted: record.scoreFormatted,
+                uploadStatus: record.uploadStatus,
+                remoteStatus: nil,
+                localRecord: record,
+                remoteRecord: nil
+            )
+            SessionDetailSheet(item: merged)
+        }
     }
 
     private var topBar: some View {
-        HStack(spacing: 12) {
+        HStack(spacing: 10) {
+            Button(role: .destructive) {
+                Task {
+                    await c.endSession()
+                    onEndSession?()
+                    dismiss()
+                }
+            } label: {
+                Label("End Session", systemImage: "stop.circle.fill")
+                    .font(.callout.bold())
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.red)
+
             Picker("Mode", selection: $c.mode) {
-                Text("Rally (Default)").tag(SessionMode.rally)
+                Text("Rally").tag(SessionMode.rally)
                 Text("Match").tag(SessionMode.match)
             }
             .pickerStyle(.segmented)
-            .frame(maxWidth: 260)
+            .frame(maxWidth: 180)
+
             Menu {
                 Picker("Audio", selection: $c.audioMode) {
                     ForEach(AudioCallMode.allCases) { Text($0.rawValue).tag($0) }
                 }
                 Toggle("Doubles lines", isOn: $c.doubles)
             } label: {
-                Label(c.audioMode.rawValue, systemImage: c.audioMode == .mute ? "speaker.slash" : "speaker.wave.2")
+                Label(c.audioMode == .mute ? "Muted" : "Audio",
+                      systemImage: c.audioMode == .mute ? "speaker.slash" : "speaker.wave.2")
             }
+
             Button { c.beginCalibration() } label: {
                 Label(c.calibration == nil ? "Calibrate" : "Recalibrate", systemImage: "viewfinder")
             }
+
+            Button {
+                showClipsSheet = true
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: uploader.activeUploadsCount > 0 ? "icloud.and.arrow.up.fill" : "film.stack")
+                    Text("Clips (\(c.clipsSaved))")
+                        .monospacedDigit()
+                }
+                .font(.caption.bold())
+            }
+
             Spacer()
+
+            if c.currentBall != nil {
+                HStack(spacing: 4) {
+                    Circle().fill(Color.yellow).frame(width: 7, height: 7)
+                    Text("BALL")
+                        .font(.caption2.monospaced().bold())
+                }
+                .padding(.horizontal, 7)
+                .padding(.vertical, 4)
+                .background(Color.yellow.opacity(0.25), in: Capsule())
+            }
+
             Text(c.engineState.rawValue.uppercased())
                 .font(.caption.monospaced().bold())
                 .padding(.horizontal, 8).padding(.vertical, 4)
@@ -391,7 +625,10 @@ struct RecordView: View {
 
     @ViewBuilder private var banners: some View {
         if let error = c.setupError { Banner(text: error, color: .red) }
-        if c.calibration == nil { Banner(text: "Tap Calibrate: 4 outer corners + 2 net posts enable line calls", color: .blue) }
+        if c.calibration == nil {
+            Banner(text: "Ball tracking active — tap Calibrate (4 corners + 2 net posts) to enable metric IN/OUT line calls",
+                   color: .blue)
+        }
         if c.callsPaused { Banner(text: "Camera moved more than 15 px — live calls paused. Recalibrate.", color: .orange) }
         if let w = c.audioLatencyWarning { Banner(text: w, color: .yellow) }
     }
@@ -408,14 +645,34 @@ struct RecordView: View {
                 Text("Serve from \(c.score.serverSide.rawValue) side").font(.caption)
             }
             if let call = c.lastCall { CallChip(result: call, latencyMs: c.lastLatencyMs) }
-            Text("\(c.clipsSaved) rally clips saved").font(.caption2).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text("\(c.clipsSaved) rally clips saved")
+                if uploader.activeUploadsCount > 0 {
+                    Text("· uploading \(uploader.activeUploadsCount)")
+                        .foregroundStyle(.cyan)
+                } else if !RallySegmentUploader.hasValidCredentials && c.clipsSaved > 0 {
+                    Text("· local (tap Clips to upload/share)")
+                        .foregroundStyle(.orange)
+                }
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
         }
         .padding(12)
         .background(.black.opacity(0.45), in: RoundedRectangle(cornerRadius: 14))
     }
 
     @ViewBuilder private var actionButtons: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
+            Button {
+                c.toggleManualRally()
+            } label: {
+                Label(c.engineState == .live || c.engineState == .armed ? "Finish Rally Clip" : "Start Rally",
+                      systemImage: c.engineState == .live || c.engineState == .armed ? "checkmark.circle.fill" : "record.circle")
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(c.engineState == .live || c.engineState == .armed ? .green : .blue)
+
             if c.mode == .match {
                 HStack {
                     Button("Me") { c.point(.me) }
@@ -429,6 +686,70 @@ struct RecordView: View {
             }
             Button { c.challenge() } label: { Label("Challenge", systemImage: "flag.fill") }
                 .buttonStyle(.borderedProminent).tint(.red)
+        }
+    }
+}
+
+/// Renders the live WASB ball detection reticle and recent 15-sample trajectory trail over `CameraPreview`,
+/// mapping 1920×1080 native pixel coordinates into the `.resizeAspect` preview rectangle.
+struct BallTrackingOverlay: View {
+    let current: BallSample?
+    let trail: [BallSample]
+
+    var body: some View {
+        Canvas { ctx, size in
+            let imageW = CGFloat(CameraCaptureManager.width)
+            let imageH = CGFloat(CameraCaptureManager.height)
+            guard imageW > 0, imageH > 0, size.width > 0, size.height > 0 else { return }
+            let scale = min(size.width / imageW, size.height / imageH)
+            let fitW = imageW * scale
+            let fitH = imageH * scale
+            let originX = (size.width - fitW) / 2
+            let originY = (size.height - fitH) / 2
+            func toView(_ u: Double, _ v: Double) -> CGPoint {
+                CGPoint(x: originX + CGFloat(u) * scale, y: originY + CGFloat(v) * scale)
+            }
+
+            if trail.count >= 2 {
+                for i in 1..<trail.count {
+                    let prev = trail[i - 1], cur = trail[i]
+                    guard cur.t - prev.t < 0.25 else { continue }
+                    let alpha = Double(i) / Double(trail.count)
+                    var segment = Path()
+                    segment.move(to: toView(prev.u, prev.v))
+                    segment.addLine(to: toView(cur.u, cur.v))
+                    ctx.stroke(segment, with: .color(.yellow.opacity(0.25 + 0.65 * alpha)),
+                               style: StrokeStyle(lineWidth: CGFloat(1.5 + 2.5 * alpha), lineCap: .round))
+                }
+                for (i, sample) in trail.enumerated() {
+                    let alpha = Double(i + 1) / Double(trail.count)
+                    let pt = toView(sample.u, sample.v)
+                    let r = CGFloat(2.0 + 2.0 * alpha)
+                    ctx.fill(Path(ellipseIn: CGRect(x: pt.x - r, y: pt.y - r, width: 2 * r, height: 2 * r)),
+                             with: .color(.yellow.opacity(0.35 + 0.55 * alpha)))
+                }
+            }
+
+            if let ball = current {
+                let p = toView(ball.u, ball.v)
+                let ringRadius: CGFloat = 16
+                let outerRect = CGRect(x: p.x - ringRadius, y: p.y - ringRadius,
+                                       width: ringRadius * 2, height: ringRadius * 2)
+                ctx.stroke(Path(ellipseIn: outerRect), with: .color(.yellow), lineWidth: 2.5)
+                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)),
+                         with: .color(.green))
+
+                var crosshair = Path()
+                crosshair.move(to: CGPoint(x: p.x - 22, y: p.y))
+                crosshair.addLine(to: CGPoint(x: p.x - 10, y: p.y))
+                crosshair.move(to: CGPoint(x: p.x + 10, y: p.y))
+                crosshair.addLine(to: CGPoint(x: p.x + 22, y: p.y))
+                crosshair.move(to: CGPoint(x: p.x, y: p.y - 22))
+                crosshair.addLine(to: CGPoint(x: p.x, y: p.y - 10))
+                crosshair.move(to: CGPoint(x: p.x, y: p.y + 10))
+                crosshair.addLine(to: CGPoint(x: p.x, y: p.y + 22))
+                ctx.stroke(crosshair, with: .color(.yellow.opacity(0.9)), lineWidth: 1.5)
+            }
         }
     }
 }

@@ -342,6 +342,12 @@ def _parse_range(header: str | None, size: int) -> tuple[int, int] | None | str:
     return start, end
 
 
+def is_unsegmented_session_job(rally_idx: int | None, source: str) -> bool:
+    """True when an uploaded job is a full unsegmented session video (rally_idx is None, or a full video
+    picked from the Camera Roll / web with rally_idx == 0 and source in ('ios_library', 'web'))."""
+    return rally_idx is None or source == "ios_library" or (rally_idx == 0 and source == "web")
+
+
 def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], None] = lambda kind, payload: None,
                persist: Callable[[], None] = lambda: None, refresh: Callable[[], None] = lambda: None,
                now: Callable[[], float] = time.time, allowed_origins: Iterable[str] = ()):
@@ -362,7 +368,7 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
     class JobIn(BaseModel):
         match_id: uuid.UUID
         rally_idx: int | None = Field(default=None, ge=0, le=99999)
-        source: str = Field(pattern="^(web|ios)$")
+        source: str = Field(pattern="^(web|ios|ios_library)$")
         session_type: str = Field(default="rally", pattern="^(rally|match)$")
         court: dict | None = None
         doubles: bool = False
@@ -382,7 +388,7 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
 
     class FinalizeIn(BaseModel):
         match_id: uuid.UUID | None = None
-        source: str = Field(default="ios", pattern="^(web|ios)$")
+        source: str = Field(default="ios", pattern="^(web|ios|ios_library)$")
         session_type: str = Field(default="rally", pattern="^(rally|match)$")
         court: dict | None = None
         doubles: bool = False
@@ -494,7 +500,8 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
         req = job["request"]
         ext = EXT[req["content_type"]]
         mdir = root / job["match_id"]
-        dest = mdir / (f"source{ext}" if job["rally_idx"] is None else f"uploads/rally-{job['rally_idx']}{ext}")
+        unsegmented = is_unsegmented_session_job(job["rally_idx"], req["source"])
+        dest = mdir / (f"source{ext}" if unsegmented else f"uploads/rally-{job['rally_idx']}{ext}")
         dest.parent.mkdir(parents=True, exist_ok=True)
         h = hashlib.sha256()
         tmp = dest.with_suffix(dest.suffix + ".tmp")
@@ -518,7 +525,7 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
         persist()
         payload = {"match_id": job["match_id"], "path": job["path"], "session_type": req["session_type"],
                    "court": req["court"], "doubles": req["doubles"], "source": req["source"]}
-        if job["rally_idx"] is None:
+        if unsegmented:
             spawn("segment_match", payload | {"biomech": req["biomech"]})
         else:
             extra = {k: req[k] for k in ("bookmarked", "live_call", "score", "points") if req.get(k)}
@@ -677,7 +684,7 @@ if modal is not None:
         volume.reload()
         try:
             src, cal = str(TENNIS / path), calibration(court)
-            whole = source == "ios"
+            whole = end_s is None and source == "ios"
             a, b = (0.0, None) if whole else (start_s, end_s)
             saved = TENNIS / match_id / "tracks" / f"{rally_idx}.npy"
             track = np.load(saved) if saved.exists() else track_video(src, a, b)
@@ -742,7 +749,13 @@ if modal is not None:
         try:
             cal = calibration(court)
             track = track_video(src)
-            ev = events(track, cal) if cal is not None else []
+            if cal is not None:
+                ev = events(track, cal)
+            else:
+                from dsa.physics.bounce_and_linecall import _image_v_turn, candidates
+                ev = [{"i": int(k_i), "t": float(track[k_i, 0]),
+                       "kind": "bounce" if (vv := _image_v_turn(track, int(k_i))) is not None and vv[0] > 0 > vv[1] else "hit"}
+                      for k_i in candidates(track)]
             hits = [e for e in ev if e["kind"] == "hit"]
             for idx_e, e in enumerate(ev):
                 if e["kind"] == "bounce" and cal is not None:

@@ -47,16 +47,24 @@ protocol LiveLineCallerEngineDelegate: AnyObject {
     func engine(_ engine: LiveLineCallerEngine, rallyEnded summary: RallySummary?, lastActivity: CMTime)
     func engine(_ engine: LiveLineCallerEngine, didUpdateShots shotCount: Int, inStreak: Int, sessionBest: Int)
     func engine(_ engine: LiveLineCallerEngine, didCall result: LineCallResult, latencyMs: Double)
+    /// Live ball detection (1920×1080 image pixel coordinates) and recent trajectory trail (~15 samples).
+    func engine(_ engine: LiveLineCallerEngine, didUpdateBall current: BallSample?, trail: [BallSample])
+}
+
+extension LiveLineCallerEngineDelegate {
+    func engine(_ engine: LiveLineCallerEngine, didUpdateBall current: BallSample?, trail: [BallSample]) {}
 }
 
 final class LiveLineCallerEngine: @unchecked Sendable {
     static let armedTimeout = 2.0
-    static let goLiveDetections = 6
-    static let goLiveDisplacementPx = 40.0
+    static let goLiveDetections = 4
+    static let goLiveDisplacementPx = 30.0
     static let maxGateJumpPx = 225.0          // 60 px at the 512×288 model scale (E12)
     static let stationaryFrames = 10          // a blob still for ≥10 frames is a spare ball (E12)
     static let postSamplesTimeout = 0.12      // decide with 3 post samples if the 4th hasn't come in 120 ms
     static let trackWindow = 3.0
+    static let minHitGap = 0.30
+    private static let queueKey = DispatchSpecificKey<Bool>()
 
     weak var delegate: LiveLineCallerEngineDelegate?
 
@@ -87,10 +95,12 @@ final class LiveLineCallerEngine: @unchecked Sendable {
     private var lastFramePTS = 0.0
     private var pending: [(CVPixelBuffer, Double)] = []
     private var frameIndex = 0
+    private var tripletIndex = 0
     private var inferenceBusy = false
     private var stationary: (p: Point2, count: Int)?
 
     init() {
+        queue.setSpecific(key: Self.queueKey, value: true)
         announcer = CallAnnouncer(engine: audioEngine)
         announcer.onPlayDuration = { [weak self] duration in
             let now = CMClockGetTime(CMClockGetHostTimeClock()).seconds
@@ -137,6 +147,59 @@ final class LiveLineCallerEngine: @unchecked Sendable {
     /// Watch / phone star.
     func bookmark() { queue.async { self.tracker.bookmark() } }
 
+    /// Manually starts a live rally immediately (from RecordView's manual start action).
+    func forceStartRally() {
+        queue.async {
+            let now = self.lastFramePTS > 0 ? self.lastFramePTS : CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            switch self.state {
+            case .sleeping, .cooldown:
+                self.arm(at: now)
+                self.goLive()
+            case .armed:
+                self.goLive()
+            case .live:
+                if self.tracker.shotCount == 0 { self.registerHit(at: now) }
+            }
+        }
+    }
+
+    /// Immediately ends and flushes any active `.live` or `.armed` rally (e.g. when tapping "End Session").
+    func endCurrentRally() {
+        let work: () -> (didEnd: Bool, summary: RallySummary?, lastActivity: CMTime) = {
+            let now = self.lastFramePTS > 0 ? self.lastFramePTS : CMClockGetTime(CMClockGetHostTimeClock()).seconds
+            switch self.state {
+            case .live:
+                let summary = self.tracker.endRally()
+                self.state = .sleeping
+                self.pending.removeAll()
+                self.track.removeAll()
+                self.lastHitterHalf = nil
+                let last = CMTime(seconds: summary?.endS ?? now, preferredTimescale: 600)
+                return (true, summary, last)
+            case .armed:
+                self.state = .sleeping
+                self.pending.removeAll()
+                self.track.removeAll()
+                self.lastHitterHalf = nil
+                return (true, nil, .zero)
+            case .sleeping, .cooldown:
+                return (false, nil, .zero)
+            }
+        }
+        let outcome = DispatchQueue.getSpecific(key: Self.queueKey) == true ? work() : queue.sync(execute: work)
+        guard outcome.didEnd else { return }
+        let notify = {
+            self.delegate?.engine(self, didUpdateBall: nil, trail: [])
+            self.delegate?.engine(self, didChange: .sleeping)
+            self.delegate?.engine(self, rallyEnded: outcome.summary, lastActivity: outcome.lastActivity)
+        }
+        if Thread.isMainThread {
+            notify()
+        } else {
+            DispatchQueue.main.async(execute: notify)
+        }
+    }
+
     // MARK: Frames
 
     /// Feeds a captured 1080p frame (called on the capture queue).
@@ -152,19 +215,28 @@ final class LiveLineCallerEngine: @unchecked Sendable {
                 // Only expire an idle rally before triplet inference once the post-sample buffer window has also elapsed.
                 advanceClock(to: t)
             }
-            guard state == .armed || state == .live, thermal != .critical, let detector = self.detector else { return }
+            guard state != .cooldown, thermal != .critical, let detector = self.detector else { return }
             frameIndex += 1
             if thermal == .serious && frameIndex % 2 == 1 { return }       // 30 fps triplets
             pending.append((pixelBuffer, t))
             guard pending.count == 3 else { return }
             let triplet = pending
             pending.removeAll()
+            tripletIndex += 1
+            if state == .sleeping {
+                let hasRecentCandidate = track.last.map { t - $0.t <= 0.35 } ?? false
+                if !hasRecentCandidate {
+                    let probeStride = thermal == .nominal ? 2 : 3
+                    if tripletIndex % probeStride != 0 { return }
+                }
+            }
             guard !inferenceBusy else { return }                            // never queue up stale triplets
             inferenceBusy = true
             let recentV = track.suffix(3).map(\.v)
+            let hint: Point2? = track.last.flatMap { t - $0.t <= 0.15 ? Point2($0.u, $0.v) : nil }
             mlQueue.async { [self] in
-                var samples = detector.detect(triplet)
-                let refineAll = thermal == .nominal
+                var samples = detector.detect(triplet, hint: hint)
+                let refineAll = thermal == .nominal || thermal == .fair
                 if refineAll || Self.hasReversal(recentV + samples.compactMap { $0?.v }) {
                     for k in samples.indices {
                         guard let s = samples[k] else { continue }
@@ -194,25 +266,40 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         DispatchQueue.main.async { self.delegate?.engine(self, didChange: new) }
     }
 
+    private func arm(at t: Double) {
+        armedAt = t
+        track.removeAll { t - $0.t > 0.5 }
+        bouncesThisRally = 0
+        lastHitterHalf = nil
+        lastEventT = -Double.infinity
+        lastCheckedT = -Double.infinity
+        set(.armed)
+        DispatchQueue.main.async { self.delegate?.engine(self, rallyStartedAt: CMTime(seconds: t, preferredTimescale: 600)) }
+    }
+
     private func handleOnset(at t: Double) {
         recentOnsets.append(t)
         recentOnsets.removeAll { t - $0 > Self.trackWindow }
-        let audioOnly = ProcessInfo.processInfo.thermalState == .critical || detector == nil || calibration == nil
+        let audioOnly = ProcessInfo.processInfo.thermalState == .critical || detector == nil
         switch state {
         case .sleeping:
-            armedAt = t
-            track.removeAll()
-            stationary = nil
-            bouncesThisRally = 0
-            lastHitterHalf = nil
-            lastEventT = -Double.infinity
-            lastCheckedT = -Double.infinity
-            set(.armed)
-            DispatchQueue.main.async { self.delegate?.engine(self, rallyStartedAt: CMTime(seconds: t, preferredTimescale: 600)) }
-            if audioOnly { goLive() }
-        case .live where audioOnly:
-            registerHit(at: t)                                             // no vision: onsets are the hits
-        case .armed, .live, .cooldown:
+            arm(at: t)
+            let recent = track.filter { $0.t - armedAt >= -0.5 }
+            if audioOnly {
+                goLive()
+            } else if recent.count >= Self.goLiveDetections, let a = recent.first, let b = recent.last,
+                      hypot(b.u - a.u, b.v - a.v) > Self.goLiveDisplacementPx {
+                goLive()
+            }
+        case .live:
+            // When audio-only or when the player strikes the ball outside/at the edge of the camera frame (<2 recent samples),
+            // register the hit directly from the onset (debounced against vision hits).
+            if audioOnly || track.filter({ t - $0.t <= 0.15 }).count < 2 {
+                lastEventT = max(lastEventT, t)
+                bouncesThisRally = 0
+                registerHit(at: t)
+            }
+        case .armed, .cooldown:
             break
         }
     }
@@ -230,8 +317,11 @@ final class LiveLineCallerEngine: @unchecked Sendable {
             lastHitterHalf = BallKinematics.inferHitterHalf(at: Point2(first.u, first.v),
                                                             post: Array(track.dropFirst()), calibration: cal)
         }
-        lastEventT = armedAt
-        registerHit(at: armedAt)                                           // the feed / first hit that woke us
+        let firstT = track.first?.t ?? armedAt
+        lastEventT = firstT
+        lastCheckedT = firstT
+        bouncesThisRally = 0
+        registerHit(at: firstT)                                           // the feed / first hit that woke us
     }
 
     private func advanceClock(to t: Double) {
@@ -239,7 +329,11 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         case .armed where t - armedAt > Self.armedTimeout:
             set(.sleeping)
             pending.removeAll()
-            DispatchQueue.main.async { self.delegate?.engine(self, rallyEnded: nil, lastActivity: .zero) }
+            track.removeAll()
+            DispatchQueue.main.async {
+                self.delegate?.engine(self, didUpdateBall: nil, trail: [])
+                self.delegate?.engine(self, rallyEnded: nil, lastActivity: .zero)
+            }
         case .live:
             if let summary = tracker.tick(now: t) { finishRally(summary, now: t) }
         case .cooldown where t >= cooldownUntil:
@@ -257,10 +351,14 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         let ref = max(now ?? lastFramePTS, summary.endS)
         cooldownUntil = ref + CameraCaptureManager.tailSeconds + 0.1
         let last = CMTime(seconds: summary.endS, preferredTimescale: 600)
-        DispatchQueue.main.async { self.delegate?.engine(self, rallyEnded: summary, lastActivity: last) }
+        DispatchQueue.main.async {
+            self.delegate?.engine(self, didUpdateBall: nil, trail: [])
+            self.delegate?.engine(self, rallyEnded: summary, lastActivity: last)
+        }
     }
 
     private func registerHit(at t: Double) {
+        if tracker.isLive, let lastHit = tracker.shots.last?.tHit, abs(t - lastHit) < Self.minHitGap { return }
         let outcome = tracker.registerHit(at: t)
         if let ended = outcome.endedRally {
             let last = CMTime(seconds: ended.endS, preferredTimescale: 600)
@@ -279,12 +377,30 @@ final class LiveLineCallerEngine: @unchecked Sendable {
         DispatchQueue.main.async { self.delegate?.engine(self, didUpdateShots: n, inStreak: streak, sessionBest: best) }
     }
 
+    private func publishBall(upTo currentT: Double) {
+        let current = track.last.flatMap { currentT - $0.t <= 0.20 ? $0 : nil }
+        let trail = Array(track.filter { currentT - $0.t <= 0.80 }.suffix(15))
+        DispatchQueue.main.async { self.delegate?.engine(self, didUpdateBall: current, trail: trail) }
+    }
+
     // MARK: Detections → events
 
     private func handle(_ samples: [BallSample], upTo currentT: Double, sigmaPx: Double) {
         for s in samples where accept(s) { track.append(s) }
-        if let newest = track.last?.t { track.removeAll { newest - $0.t > Self.trackWindow } }
+        track.removeAll { currentT - $0.t > Self.trackWindow }
+        publishBall(upTo: currentT)
         switch state {
+        case .sleeping:
+            let recent = track.filter { currentT - $0.t <= 1.0 }
+            if let a = recent.first, let b = recent.last {
+                let disp = hypot(b.u - a.u, b.v - a.v)
+                if recent.count >= Self.goLiveDetections && disp > Self.goLiveDisplacementPx {
+                    arm(at: a.t)
+                    goLive()
+                } else if recent.count >= 2 && disp > 15.0 {
+                    arm(at: a.t)
+                }
+            }
         case .armed:
             let recent = track.filter { $0.t - armedAt >= -0.5 }
             if recent.count >= Self.goLiveDetections, let a = recent.first, let b = recent.last,
@@ -308,45 +424,79 @@ final class LiveLineCallerEngine: @unchecked Sendable {
             stationary = (p, 1)
         }
         guard let last = track.last, s.t - last.t < 0.25 else { return true }
+        let dtGap = max(0, s.t - last.t)
+        let dynamicGate = Self.maxGateJumpPx * max(1.0, dtGap / 0.05)
         var predicted = Point2(last.u, last.v)
         if track.count >= 2 {
             let prev = track[track.count - 2]
             let dt = last.t - prev.t
-            if dt > 0, dt < 0.1 {
-                predicted.x += (last.u - prev.u) / dt * (s.t - last.t)
-                predicted.y += (last.v - prev.v) / dt * (s.t - last.t)
+            if dt > 0, dt < 0.12 {
+                predicted.x += (last.u - prev.u) / dt * dtGap
+                predicted.y += (last.v - prev.v) / dt * dtGap
             }
         }
-        return hypot(predicted.x - p.x, predicted.y - p.y) <= Self.maxGateJumpPx
+        let distPred = hypot(predicted.x - p.x, predicted.y - p.y)
+        let distLast = hypot(last.u - p.x, last.v - p.y)
+        return min(distPred, distLast) <= dynamicGate
     }
 
     /// Finds candidate events (v extrema or 2D velocity kinks) with enough post samples, classifies hit vs bounce,
-    /// enforces `BallKinematics.minEventGap` debounce, and judges bounces.
+    /// enforces `BallKinematics.minEventGap` debounce, and judges bounces (or counts uncalibrated shots when `calibration == nil`).
     private func processEvents(sigmaPx: Double) {
-        guard let cal = calibration, track.count >= 3, let newestT = track.last?.t else { return }
+        guard track.count >= 3, let newestT = track.last?.t else { return }
         for i in 1..<(track.count - 1) where track[i].t > max(lastCheckedT, lastEventT) {
             guard track[i].t - lastEventT >= BallKinematics.minEventGap else { continue }
             guard BallKinematics.isEventCandidate(in: track, at: i) else { continue }
-            let post = track.count - 1 - i
-            guard post >= BallKinematics.fitSamples
-                    || (post >= BallKinematics.minSamples && newestT - track[i].t > Self.postSamplesTimeout) else { return }
-            let pre = Array(track[...i]), after = Array(track[(i + 1)...])
             let eventT = track[i].t
-            let heard = recentOnsets.contains { (-0.05...0.25).contains($0 - eventT) }
-            switch BallKinematics.classifyEvent(pre: pre, post: after, h0: cal.h0, racketSound: heard) {
-            case .hit:
-                lastEventT = eventT
-                lastCheckedT = eventT
-                lastHitterHalf = BallKinematics.inferHitterHalf(at: Point2(track[i].u, track[i].v), post: after, calibration: cal)
-                registerHit(at: eventT)
-            case .bounce:
-                lastEventT = eventT
-                lastCheckedT = eventT
-                judgeBounce(at: i, cal: cal, sigmaPx: sigmaPx)
-                if state != .live { return }                               // match point ended: track was cleared
-            case .unknown:
+            let pre = track[...i].filter { eventT - $0.t <= 0.35 }
+            let after = track[(i + 1)...].filter { $0.t - eventT <= 0.35 }
+            let post = after.count
+            if newestT - eventT <= Self.postSamplesTimeout && post < BallKinematics.fitSamples {
+                return
+            }
+            guard pre.count >= 2, post >= 2 else {
                 lastCheckedT = eventT
                 continue
+            }
+            let heard = recentOnsets.contains { (-0.08...0.28).contains($0 - eventT) }
+            if let cal = calibration {
+                guard post >= BallKinematics.minSamples || heard else {
+                    lastCheckedT = eventT
+                    continue
+                }
+                switch BallKinematics.classifyEvent(pre: pre, post: after, h0: cal.h0, racketSound: heard) {
+                case .hit:
+                    lastEventT = eventT
+                    lastCheckedT = eventT
+                    bouncesThisRally = 0
+                    lastHitterHalf = BallKinematics.inferHitterHalf(at: Point2(track[i].u, track[i].v), post: after, calibration: cal)
+                    registerHit(at: eventT)
+                case .bounce:
+                    lastEventT = eventT
+                    lastCheckedT = eventT
+                    judgeBounce(at: i, cal: cal, sigmaPx: sigmaPx)
+                    if state != .live { return }                               // match point ended: track was cleared
+                case .unknown:
+                    lastCheckedT = eventT
+                    continue
+                }
+            } else {
+                switch BallKinematics.classifyImageEvent(pre: pre, post: after, racketSound: heard, bouncesSinceHit: bouncesThisRally) {
+                case .hit:
+                    lastEventT = eventT
+                    lastCheckedT = eventT
+                    bouncesThisRally = 0
+                    registerHit(at: eventT)
+                case .bounce:
+                    lastEventT = eventT
+                    lastCheckedT = eventT
+                    bouncesThisRally += 1
+                    tracker.registerBounce(call: .unknown, depthZone: .unknown, at: eventT)
+                    publishShots()
+                case .unknown:
+                    lastCheckedT = eventT
+                    continue
+                }
             }
         }
     }
@@ -388,11 +538,13 @@ final class LiveLineCallerEngine: @unchecked Sendable {
 // MARK: - WASB-SBDT CoreML detector
 
 /// `wasb_fp16.mlpackage`: inputs `frame_t0..2` (RGB 512×288, ImageNet normalisation baked in), output `heatmaps`
-/// (1, 3, 288, 512) Float16 sigmoid probabilities; channel k belongs to frame_tk; blob threshold 0.5.
+/// (1, 3, 288, 512) Float16 sigmoid probabilities; channel k belongs to frame_tk; primary blob threshold 0.35
+/// with trajectory-gated 0.25 hysteresis recovery.
 final class WASBDetector {
     static let inputWidth = 512
     static let inputHeight = 288
-    static let threshold: Float = 0.5
+    static let threshold: Float = 0.35
+    static let lowThreshold: Float = 0.25
     static let roiSize = 64
     private static let scaleX = Double(CameraCaptureManager.width) / Double(inputWidth)
     private static let scaleY = Double(CameraCaptureManager.height) / Double(inputHeight)
@@ -403,7 +555,9 @@ final class WASBDetector {
 
     /// Loads the compiled model on CPU + ANE; nil when the model isn't bundled (audio-only fallback).
     init?() {
-        guard let url = Bundle.main.url(forResource: "wasb_fp16", withExtension: "mlmodelc") else { return nil }
+        let modelURL = Bundle.main.url(forResource: "wasb_fp16", withExtension: "mlmodelc")
+            ?? Bundle.main.url(forResource: "wasb_fp16", withExtension: "mlpackage").flatMap { try? MLModel.compileModel(at: $0) }
+        guard let url = modelURL else { return nil }
         let config = MLModelConfiguration()
         config.computeUnits = .cpuAndNeuralEngine
         var session: VTPixelTransferSession?
@@ -412,7 +566,8 @@ final class WASBDetector {
                                     kCVPixelBufferWidthKey as String: Self.inputWidth,
                                     kCVPixelBufferHeightKey as String: Self.inputHeight,
                                     kCVPixelBufferIOSurfacePropertiesKey as String: [:]]
-        guard let model = try? MLModel(contentsOf: url, configuration: config),
+        let loadedModel = (try? MLModel(contentsOf: url, configuration: config)) ?? (try? MLModel(contentsOf: url))
+        guard let model = loadedModel,
               VTPixelTransferSessionCreate(allocator: nil, pixelTransferSessionOut: &session) == noErr, let session,
               CVPixelBufferPoolCreate(nil, nil, attrs as CFDictionary, &pool) == kCVReturnSuccess, let pool else { return nil }
         self.model = model
@@ -421,7 +576,7 @@ final class WASBDetector {
     }
 
     /// One step=3 pass: 3 consecutive frames in, one (coarse, native-pixel) detection per frame out.
-    func detect(_ frames: [(CVPixelBuffer, Double)]) -> [BallSample?] {
+    func detect(_ frames: [(CVPixelBuffer, Double)], hint: Point2? = nil) -> [BallSample?] {
         guard frames.count == 3 else { return [] }
         var inputs: [String: MLFeatureValue] = [:]
         for (k, frame) in frames.enumerated() {
@@ -433,12 +588,25 @@ final class WASBDetector {
         guard let provider = try? MLDictionaryFeatureProvider(dictionary: inputs),
               let out = try? model.prediction(from: provider),
               let heat = out.featureValue(for: "heatmaps")?.multiArrayValue else { return [nil, nil, nil] }
-        return (0..<3).map { c in Self.peak(heat, channel: c).map { BallSample(t: frames[c].1, u: $0.x, v: $0.y) } }
+        var nearPoint = hint
+        var results: [BallSample?] = []
+        for c in 0..<3 {
+            let pt = Self.peak(heat, channel: c, threshold: Self.threshold)
+                ?? nearPoint.flatMap { Self.peak(heat, channel: c, threshold: Self.lowThreshold, near: $0, maxDistPx: LiveLineCallerEngine.maxGateJumpPx) }
+            if let pt {
+                nearPoint = pt
+                results.append(BallSample(t: frames[c].1, u: pt.x, v: pt.y))
+            } else {
+                results.append(nil)
+            }
+        }
+        return results
     }
 
     /// Heaviest 4-connected blob above threshold (largest summed probability), probability-weighted centroid —
-    /// the same post-processing as `bounce_and_linecall.ball_track()` / MODEL_CARD.md.
-    private static func peak(_ heat: MLMultiArray, channel c: Int) -> Point2? {
+    /// with optional local search window around `near` for trajectory-gated recovery of fast motion-blurred balls.
+    private static func peak(_ heat: MLMultiArray, channel c: Int, threshold: Float = WASBDetector.threshold,
+                             near: Point2? = nil, maxDistPx: Double = LiveLineCallerEngine.maxGateJumpPx) -> Point2? {
         let s = heat.strides.map(\.intValue)
         let read: (Int) -> Float
         switch heat.dataType {
@@ -449,11 +617,30 @@ final class WASBDetector {
             let p = heat.dataPointer.assumingMemoryBound(to: Float.self)
             read = { p[$0] }
         }
-        func at(_ y: Int, _ x: Int) -> Float { read(c * s[1] + y * s[2] + x * s[3]) }
+        let chOffset = c * s[1], yStride = s[2], xStride = s[3]
+        func at(_ y: Int, _ x: Int) -> Float { read(chOffset + y * yStride + x * xStride) }
+        let xMin: Int
+        let xMax: Int
+        let yMin: Int
+        let yMax: Int
+        if let near {
+            let cx = near.x / scaleX, cy = near.y / scaleY
+            let rx = Int((maxDistPx / scaleX).rounded(.up)), ry = Int((maxDistPx / scaleY).rounded(.up))
+            xMin = max(0, Int(cx.rounded()) - rx)
+            xMax = min(inputWidth - 1, Int(cx.rounded()) + rx)
+            yMin = max(0, Int(cy.rounded()) - ry)
+            yMax = min(inputHeight - 1, Int(cy.rounded()) + ry)
+            guard xMin <= xMax, yMin <= yMax else { return nil }
+        } else {
+            xMin = 0
+            xMax = inputWidth - 1
+            yMin = 0
+            yMax = inputHeight - 1
+        }
         var visited = [Bool](repeating: false, count: inputWidth * inputHeight)
         var best: (w: Float, x: Float, y: Float) = (0, 0, 0)
-        for y0 in 0..<inputHeight {
-            for x0 in 0..<inputWidth where !visited[y0 * inputWidth + x0] && at(y0, x0) >= threshold {
+        for y0 in yMin...yMax {
+            for x0 in xMin...xMax where !visited[y0 * inputWidth + x0] && at(y0, x0) >= threshold {
                 var blob: (w: Float, x: Float, y: Float) = (0, 0, 0)
                 var stack = [(x0, y0)]
                 visited[y0 * inputWidth + x0] = true
@@ -461,12 +648,14 @@ final class WASBDetector {
                     let w = at(y, x)
                     blob = (blob.w + w, blob.x + w * Float(x), blob.y + w * Float(y))
                     for (nx, ny) in [(x + 1, y), (x - 1, y), (x, y + 1), (x, y - 1)]
-                    where nx >= 0 && ny >= 0 && nx < inputWidth && ny < inputHeight
+                    where nx >= xMin && ny >= yMin && nx <= xMax && ny <= yMax
                         && !visited[ny * inputWidth + nx] && at(ny, nx) >= threshold {
                         visited[ny * inputWidth + nx] = true
                         stack.append((nx, ny))
                     }
                 }
+                let pt = Point2(Double(blob.x / blob.w) * scaleX, Double(blob.y / blob.w) * scaleY)
+                if let near, hypot(pt.x - near.x, pt.y - near.y) > maxDistPx { continue }
                 if blob.w > best.w { best = blob }
             }
         }
@@ -476,7 +665,7 @@ final class WASBDetector {
 
     /// 64×64 native-1080p optic-yellow chroma ROI: connected component of yellow pixels (`(128 − Cb) + 0.5·(Cr − 128)`)
     /// closest to the coarse ball point `p` (white court lines have `Cb ≈ 128, Cr ≈ 128` and cancel out, matching
-    /// Python `bounce_and_linecall.refine_roi`). Falls back to luma if Plane 1 is absent, or `p` if shift > 12 px.
+    /// Python `bounce_and_linecall.refine_roi`). Falls back to luma if Plane 1 is absent, or `p` if shift > 16 px.
     static func refine(_ frame: CVPixelBuffer, around p: Point2) -> Point2 {
         CVPixelBufferLockBaseAddress(frame, .readOnly)
         defer { CVPixelBufferUnlockBaseAddress(frame, .readOnly) }
@@ -503,7 +692,7 @@ final class WASBDetector {
                     let uvIdx = (y / 2) * uvRow + (x / 2) * 2
                     let cb = Double(uvBase[uvIdx])
                     let cr = Double(uvBase[uvIdx + 1])
-                    v = luma > 80 ? max(0, (128.0 - cb) + 0.5 * (cr - 128.0)) : 0
+                    v = luma > 40 ? max(0, (128.0 - cb) + 0.5 * (cr - 128.0)) : 0
                 } else {
                     v = luma
                 }
@@ -514,10 +703,10 @@ final class WASBDetector {
         }
         let count = Double(n), mean = sum / count
         let std = max(sumSq / count - mean * mean, 0).squareRoot()
-        let minGate = uvBase != nil ? 12.0 : 180.0
+        let minGate = uvBase != nil ? 10.0 : 140.0
         let threshold = max(mean + 2.0 * std, minGate)
         var visited = [Bool](repeating: false, count: n)
-        var best: (dist: Double, cx: Double, cy: Double)?
+        var best: (score: Double, cx: Double, cy: Double)?
         for dy0 in 0..<roiSize {
             for dx0 in 0..<roiSize {
                 let startIdx = dy0 * roiSize + dx0
@@ -541,11 +730,12 @@ final class WASBDetector {
                         }
                     }
                 }
-                guard (4...400).contains(pixels), sw > 0 else { continue }
+                guard (2...450).contains(pixels), sw > 0 else { continue }
                 let cx = sx / sw, cy = sy / sw
                 let dist = hypot(cx - p.x, cy - p.y)
-                if dist <= 12.0, best == nil || dist < best!.dist {
-                    best = (dist, cx, cy)
+                let candidateScore = sw / max(dist, 3.0)
+                if dist <= 16.0, best == nil || candidateScore > best!.score {
+                    best = (candidateScore, cx, cy)
                 }
             }
         }
@@ -561,7 +751,7 @@ final class HitOnsetDetector {
     static let lowHz = 2000.0
     static let highHz = 6000.0
     static let hop = 256
-    static let ratio: Float = 8
+    static let ratio: Float = 5.0
     static let floor: Float = 1e-5
     static let refractory = 0.15
 
@@ -621,11 +811,13 @@ final class HitOnsetDetector {
             energy /= Float(end - i)
             let t = start + Double(i) / fs
             if t >= blankedUntil {
-                if energy > max(Self.floor, slowEnergy * Self.ratio), t - lastOnset > Self.refractory {
+                let gate = max(Self.floor, slowEnergy * Self.ratio)
+                if energy > gate, t - lastOnset > Self.refractory {
                     lastOnset = t
                     onOnset?(t)
                 }
-                slowEnergy = 0.995 * slowEnergy + 0.005 * energy
+                // Cap spike adaptation so a loud near-baseline hit does not deafen the detector for the far return.
+                slowEnergy = 0.995 * slowEnergy + 0.005 * min(energy, gate)
             }
             i = end
         }
