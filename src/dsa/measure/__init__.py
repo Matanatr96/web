@@ -1,1 +1,1 @@
-"""Measurements over many matches (laptop): who hit what, strokes, movement, and the comparisons (steps 5-6)."""
+"""Stroke technique measures from a skeleton window around contact (technique)."""

@@ -905,7 +905,7 @@ if modal is not None:
     from dsa.gpu.volume import image, volume
 
     app = modal.App("tennis-rally", image=image("catboost==1.2.10", "fastapi>=0.115", "httpx>=0.27", "av>=12",
-                                                "onnxruntime-gpu==1.30.0", core=True))
+                                                "onnxruntime-gpu==1.30.0"))
     secrets = [modal.Secret.from_name("tennis-rally")]
     TENNIS = Path("/vol/tennis")
 

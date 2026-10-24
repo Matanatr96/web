@@ -107,8 +107,8 @@ def ball(b: np.ndarray, breaks=()) -> np.ndarray:
 
 def joints(kp: np.ndarray, height: np.ndarray, breaks=(), smooth: int = 0) -> np.ndarray:
     """kp: (n, J, 3) one player's joints per frame (NaN where not seen), height: (n,) body height in px.
-    smooth: the smoothing window in frames instead of SMOOTH / SMOOTH_SMALL (dsa.gpu.fine's 50 / 60 fps frames: the
-    same span in seconds). Returns a cleaned copy; joints still missing stay NaN."""
+    smooth: the smoothing window in frames instead of SMOOTH / SMOOTH_SMALL (for 50 / 60 fps skeletons: the same span
+    in seconds). Returns a cleaned copy; joints still missing stay NaN."""
     breaks = set(breaks)
     out = kp.astype(np.float64).copy()
     seen = np.isfinite(out[:, 0, 0])

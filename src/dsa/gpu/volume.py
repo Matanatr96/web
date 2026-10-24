@@ -1,10 +1,9 @@
 """Modal: the deep-sports volume, mounted at /vol and laid out exactly as dsa.paths (docs/STORAGE.md), and the
-image the GPU steps run in. Code, weights and inputs are pushed to the volume once and read from there, so a
-run never re-uploads them and never needs the external drive.
+image the GPU functions run in. Code and weights are pushed to the volume once and read from there.
 
-    push(["code/f3set", "models/f3ed"])     laptop -> volume, only what is missing there
-    pull("projects/tests/own_drew/raw.npz") volume -> laptop
-    python -m dsa.gpu.volume ls projects/federer_usopen
+    push(["code/wasb", "code/tennis_court_detector", "models/tcd"])     laptop -> volume, only what is missing
+    pull("tennis/<match_id>/rallies/0.shots.json")                      volume -> laptop
+    python -m dsa.gpu.volume ls tennis
 """
 from __future__ import annotations
 
@@ -20,20 +19,13 @@ volume = modal.Volume.from_name(NAME, create_if_missing=True)
 SKIP = {".git", "__pycache__", ".DS_Store", "annotation-tool"}
 
 
-CORE = ("torch", "opencv-python", "scipy", "pyyaml", "numpy", "rfdetr", "rtmlib")     # the ball, court, people and
-#                                                                                            pose models and dsa.physics
 
-
-def image(*extra: str, core: bool = False) -> modal.Image:
-    """The project's pinned dependencies (pyproject.toml) plus `extra`, with dsa.paths rooted at /vol. core: only
-    CORE's pins (the models' runtime), not the broadcast pipeline's (scenedetect, yt-dlp, anthropic, pandas, ...):
-    the tennis-rally image, whose upload endpoint shares it."""
+def image(*extra: str) -> modal.Image:
+    """The project's pinned dependencies (pyproject.toml) plus `extra`, with dsa.paths rooted at /vol."""
     deps = []
     if modal.is_local():
         import tomllib
         deps = tomllib.loads(Path("pyproject.toml").read_text())["project"]["dependencies"]
-        if core:
-            deps = [d for d in deps if d.split("==")[0].split(">=")[0].strip() in CORE]
     img = (modal.Image.debian_slim(python_version="3.11")
            .apt_install("libgl1", "libglib2.0-0", "ffmpeg")
            .uv_pip_install(*deps, *extra))
@@ -56,7 +48,7 @@ def listing(rel: str) -> set[str]:
 
 def push(rels: list[str]) -> list[str]:
     """Upload ROOT/<rel> (a file or a folder) to /vol/<rel>, skipping files already there (by path), SKIP and
-    macOS's ._ files (the external drive is exFAT)."""
+    macOS's ._ files."""
     todo = []
     for rel in rels:
         src = ROOT / rel

@@ -1,1 +1,1 @@
-"""Everything that runs on a GPU (Modal): keeping live play (step 0), the models (step 2), 60 fps skeletons (2b)."""
+"""What runs on Modal: the tennis-rally app (rally_api), the models (models) and the volume / image (volume)."""

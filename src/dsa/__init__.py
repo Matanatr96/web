@@ -1,1 +1,1 @@
-"""Deep sports analysis: tennis video (phone or TV) to players, skeletons, ball and hits."""
+"""Tennis video to rallies, shot speeds, line calls and stroke technique, on Modal (dsa.gpu.rally_api)."""
