@@ -91,7 +91,7 @@ def test_upload_resume_and_commit_a_session(api):
     assert not (root / MID / "jobs/session/parts").exists()
     assert spawned == [("segment_match", {"match_id": MID, "path": f"{MID}/source.mp4", "session_type": "rally",
                                           "court": {"size": [1920, 1080]}, "doubles": False, "source": "web",
-                                          "biomech": False})]
+                                          "biomech": True})]
     assert client.post(f"/jobs/{MID}/commit", headers=tok()).json()["status"] == "processing"
     assert len(spawned) == 1                                                 # committing twice is a no-op
     assert client.get(f"/jobs/{MID}", headers=tok()).json()["received_parts"] == [0, 1, 2]
@@ -175,8 +175,8 @@ def test_rally_mode_plays_on_after_an_out_ball():
            (12.4, "hit", None), (13.1, "bounce", "in"), (13.5, "hit", None), (14.3, "bounce", "in"))
     r = RA.segment_rallies(e, "rally")
     assert [(x["hits"], x["start_s"], x["end_s"]) for x in r] == [(4, 8.5, 16.3)]
-    m = RA.segment_rallies(e, "match")                                       # match mode: the out ends the point
-    assert [x["hits"] for x in m] == [2, 2]
+    m = RA.segment_rallies(e, "match")                                       # never terminated early by out calls
+    assert [(x["hits"], x["start_s"], x["end_s"]) for x in m] == [(4, 8.5, 16.3)]
 
 
 def test_rallies_split_on_gaps_nets_double_bounces_and_lost_tracks():
@@ -204,12 +204,13 @@ def test_analyse_track_turns_a_rally_into_shots():
     for s, (te, _, p) in zip(shots, bounces):
         assert s["call"] == "in" and s["depth_zone"] == "deep" and s["sigma_m"] > 0
         assert abs(s["t_bounce_s"] - te) < 0.01 and np.hypot(s["bounce_x"] - p[0], s["bounce_y"] - p[1]) < 0.15
-        assert 20 < s["speed_mph"] < 120 and 0 < s["net_clearance_m"] < 3
+        assert 20 < s["speed_mph"] < 120 and 15 < s["speed_at_bounce_mph"] < s["speed_mph"]
+        assert 0 < s["net_clearance_m"] < 3
     assert abs(shots[2]["t_hit_s"] - hits[1][0]) < 0.05
     assert shots[2]["call"] == "unknown" and shots[2]["depth_zone"] == "unknown"        # no bounce in the clip
     assert set(shots[0]) == {"shot_idx", "hitter", "t_hit_s", "hit_x", "hit_y", "stroke", "direction",
-                             "depth_zone", "t_bounce_s", "bounce_x", "bounce_y", "speed_mph", "net_clearance_m",
-                             "call", "margin_m", "sigma_m"}
+                             "depth_zone", "t_bounce_s", "bounce_x", "bounce_y", "speed_mph",
+                             "speed_at_bounce_mph", "net_clearance_m", "call", "margin_m", "sigma_m"}
     m, _ = RA.analyse_track(track, cal, "match")
     assert m[0]["stroke"] == "serve"                                         # judged against a service box
     assert RA.analyse_track(track[:, :] * [1, 0, 1, 1, 1], cal) == ([], [])  # no ball, no shots
@@ -318,6 +319,10 @@ def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, m
     assert shots[0]["stroke"] == "serve" and shots[0]["hitter"] == "near"
     assert abs(shots[0]["t_hit_s"] - 1.5) < 0.05 and shots[0]["hit_y"] == pytest.approx(-11.95, abs=0.5)
     assert shots[0]["hit_x"] == pytest.approx(0.4, abs=0.2) and shots[0]["call"] == "in"
+    # Overhead serve (p0_z >= 1.75) in 'rally' mode is also classified as 'serve' so serve speed is tracked
+    rally_srv_shots, _ = RA.analyse_track(tr, cal, "rally")
+    assert len(rally_srv_shots) == 1 and rally_srv_shots[0]["stroke"] == "serve"
+    assert rally_srv_shots[0]["speed_mph"] > 80.0 and rally_srv_shots[0]["speed_at_bounce_mph"] > 60.0
     u_shots, u_ev = RA.analyse_track(tr, None, "match")
     assert len(u_shots) == 1 and u_shots[0]["stroke"] == "serve" and u_shots[0]["call"] == "unknown"
     assert abs(u_shots[0]["t_hit_s"] - 1.5) < 0.05 and u_shots[0]["t_bounce_s"] is not None
@@ -449,3 +454,61 @@ def test_match_mode_scoring_first_hit_serve_and_rotated_decode(tmp_path):
         assert frm_rot.shape == (320, 180, 3) and frm_rot.flags["C_CONTIGUOUS"]
         # 90 deg CCW moves top-left (x=0..40, y=0..40) to bottom-left (y=280..320, x=0..40)
         assert frm_rot[300, 20, 2] > 150 and frm_rot[20, 20, 2] < 50
+
+
+def test_auto_calibrate_video_and_finalize_session_stats(tmp_path, monkeypatch):
+    """auto_calibrate_video samples frames with Tcd + court_snap.refine and gracefully falls back to None;
+    finalize_session aggregates saved per-rally shots into SwingVision speed, shot, and biomechanics stats."""
+    import dsa.gpu.models as GM
+    from dsa.physics.homography import COURT_M, project
+    from dsa.scene import court_snap
+
+    cal = true_camera()
+    true_pts = project(cal, COURT_M)
+    dummy_frame = np.zeros((1080, 1920, 3), np.uint8)
+    monkeypatch.setattr(RA, "decode", lambda src, start_s=0.0, end_s=None: iter([(0.0, dummy_frame), (0.5, dummy_frame)]))
+
+    # 1. Graceful fallback when Tcd raises (e.g., missing weights / no GPU)
+    monkeypatch.setattr(GM, "Tcd", lambda dev: (_ for _ in ()).throw(RuntimeError("no gpu")))
+    assert RA.auto_calibrate_video("fake.mp4") is None
+
+    # 2. First frame returns NaNs, second frame returns valid corners refined by court_snap
+    calls = {"n": 0}
+
+    class FakeTcd:
+        def __init__(self, device):
+            self.device = device
+
+        def locate(self, bgr):
+            calls["n"] += 1
+            return np.full((14, 2), np.nan) if calls["n"] == 1 else true_pts + 1.0
+
+    monkeypatch.setattr(GM, "Tcd", FakeTcd)
+    monkeypatch.setattr(court_snap, "refine", lambda bgr, pts: {"points": true_pts} if np.all(np.isfinite(pts[:4])) else None)
+    auto_cal = RA.auto_calibrate_video("fake.mp4")
+    assert auto_cal is not None
+    assert np.allclose(auto_cal.Hr, cal.Hr, atol=1e-4 * np.abs(cal.Hr).max())
+
+    # 3. finalize_session loads saved rally shots and populates full SwingVision stats + biomechanics
+    rdir = tmp_path / MID / "rallies"
+    rdir.mkdir(parents=True)
+    (rdir / "0.shots.json").write_text(json.dumps([
+        {"shot_idx": 0, "hitter": "near", "t_hit_s": 1.0, "hit_x": 0.4, "hit_y": -11.9, "stroke": "serve",
+         "speed_mph": 102.0, "speed_at_bounce_mph": 76.0, "net_clearance_m": 0.35, "depth_zone": "short", "call": "in"},
+        {"shot_idx": 1, "hitter": "far", "t_hit_s": 2.1, "hit_x": -1.5, "hit_y": 11.2, "stroke": "fh",
+         "speed_mph": 68.0, "speed_at_bounce_mph": 51.0, "net_clearance_m": 0.62, "depth_zone": "deep", "call": "in"},
+        {"shot_idx": 2, "hitter": "near", "t_hit_s": 3.3, "hit_x": 1.8, "hit_y": -11.5, "stroke": "bh",
+         "speed_mph": 62.0, "speed_at_bounce_mph": 47.0, "net_clearance_m": 0.55, "depth_zone": "deep", "call": "in"},
+    ]))
+    spawned = []
+    client = TestClient(RA.create_app(tmp_path, SECRET, spawn=lambda k, p: spawned.append((k, p)), now=lambda: NOW))
+    res = client.post(f"/sessions/{MID}/finalize", json={"source": "ios", "session_type": "rally"}, headers=tok(scope="any"))
+    assert res.status_code == 200
+    st = spawned[-1][1]["stats"]
+    assert st["total_shots"] == 3 and st["rallies"] == 1 and st["longest_rally"] == 3
+    assert st["serve_speed_avg"] == 102.0 and st["serve_speed_max"] == 102.0
+    assert st["fh_speed_avg"] == 68.0 and st["bh_speed_avg"] == 62.0
+    assert st["avg_speed_mph"] == pytest.approx(77.3, abs=0.1) and st["max_speed_mph"] == 102.0
+    assert st["net_clearance_avg_m"] == pytest.approx(0.507, abs=0.005)
+    assert st["shot_counts"] == {"fh": 1, "bh": 1, "serve": 1, "feed": 0}
+    assert "biomechanics" in st and len(st["biomech_traits"]) >= 4

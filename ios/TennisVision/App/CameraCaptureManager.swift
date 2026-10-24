@@ -1,10 +1,6 @@
-// CameraCaptureManager.swift — 1080p60 capture with a locked 1/1000 s shutter, stabilization off, a 6-second
-// HEVC pre-roll ring buffer in RAM (~9 MB at 12 Mbps), and an active-rally-only AVAssetWriter scratch file.
-//
-// Storage invariant: nothing is written to disk unless a rally is live. `beginRally` opens `current_rally.mov`,
-// seeds it with the ring buffer from the last keyframe ≤ (start − 1.5 s), then streams every newly encoded sample
-// straight to disk (so a 60-second, 45-shot rally never grows RAM, E15). `endRally` trims at last activity + 2.0 s
-// and renames the file to `rally_{idx}.mov`; `discardRally` deletes it. There is never a full-match file.
+// CameraCaptureManager.swift — 1080p60 capture with a locked 1/1000 s shutter, stabilization off,
+// direct full-session HEVC recording (`session_<matchId>.mov` in `Application Support/Rallies/`),
+// plus legacy rally ring-buffer support.
 import AVFoundation
 import CoreImage
 import CourtGeometry
@@ -12,18 +8,18 @@ import Foundation
 import simd
 import VideoToolbox
 
-/// Owns the AVCaptureSession, the HEVC encoder, the RAM pre-roll ring and the per-rally writer.
+/// Owns the AVCaptureSession, the HEVC encoder, and the full-session / per-rally movie writers.
 final class CameraCaptureManager: NSObject, @unchecked Sendable {
     static let fps: Int32 = 60
     static let width: Int32 = 1920
     static let height: Int32 = 1080
     static let shutter = CMTime(value: 1, timescale: 1000)
-    static let bitRate = 12_000_000            // 12 Mbps × 6 s ≈ 9 MB of ring buffer
-    static let keyframeInterval = 30           // 0.5 s GOP keeps the pre-roll trim tight
+    static let bitRate = 12_000_000            // 12 Mbps 1080p60 HEVC
+    static let keyframeInterval = 30           // 0.5 s GOP
     static let ringSeconds = 6.0
     static let preRollSeconds = 1.5
     static let tailSeconds = 2.0
-    /// Exposure re-metering cadence and dead-band while no rally is live.
+    /// Exposure re-metering cadence and dead-band while not recording.
     static let exposureMinInterval = 0.25
     static let exposureDeadbandEV: Float = 0.25
 
@@ -35,7 +31,7 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     }
 
     let session = AVCaptureSession()
-    /// Raw 1080p frames for the line caller and drift tracker (called on the capture queue — keep it fast).
+    /// Optional raw 1080p frame hook (unused in offline recorder mode).
     var onFrame: ((CVPixelBuffer, CMTime) -> Void)?
     private let exposureLock = NSLock()
     private var _intrinsics: Intrinsics?
@@ -45,11 +41,18 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
         set { exposureLock.withLock { _intrinsics = newValue } }
     }
     private var _exposureFrozen = false
-    /// While true (rally `.live`), exposure stays frozen so the ball's brightness doesn't pump mid-rally.
+    /// While true (recording active), exposure stays frozen so brightness doesn't pump mid-point.
     var exposureFrozen: Bool {
         get { exposureLock.withLock { _exposureFrozen } }
         set { exposureLock.withLock { _exposureFrozen = newValue } }
     }
+    private var _isRecording = false
+    /// True while a full-session recording (`session_<matchId>.mov`) is actively writing to disk.
+    private(set) var isRecording: Bool {
+        get { exposureLock.withLock { _isRecording } }
+        set { exposureLock.withLock { _isRecording = newValue } }
+    }
+    private var _forceNextKeyframe = false
 
     private let videoOutput = AVCaptureVideoDataOutput()
     private let captureQueue = DispatchQueue(label: "tennis.capture", qos: .userInteractive)
@@ -63,6 +66,9 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     // writerQueue-only state.
     private var ring: [CMSampleBuffer] = []
     private var formatHint: CMFormatDescription?
+    private var sessionWriter: SessionMovieWriter?
+    private var pendingSessionURL: URL?
+    private var sessionWallStart: Date?
     private var rally: RallyWriter?
     private var retiringWriters: [RallyWriter] = []
 
@@ -188,10 +194,20 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
     /// Starts capture (off the main thread, as AVFoundation requires).
     func start() { captureQueue.async { self.session.startRunning() } }
 
-    /// Stops capture, flushes any rally clip that has already been marked for ending (`stopAt != nil`), and discards unended scratch clips.
+    /// Stops capture, finishes or cancels active writers, and clears recording state.
     func stop() {
+        exposureLock.withLock {
+            _isRecording = false
+            _exposureFrozen = false
+            _forceNextKeyframe = false
+        }
         captureQueue.async { self.session.stopRunning() }
         writerQueue.async {
+            self.pendingSessionURL = nil
+            if let sw = self.sessionWriter {
+                self.sessionWriter = nil
+                sw.cancel()
+            }
             if let writer = self.rally {
                 self.rally = nil
                 if let stop = writer.stopAt {
@@ -214,12 +230,63 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
         }
     }
 
-    /// Latest full-resolution frame (calibration snapshot + drift-tracker reference).
+    /// Latest full-resolution frame (calibration snapshot).
     func latestPixelBuffer() -> CVPixelBuffer? { captureQueue.sync { latestFrame } }
 
     /// Renders a frame as an image for the calibration overlay.
     static func image(from frame: CVPixelBuffer) -> CGImage? {
         CIContext().createCGImage(CIImage(cvPixelBuffer: frame), from: CGRect(x: 0, y: 0, width: Int(width), height: Int(height)))
+    }
+
+    // MARK: Full-Session Recording (`session_<matchId>.mov`)
+
+    /// Starts recording 1080p60 HEVC directly to `Application Support/Rallies/session_<matchId>.mov`.
+    func startRecordingSession(matchId: UUID) {
+        let dest = Self.clipsDirectory.appendingPathComponent("session_\(matchId.uuidString.lowercased()).mov")
+        let startWall = Date()
+        exposureLock.withLock {
+            _isRecording = true
+            _exposureFrozen = true
+            _forceNextKeyframe = true
+        }
+        writerQueue.async {
+            if let existing = self.sessionWriter {
+                self.sessionWriter = nil
+                existing.cancel()
+            }
+            try? FileManager.default.removeItem(at: dest)
+            self.sessionWallStart = startWall
+            if let hint = self.formatHint, let writer = try? SessionMovieWriter(url: dest, formatHint: hint) {
+                self.pendingSessionURL = nil
+                self.sessionWriter = writer
+            } else {
+                self.pendingSessionURL = dest
+            }
+        }
+    }
+
+    /// Stops the active session recording and invokes `completion(url, durationS)` on the main thread.
+    func stopRecordingSession(completion: @escaping (URL?, Double) -> Void) {
+        exposureLock.withLock {
+            _isRecording = false
+            _exposureFrozen = false
+            _forceNextKeyframe = false
+        }
+        writerQueue.async {
+            self.pendingSessionURL = nil
+            let wallElapsed = self.sessionWallStart.map { max(0, Date().timeIntervalSince($0)) } ?? 0
+            self.sessionWallStart = nil
+            guard let writer = self.sessionWriter else {
+                DispatchQueue.main.async { completion(nil, 0) }
+                return
+            }
+            self.sessionWriter = nil
+            writer.finish(fallbackDurationS: wallElapsed) { url, durationS in
+                DispatchQueue.main.async {
+                    completion(url, durationS)
+                }
+            }
+        }
     }
 
     // MARK: Rally clips
@@ -303,6 +370,13 @@ final class CameraCaptureManager: NSObject, @unchecked Sendable {
 
     private func handleEncoded(_ sample: CMSampleBuffer) {
         if formatHint == nil { formatHint = sample.formatDescription }
+        if let pendingURL = pendingSessionURL, let hint = formatHint {
+            pendingSessionURL = nil
+            sessionWriter = try? SessionMovieWriter(url: pendingURL, formatHint: hint)
+        }
+        if let sw = sessionWriter {
+            sw.append(sample, isKeyframe: Self.isKeyframe(sample))
+        }
         ring.append(sample)
         let newest = sample.presentationTimeStamp
         // Trim to 6 s, then drop leading non-keyframes (an orphaned P-frame can't decode).
@@ -348,14 +422,79 @@ extension CameraCaptureManager: AVCaptureVideoDataOutputSampleBufferDelegate {
                                     cx: Double(k.columns.2.x), cy: Double(k.columns.2.y))
         }
         if let encoder = self.encoder {
+            let forceKeyframe = exposureLock.withLock { () -> Bool in
+                let f = _forceNextKeyframe
+                _forceNextKeyframe = false
+                return f
+            }
+            let props: CFDictionary? = forceKeyframe
+                ? [kVTEncodeFrameOptionKey_ForceKeyFrame as String: kCFBooleanTrue] as CFDictionary
+                : nil
             VTCompressionSessionEncodeFrame(encoder, imageBuffer: pixelBuffer, presentationTimeStamp: pts,
-                                            duration: CMTime(value: 1, timescale: Self.fps), frameProperties: nil,
+                                            duration: CMTime(value: 1, timescale: Self.fps), frameProperties: props,
                                             infoFlagsOut: nil) { [weak self] status, _, encoded in
                 guard status == noErr, let encoded, let self else { return }
                 self.writerQueue.async { self.handleEncoded(encoded) }
             }
         }
         onFrame?(pixelBuffer, pts)
+    }
+}
+
+// MARK: - SessionMovieWriter
+
+/// Direct pass-through HEVC writer for full-session recording (`session_<matchId>.mov`).
+private final class SessionMovieWriter {
+    let url: URL
+    private let writer: AVAssetWriter
+    private let input: AVAssetWriterInput
+    private var started = false
+    private var firstPTS: CMTime?
+    private var lastPTS: CMTime?
+
+    init(url: URL, formatHint: CMFormatDescription) throws {
+        self.url = url
+        writer = try AVAssetWriter(outputURL: url, fileType: .mov)
+        input = AVAssetWriterInput(mediaType: .video, outputSettings: nil, sourceFormatHint: formatHint)
+        input.expectsMediaDataInRealTime = true
+        writer.add(input)
+    }
+
+    func append(_ sample: CMSampleBuffer, isKeyframe: Bool) {
+        let pts = sample.presentationTimeStamp
+        if !started {
+            guard isKeyframe, writer.startWriting() else { return }
+            writer.startSession(atSourceTime: pts)
+            started = true
+            firstPTS = pts
+        }
+        if input.isReadyForMoreMediaData && input.append(sample) {
+            lastPTS = pts
+        }
+    }
+
+    func finish(fallbackDurationS: Double, completion: @escaping (URL?, Double) -> Void) {
+        guard started else {
+            completion(nil, 0)
+            return
+        }
+        let durationS: Double
+        if let first = firstPTS, let last = lastPTS {
+            let d = CMTimeGetSeconds(CMTimeSubtract(last, first))
+            durationS = d.isFinite && d > 0 ? d : max(0, fallbackDurationS)
+        } else {
+            durationS = max(0, fallbackDurationS)
+        }
+        input.markAsFinished()
+        writer.finishWriting { [self] in
+            let outURL = writer.status == .completed ? url : nil
+            completion(outURL, durationS)
+        }
+    }
+
+    func cancel() {
+        if started { writer.cancelWriting() }
+        try? FileManager.default.removeItem(at: url)
     }
 }
 

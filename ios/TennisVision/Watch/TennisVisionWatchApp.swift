@@ -1,15 +1,15 @@
 // TennisVisionWatchApp.swift — adaptive watchOS 10+ wrist companion.
-//   Page 1 (Live Court HUD):
-//     - Top Status & Line-Call Pill: connection dot (green reachable / orange queued), LIVE badge, and
-//       high-contrast color-coded Last Call Pill (IN green, OUT red, CLOSE orange).
-//     - Rally Mode: 46pt monospaced shot counter, side-by-side STREAK & BEST badges, ⭐ Bookmark, ⚑ Challenge,
-//       and 1-tap Start / End Rally toggle.
+//   Page 1 (Recorder & Match Scorekeeper HUD):
+//     - Top Status Pill: connection dot (green reachable / orange queued), Recording state (`READY` / `RECORDING`),
+//       and session mode badge (`RALLY` / `MATCH`).
+//     - Rally Mode: Recording state (`READY` / `RECORDING`), `Start / Stop Recording` (`WatchCommand.toggleRally`),
+//       and `★ Bookmark` moment button.
 //     - Match Mode: crisp Sets pill, giant Points readout, 🎾 Serve: Deuce/Ad badge, big + Me / + Opp buttons,
-//       and explicit 1-tap ↩ Undo + ⚑ Challenge bottom bar (plus long-press undo on point buttons).
+//       and explicit 1-tap ↩ Undo + ★ Bookmark + Start / Stop Recording controls.
 //   Page 2 (Workout & Session Controls):
 //     - Available in both Rally Mode and Match Mode.
 //     - Live Heart Rate (BPM), Active Calories (kcal), and Elapsed Workout Time via HKLiveWorkoutBuilder
-//       during an outdoor tennis workout (HKWorkoutSession), plus Start / End Tennis Workout and Rally controls.
+//       during an outdoor tennis workout (HKWorkoutSession), plus Start / End Tennis Workout and Recording controls.
 import CourtGeometry
 import HealthKit
 import SwiftUI
@@ -59,8 +59,6 @@ final class WatchModel: NSObject, ObservableObject {
             haptic = .directionDown
         case .bookmark:
             haptic = .success
-        case .challenge:
-            haptic = .notification
         case .toggleRally:
             haptic = state.isLive ? .stop : .start
         case .pointMe, .pointOpp:
@@ -142,6 +140,14 @@ final class WatchModel: NSObject, ObservableObject {
         return String(format: "%02d:%02d", mins, secs)
     }
 
+    /// Formats `state.shotCount` (recording elapsed seconds from phone) as `MM:SS`.
+    var formattedRecordingTime: String {
+        let total = max(0, state.shotCount)
+        let mins = total / 60
+        let secs = total % 60
+        return String(format: "%02d:%02d", mins, secs)
+    }
+
     private func updateWorkoutStatistics(_ statistics: HKStatistics?, for quantityType: HKQuantityType) {
         guard let statistics else { return }
         if quantityType == HKQuantityType(.heartRate) {
@@ -195,13 +201,8 @@ extension WatchModel: WCSessionDelegate {
         guard let s = WatchState(message: message) else { return }
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
-            if s.shotCount > 0, s.shotCount % RallyTracker.milestoneEvery == 0, s.shotCount != self.state.shotCount {
-                WKInterfaceDevice.current().play(.success)          // 10 / 20 / 30-shot milestone tap
-            }
-            if s.lastCall == .out, self.state.lastCall != .out {
-                WKInterfaceDevice.current().play(.failure)
-            } else if s.lastCall == .close, self.state.lastCall != .close {
-                WKInterfaceDevice.current().play(.retry)
+            if s.isLive != self.state.isLive {
+                WKInterfaceDevice.current().play(s.isLive ? .start : .stop)
             }
             self.state = s
         }
@@ -264,7 +265,7 @@ struct WatchRootView: View {
     }
 }
 
-// MARK: - Page 1: Live Court HUD (Status Pill + Rally / Match Mode)
+// MARK: - Page 1: Recorder & Match Scorekeeper HUD
 
 struct LiveCourtHUDPage: View {
     @EnvironmentObject private var model: WatchModel
@@ -275,7 +276,6 @@ struct LiveCourtHUDPage: View {
                 reachable: model.reachable,
                 isLive: model.state.isLive,
                 mode: model.state.mode,
-                lastCall: model.state.lastCall,
                 workoutRunning: model.workoutRunning
             )
             switch model.state.mode {
@@ -289,12 +289,11 @@ struct LiveCourtHUDPage: View {
     }
 }
 
-/// Top status bar with connection indicator (green reachable / orange queued), LIVE badge, and color-coded Last Call pill.
+/// Top status bar with connection indicator (green reachable / orange queued), `READY` / `RECORDING` pill, and mode badge.
 struct WatchStatusHeader: View {
     let reachable: Bool
     let isLive: Bool
     let mode: SessionMode
-    let lastCall: LineCall?
     let workoutRunning: Bool
 
     var body: some View {
@@ -309,16 +308,18 @@ struct WatchStatusHeader: View {
                     .foregroundStyle(reachable ? Color.secondary : Color.orange)
             }
 
-            if isLive {
-                HStack(spacing: 3) {
-                    Circle().fill(Color.white).frame(width: 5, height: 5)
-                    Text("LIVE")
-                        .font(.system(size: 10, weight: .heavy, design: .rounded))
-                }
-                .padding(.horizontal, 5)
-                .padding(.vertical, 1.5)
-                .background(Color.green.opacity(0.85), in: Capsule())
-            } else if workoutRunning {
+            HStack(spacing: 3) {
+                Circle()
+                    .fill(isLive ? Color.white : Color.gray)
+                    .frame(width: 5, height: 5)
+                Text(isLive ? "RECORDING" : "READY")
+                    .font(.system(size: 9, weight: .heavy, design: .rounded))
+            }
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1.5)
+            .background(isLive ? Color.red.opacity(0.85) : Color.white.opacity(0.14), in: Capsule())
+
+            if workoutRunning {
                 Image(systemName: "figure.tennis")
                     .font(.system(size: 10, weight: .bold))
                     .foregroundStyle(.green)
@@ -326,129 +327,63 @@ struct WatchStatusHeader: View {
 
             Spacer(minLength: 2)
 
-            if let call = lastCall, call != .unknown {
-                LastCallPill(call: call)
-            } else {
-                Text(mode == .rally ? "RALLY" : "MATCH")
-                    .font(.system(size: 10, weight: .bold, design: .monospaced))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1.5)
-                    .background(Color.white.opacity(0.12), in: Capsule())
-            }
-        }
-    }
-}
-
-/// High-contrast color-coded line-call badge (`IN` green, `OUT` red, `CLOSE` orange).
-struct LastCallPill: View {
-    let call: LineCall
-
-    var body: some View {
-        Text(label)
-            .font(.system(size: 11, weight: .black, design: .rounded))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 7)
-            .padding(.vertical, 2)
-            .background(color, in: Capsule())
-    }
-
-    private var label: String {
-        switch call {
-        case .in: return "IN"
-        case .out: return "OUT"
-        case .close: return "CLOSE"
-        case .unknown: return "—"
-        }
-    }
-
-    private var color: Color {
-        switch call {
-        case .in: return .green
-        case .out: return .red
-        case .close: return .orange
-        case .unknown: return .gray
+            Text(mode == .rally ? "RALLY" : "MATCH")
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1.5)
+                .background(Color.white.opacity(0.12), in: Capsule())
         }
     }
 }
 
 // MARK: - Rally Mode View
 
-/// Rally Mode HUD: 46pt rounded monospaced shot counter, side-by-side STREAK & BEST badges,
-/// ⭐ Bookmark, ⚑ Challenge, and 1-tap Start / End Rally button.
+/// Rally Mode HUD: Recording state (`READY` / `RECORDING`), elapsed time & bookmark counter,
+/// `Start / Stop Recording` (`WatchCommand.toggleRally`), and `★ Bookmark` button.
 struct RallyWatchView: View {
     @EnvironmentObject private var model: WatchModel
 
     var body: some View {
-        VStack(spacing: 4) {
-            HStack(alignment: .center, spacing: 8) {
-                Text("\(model.state.shotCount)")
-                    .font(.system(size: 46, weight: .heavy, design: .rounded))
+        VStack(spacing: 5) {
+            VStack(spacing: 2) {
+                Text(model.state.isLive ? "RECORDING" : "READY")
+                    .font(.system(size: 11, weight: .black, design: .rounded))
+                    .foregroundStyle(model.state.isLive ? Color.red : Color.secondary)
+
+                Text(model.state.isLive ? model.formattedRecordingTime : "00:00")
+                    .font(.system(size: 32, weight: .heavy, design: .rounded))
                     .monospacedDigit()
-                    .foregroundStyle(model.state.isLive ? Color.green : Color.primary)
-                    .minimumScaleFactor(0.7)
+                    .foregroundStyle(model.state.isLive ? Color.primary : Color.secondary)
                     .lineLimit(1)
 
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 4) {
-                        Text("STREAK")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                        Text("\(model.state.inStreak)")
-                            .font(.system(size: 13, weight: .heavy, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(.green)
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.green.opacity(0.16), in: Capsule())
-
-                    HStack(spacing: 4) {
-                        Text("BEST")
-                            .font(.system(size: 9, weight: .bold, design: .rounded))
-                            .foregroundStyle(.secondary)
-                        Text("\(model.state.sessionBest)")
-                            .font(.system(size: 13, weight: .heavy, design: .rounded))
-                            .monospacedDigit()
-                            .foregroundStyle(.yellow)
-                    }
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.yellow.opacity(0.16), in: Capsule())
+                if model.state.inStreak > 0 {
+                    Text("★ \(model.state.inStreak) bookmarked")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(.yellow)
                 }
-            }
-
-            HStack(spacing: 5) {
-                Button {
-                    model.send(.bookmark)
-                } label: {
-                    Label("Bookmark", systemImage: "star.fill")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                }
-                .tint(.yellow)
-
-                Button {
-                    model.send(.challenge)
-                } label: {
-                    Label("Challenge", systemImage: "flag.fill")
-                        .font(.system(size: 12, weight: .bold, design: .rounded))
-                        .frame(maxWidth: .infinity, minHeight: 34)
-                }
-                .tint(.red)
             }
 
             Button {
                 model.send(.toggleRally)
             } label: {
                 Label(
-                    model.state.isLive ? "End Rally" : "Start Rally",
-                    systemImage: model.state.isLive ? "stop.circle.fill" : "play.circle.fill"
+                    model.state.isLive ? "Stop Recording" : "Start Recording",
+                    systemImage: model.state.isLive ? "stop.circle.fill" : "record.circle"
                 )
                 .font(.system(size: 12, weight: .bold, design: .rounded))
-                .frame(maxWidth: .infinity, minHeight: 30)
+                .frame(maxWidth: .infinity, minHeight: 34)
             }
-            .tint(model.state.isLive ? .green : .blue)
+            .tint(model.state.isLive ? .green : .red)
+
+            Button {
+                model.send(.bookmark)
+            } label: {
+                Label("★ Bookmark", systemImage: "star.fill")
+                    .font(.system(size: 12, weight: .bold, design: .rounded))
+                    .frame(maxWidth: .infinity, minHeight: 30)
+            }
+            .tint(.yellow)
         }
         .buttonStyle(.borderedProminent)
     }
@@ -457,7 +392,7 @@ struct RallyWatchView: View {
 // MARK: - Match Mode View
 
 /// Match Mode HUD: Sets pill + giant Points readout + 🎾 Serve: Deuce/Ad badge,
-/// big + Me (green) and + Opp (blue) buttons (with long-press undo), and an explicit 1-tap ↩ Undo + ⚑ Challenge row.
+/// big + Me (green) and + Opp (blue) buttons (with long-press undo), and 1-tap ↩ Undo + ★ Bookmark + Start/Stop Recording.
 struct MatchWatchView: View {
     @EnvironmentObject private var model: WatchModel
 
@@ -488,29 +423,38 @@ struct MatchWatchView: View {
 
             // Primary point scoring buttons (tap to score, 0.6s long-press to undo)
             HStack(spacing: 6) {
-                pointButton("+ Me", .pointMe, .green)
-                pointButton("+ Opp", .pointOpp, .blue)
+                pointButton("Me", .pointMe, .green)
+                pointButton("Opp", .pointOpp, .blue)
             }
 
-            // Explicit 1-tap Undo + Challenge bottom bar
-            HStack(spacing: 6) {
+            // Explicit 1-tap Undo + ★ Bookmark + Start/Stop Recording row
+            HStack(spacing: 4) {
                 Button {
                     model.send(.undo)
                 } label: {
                     Label("Undo", systemImage: "arrow.uturn.backward")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
                         .frame(maxWidth: .infinity, minHeight: 28)
                 }
                 .tint(.gray)
 
                 Button {
-                    model.send(.challenge)
+                    model.send(.bookmark)
                 } label: {
-                    Label("Challenge", systemImage: "flag.fill")
-                        .font(.system(size: 11, weight: .bold, design: .rounded))
+                    Label("★ Bookmark", systemImage: "star.fill")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
                         .frame(maxWidth: .infinity, minHeight: 28)
                 }
-                .tint(.red)
+                .tint(.yellow)
+
+                Button {
+                    model.send(.toggleRally)
+                } label: {
+                    Image(systemName: model.state.isLive ? "stop.circle.fill" : "record.circle")
+                        .font(.system(size: 13, weight: .bold))
+                        .frame(minHeight: 28)
+                }
+                .tint(model.state.isLive ? .green : .red)
             }
         }
         .buttonStyle(.borderedProminent)
@@ -593,8 +537,8 @@ struct WorkoutWatchView: View {
                 model.send(.toggleRally)
             } label: {
                 Label(
-                    model.state.isLive ? "End Active Rally" : "Start Manual Rally",
-                    systemImage: model.state.isLive ? "stop.circle" : "play.circle"
+                    model.state.isLive ? "Stop Recording" : "Start Recording",
+                    systemImage: model.state.isLive ? "stop.circle" : "record.circle"
                 )
                 .font(.system(size: 11, weight: .semibold, design: .rounded))
                 .frame(maxWidth: .infinity, minHeight: 28)

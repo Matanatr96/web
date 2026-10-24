@@ -70,18 +70,37 @@ def test_best_of_five_needs_three_sets():
 
 
 def test_session_summary_hides_one_shot_feeds():
-    r = lambda calls, zones=None, strokes=None, speeds=None: [   # noqa: E731
+    r = lambda calls, zones=None, strokes=None, speeds=None, clearances=None: [   # noqa: E731
         {"t_hit_s": 1.0 * k, "call": c, "depth_zone": (zones or ["deep"] * len(calls))[k],
-         "stroke": (strokes or [None] * len(calls))[k], "speed_mph": (speeds or [None] * len(calls))[k]}
+         "stroke": (strokes or [None] * len(calls))[k], "speed_mph": (speeds or [None] * len(calls))[k],
+         "net_clearance_m": (clearances or [None] * len(calls))[k]}
         for k, c in enumerate(calls)]
-    rallies = [r(["in"] * 12, strokes=["fh", "bh"] * 6, speeds=[60, 50] * 6),
-               r(["in", "out", "in"], zones=["deep", "out_long", "short"]),
-               r(["in"])]                                         # an aborted feed
+    rallies = [r(["in"] * 12, strokes=["fh", "bh"] * 6, speeds=[60, 50] * 6, clearances=[0.5, 0.7] * 6),
+               r(["in", "out", "in"], zones=["deep", "out_long", "short"], strokes=["serve", "fh", "bh"],
+                 speeds=[95.0, 66.0, 56.0], clearances=[0.2, 0.4, 0.6]),
+               r(["in"], strokes=["feed"])]                       # an aborted feed
     assert S.summarize_session(rallies) == {
-        "rallies": 2, "longest_rally": 12, "avg_rally_length": 7.5, "rallies_10_plus": 1,
-        "deep_pct": round(100 * 14 / 16, 1), "in_pct": round(100 * 15 / 16, 1), "fh_speed_avg": 60.0,
-        "bh_speed_avg": 50.0}
+        "total_shots": 16,
+        "rallies": 2,
+        "longest_rally": 12,
+        "avg_rally_length": 7.5,
+        "rallies_10_plus": 1,
+        "deep_pct": round(100 * 14 / 16, 1),
+        "in_pct": round(100 * 15 / 16, 1),
+        "fh_speed_avg": round((60.0 * 6 + 66.0) / 7, 1),
+        "fh_speed_max": 66.0,
+        "bh_speed_avg": round((50.0 * 6 + 56.0) / 7, 1),
+        "bh_speed_max": 56.0,
+        "serve_speed_avg": 95.0,
+        "serve_speed_max": 95.0,
+        "avg_speed_mph": round((60.0 * 6 + 50.0 * 6 + 95.0 + 66.0 + 56.0) / 15, 1),
+        "max_speed_mph": 95.0,
+        "net_clearance_avg_m": round((0.5 * 6 + 0.7 * 6 + 0.2 + 0.4 + 0.6) / 15, 3),
+        "shot_counts": {"fh": 7, "bh": 7, "serve": 1, "feed": 1}}
     assert S.summarize_session(rallies, hide_one_shot_feeds=False)["avg_rally_length"] == round(16 / 3, 1)
-    assert S.summarize_session([]) == {"rallies": 0, "longest_rally": 0, "avg_rally_length": None,
-                                       "rallies_10_plus": 0, "deep_pct": None, "in_pct": None,
-                                       "fh_speed_avg": None, "bh_speed_avg": None}
+    assert S.summarize_session([]) == {
+        "total_shots": 0, "rallies": 0, "longest_rally": 0, "avg_rally_length": None,
+        "rallies_10_plus": 0, "deep_pct": None, "in_pct": None,
+        "fh_speed_avg": None, "fh_speed_max": None, "bh_speed_avg": None, "bh_speed_max": None,
+        "serve_speed_avg": None, "serve_speed_max": None, "avg_speed_mph": None, "max_speed_mph": None,
+        "net_clearance_avg_m": None, "shot_counts": {"fh": 0, "bh": 0, "serve": 0, "feed": 0}}

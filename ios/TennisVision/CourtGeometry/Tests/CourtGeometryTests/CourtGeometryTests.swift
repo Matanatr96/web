@@ -423,7 +423,7 @@ final class CourtGeometryTests: XCTestCase {
 
     func testWatchMessagesRoundTrip() {
         let s = WatchState(mode: .match, shotCount: 3, inStreak: 2, sessionBest: 17, setsLine: "6-4", pointsLine: "Deuce",
-                           serverSide: .ad, lastCall: .close, isLive: true)
+                           serverSide: .ad, isLive: true)
         XCTAssertEqual(WatchState(message: s.message), s)
         XCTAssertEqual(WatchCommand(message: WatchCommand.undo.message), .undo)
         XCTAssertEqual(WatchCommand(message: WatchCommand.toggleRally.message), .toggleRally)

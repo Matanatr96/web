@@ -118,16 +118,17 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         var sessionType: SessionMode
         var doubles: Bool
         var court: CourtJSON?
-        var source: String? = "ios"
+        var source: String? = "ios_library"
+        var biomech: Bool = true
 
         /// Reads the Modal endpoint + device token from `UserDefaults` or `Info.plist`; nil when token is empty.
         static func fromBundle(matchId: UUID, sessionType: SessionMode, doubles: Bool, court: CourtJSON?,
-                               source: String = "ios") -> Config? {
+                               source: String = "ios_library", biomech: Bool = true) -> Config? {
             guard let base = URL(string: RallySegmentUploader.modalBaseURLString) else { return nil }
             let token = RallySegmentUploader.modalJobToken
             guard !token.isEmpty else { return nil }
             return Config(baseURL: base, jobToken: token, matchId: matchId, sessionType: sessionType,
-                          doubles: doubles, court: court, source: source)
+                          doubles: doubles, court: court, source: source, biomech: biomech)
         }
     }
 
@@ -213,7 +214,6 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         var startS: Double
         var config: Config
         var bookmarked = false
-        var liveCall: String?
         var score: ScorePayload?
         var points: [PointPayload]?
         var jobId: String?
@@ -271,19 +271,18 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
 
     // MARK: Public API
 
-    /// Queues a finished rally clip (or Camera Roll video) for upload.
+    /// Queues a finished session recording or Camera Roll video for upload.
     ///
     /// - Parameters:
     ///   - clip: `.mov` or `.mp4` file in Application Support/Rallies.
     ///   - rallyIdx: Rally index within the session.
     ///   - startS: Clip start relative to the session start (seconds).
     ///   - config: Endpoint, token and session metadata.
-    ///   - bookmarked: Whether the player bookmarked this rally during play.
-    ///   - liveCall: Last on-device line call during this rally (`"in"`, `"out"`, `"close"`), if any.
+    ///   - bookmarked: Whether the player bookmarked moments during play.
     ///   - score: Match-mode score state snapshot, if in `.match` mode.
     ///   - points: Match-mode point history (`tennis_points`), if in `.match` mode.
     func enqueue(clip: URL, rallyIdx: Int, startS: Double, config: Config,
-                 bookmarked: Bool = false, liveCall: String? = nil,
+                 bookmarked: Bool = false,
                  score: ScorePayload? = nil, points: [PointPayload]? = nil) {
         delegateQueue.addOperation {
             let key = Self.uploadKey(matchId: config.matchId, rallyIdx: rallyIdx)
@@ -291,7 +290,7 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
             let mid = config.matchId.uuidString.lowercased()
             let pending = self.pendingFinalizes[mid]
             self.uploads[key] = Upload(key: key, rallyIdx: rallyIdx, clipPath: clip.path, startS: startS,
-                                       config: config, bookmarked: bookmarked, liveCall: liveCall,
+                                       config: config, bookmarked: bookmarked,
                                        score: score ?? existing?.score ?? pending?.score,
                                        points: points ?? existing?.points ?? pending?.points)
             self.save()
@@ -380,7 +379,7 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
         var body: [String: Any] = [
             "match_id": u.config.matchId.uuidString.lowercased(),
             "rally_idx": u.rallyIdx,
-            "source": u.config.source ?? "ios",
+            "source": u.config.source ?? "ios_library",
             "session_type": u.config.sessionType.rawValue,
             "court": court ?? NSNull(),
             "doubles": u.config.doubles,
@@ -388,7 +387,7 @@ final class RallySegmentUploader: NSObject, ObservableObject, @unchecked Sendabl
             "content_type": contentType,
             "start_s": u.startS,
             "bookmarked": u.bookmarked,
-            "live_call": u.liveCall ?? NSNull(),
+            "biomech": u.config.biomech,
         ]
         if let score = u.score, let obj = try? JSONSerialization.jsonObject(with: JSONEncoder.snake.encode(score)) {
             body["score"] = obj

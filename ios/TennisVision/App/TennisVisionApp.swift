@@ -1,7 +1,7 @@
 // TennisVisionApp.swift — app entry point (`HomeView` root dashboard + full-screen `RecordView`), the session
-// controller that wires capture → live caller → clip uploader → local/cloud `SessionStore` → Watch, live WASB
-// ball-tracking reticle + trail overlay, explicit End Session flow, 6-second slow-mo challenge replay,
-// local/cloud `SessionStore`, `PhotosPicker` Camera Roll uploader, and `SessionDetailSheet`.
+// controller that wires 1080p60 capture → offline SwingVision full-session recording (`session_<matchId>.mov`) →
+// Modal GPU uploader (`source = "ios_library"`, `biomech = true`) → local/cloud `SessionStore` → Watch,
+// optional 4-corner court calibration overlay, `PhotosPicker` Camera Roll uploader, and `SessionDetailSheet`.
 import AVFoundation
 import AVKit
 import CoreImage
@@ -42,7 +42,7 @@ final class AppDelegate: NSObject, UIApplicationDelegate {
     }
 }
 
-/// Lightweight tactile feedback helper for on-court button taps and `OUT` line-call alerts.
+/// Lightweight tactile feedback helper for on-court button taps.
 enum Haptics {
     static func impact(_ style: UIImpactFeedbackGenerator.FeedbackStyle = .medium) {
         DispatchQueue.main.async {
@@ -63,57 +63,57 @@ enum Haptics {
 
 // MARK: - Session controller
 
-/// Owns the capture, live-caller, drift-tracker, uploader, SessionStore and Watch plumbing. All @Published state changes on main.
+/// Recorder state for the offline SwingVision session recorder.
+enum RecorderState: String, Sendable {
+    case idle
+    case recording
+}
+
+/// Owns the 1080p60 camera preview, manual full-session recording (`session_<matchId>.mov`), uploader,
+/// `SessionStore`, and WatchConnectivity plumbing. Does NOT run live on-device ball-tracking or audio onset detection.
 final class SessionController: NSObject, ObservableObject {
-    @Published var mode: SessionMode = .rally { didSet { reconfigure() } }
-    @Published var audioMode: AudioCallMode = .softChime { didSet { reconfigure() } }
-    @Published var doubles = false { didSet { reconfigure() } }
-    @Published private(set) var engineState: EngineState = .sleeping
-    @Published private(set) var shotCount = 0
-    @Published private(set) var inStreak = 0
-    @Published private(set) var sessionBest = 0
-    @Published private(set) var totalSessionShots = 0
-    @Published private(set) var inCalls = 0
-    @Published private(set) var outCalls = 0
-    @Published private(set) var lastCall: LineCallResult?
-    @Published private(set) var lastLatencyMs: Double?
+    @Published var mode: SessionMode = .rally { didSet { pushWatch() } }
+    @Published var doubles = false { didSet { pushWatch() } }
+    @Published private(set) var recorderState: RecorderState = .idle
+    @Published private(set) var isRecording = false
+    @Published private(set) var recordingElapsedSeconds = 0
+    @Published private(set) var bookmarkedTimestamps: [Double] = []
     @Published private(set) var calibration: CourtCalibration?
-    @Published private(set) var callsPaused = false
-    @Published private(set) var audioLatencyWarning: String?
     @Published private(set) var score = MatchScorekeeper()
     @Published private(set) var clipsSaved = 0
     @Published private(set) var sessionClips: [RallyClipRecord] = []
-    @Published private(set) var currentBall: BallSample?
-    @Published private(set) var ballTrail: [BallSample] = []
     @Published private(set) var setupError: String?
     @Published var calibrationFrame: CalibrationFrame?
-    @Published var replay: ReplayItem?
 
     let camera = CameraCaptureManager()
-    private let engine = LiveLineCallerEngine()
-    private let drift = CourtDriftTracker()
     private(set) var matchId = UUID()
     private var sessionStartedAt = Date()
-    private var sessionStartS: Double?
+    private var recordingStartDate: Date?
+    private var recordingTimer: Timer?
     private var savedBrightness: CGFloat?
     private var pointsLog: [RallySegmentUploader.PointPayload] = []
-    private var lastCompletedRallyIdx: Int?
-    private var lastCompletedEndS: Double?
     private var isEndingSession = false
+    private var isStoppingRecording = false
+    private var hasSavedCurrentRecording = false
     private var observersInstalled = false
 
-    /// A frozen frame for the calibration overlay.
+    /// A frozen frame for the optional 4-corner + 2-post calibration overlay.
     struct CalibrationFrame: Identifiable {
         let id = UUID()
         let image: CGImage
         let buffer: CVPixelBuffer
     }
 
-    /// A slow-mo challenge replay of the last 6 seconds.
-    struct ReplayItem: Identifiable {
-        let id = UUID()
-        let url: URL
-        let call: LineCallResult?
+    /// Formats `recordingElapsedSeconds` as `MM:SS` (or `H:MM:SS` over an hour).
+    var formattedRecordingTime: String {
+        let total = max(0, recordingElapsedSeconds)
+        let hrs = total / 3600
+        let mins = (total % 3600) / 60
+        let secs = total % 60
+        if hrs > 0 {
+            return String(format: "%d:%02d:%02d", hrs, mins, secs)
+        }
+        return String(format: "%02d:%02d", mins, secs)
     }
 
     // MARK: Lifecycle
@@ -123,59 +123,46 @@ final class SessionController: NSObject, ObservableObject {
     func prepareNewSession(mode: SessionMode, doubles: Bool) {
         matchId = UUID()
         sessionStartedAt = Date()
-        sessionStartS = nil
+        recordingStartDate = nil
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        recorderState = .idle
+        isRecording = false
+        recordingElapsedSeconds = 0
+        bookmarkedTimestamps = []
         isEndingSession = false
-        shotCount = 0
-        inStreak = 0
-        sessionBest = 0
-        totalSessionShots = 0
-        inCalls = 0
-        outCalls = 0
+        isStoppingRecording = false
+        hasSavedCurrentRecording = false
         clipsSaved = 0
         sessionClips = []
         pointsLog = []
-        lastCompletedRallyIdx = nil
-        lastCompletedEndS = nil
-        lastCall = nil
-        lastLatencyMs = nil
-        currentBall = nil
-        ballTrail = []
         score = MatchScorekeeper()
         setupError = nil
         self.mode = mode
         self.doubles = doubles
     }
 
-    /// Requests permissions, configures capture + audio, and starts everything.
+    /// Requests camera access and starts the 1080p60 preview in `.idle` (ready) state without any live ball/audio detectors.
     @MainActor
     func start() async {
         isEndingSession = false
-        guard await AVCaptureDevice.requestAccess(for: .video), await AVAudioApplication.requestRecordPermission() else {
-            setupError = "Camera and microphone access are required."
+        recorderState = .idle
+        isRecording = false
+        guard await AVCaptureDevice.requestAccess(for: .video) else {
+            setupError = "Camera access is required to record tennis sessions."
             return
         }
         do {
             if camera.session.inputs.isEmpty {
                 try camera.configure()
             }
-            try engine.start()
         } catch {
-            setupError = "Could not start capture: \(error)"
+            setupError = "Could not start camera preview: \(error)"
             return
         }
-        engine.delegate = self
-        let engine = self.engine, drift = self.drift
-        camera.onFrame = { buffer, pts in
-            engine.ingest(buffer, pts: pts)
-            drift.process(buffer, pts: pts)
-        }
-        drift.onRecalibrated = { [weak self] cal in self?.apply(cal) }
-        drift.onPause = { [weak self] paused in
-            self?.callsPaused = paused
-            self?.engine.setCallsPaused(paused)
-        }
+        camera.onFrame = nil
         camera.start()
-        reconfigure()
+        pushWatch()
         UIApplication.shared.isIdleTimerDisabled = true
         if WCSession.isSupported() {
             WCSession.default.delegate = self
@@ -183,54 +170,122 @@ final class SessionController: NSObject, ObservableObject {
         }
         if !observersInstalled {
             observersInstalled = true
-            NotificationCenter.default.addObserver(self, selector: #selector(routeChanged),
-                                                   name: AVAudioSession.routeChangeNotification, object: nil)
             NotificationCenter.default.addObserver(self, selector: #selector(thermalChanged),
                                                    name: ProcessInfo.thermalStateDidChangeNotification, object: nil)
         }
-        routeChanged()
     }
 
-    /// Manually starts a rally clip or finishes the active rally clip.
-    func toggleManualRally() {
+    /// Starts full-session 1080p60 HEVC recording to `Application Support/Rallies/session_<matchId>.mov`.
+    @MainActor
+    func startRecording() {
+        guard !isRecording, !isStoppingRecording else { return }
         Haptics.impact(.medium)
-        if engineState == .live || engineState == .armed {
-            engine.endCurrentRally()
+        if hasSavedCurrentRecording {
+            matchId = UUID()
+            bookmarkedTimestamps = []
+            hasSavedCurrentRecording = false
+        }
+        let now = Date()
+        sessionStartedAt = now
+        recordingStartDate = now
+        recordingElapsedSeconds = 0
+        recorderState = .recording
+        isRecording = true
+        camera.startRecordingSession(matchId: matchId)
+
+        recordingTimer?.invalidate()
+        recordingTimer = Timer.scheduledTimer(withTimeInterval: 1.0, repeats: true) { [weak self] _ in
+            guard let self = self, self.isRecording, let start = self.recordingStartDate else { return }
+            self.recordingElapsedSeconds = max(0, Int(Date().timeIntervalSince(start)))
+            self.pushWatch()
+        }
+        pushWatch()
+    }
+
+    /// Stops the active session recording, saves the `LocalSessionRecord` in `SessionStore`, and queues the `.mov`
+    /// file via `SessionStore.shared.importAndUploadLibraryVideo` with `source = "ios_library"` and `biomech = true`.
+    @MainActor
+    func finishAndUploadRecording() async {
+        guard isRecording, !isStoppingRecording else { return }
+        isStoppingRecording = true
+        Haptics.notify(.success)
+        recordingTimer?.invalidate()
+        recordingTimer = nil
+        let wallDuration = recordingStartDate.map { max(0, Date().timeIntervalSince($0)) } ?? Double(recordingElapsedSeconds)
+        recordingStartDate = nil
+        isRecording = false
+        recorderState = .idle
+        pushWatch()
+
+        let (recordedURL, writerDurationS) = await withCheckedContinuation { (cont: CheckedContinuation<(URL?, Double), Never>) in
+            camera.stopRecordingSession { url, durationS in
+                cont.resume(returning: (url, durationS))
+            }
+        }
+        isStoppingRecording = false
+
+        let effectiveDuration = max(writerDurationS, wallDuration)
+        let sessionURL = recordedURL ?? CameraCaptureManager.clipsDirectory.appendingPathComponent("session_\(matchId.uuidString.lowercased()).mov")
+        let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
+        let matchPoints = mode == .match ? pointsLog : nil
+        let formattedScore = mode == .match ? score.formattedScore : nil
+
+        let savedRecord = SessionStore.shared.importAndUploadLibraryVideo(
+            importedURL: sessionURL,
+            durationS: effectiveDuration,
+            mode: mode,
+            doubles: doubles,
+            calibration: calibration,
+            imageSize: CGSize(width: Int(CameraCaptureManager.width), height: Int(CameraCaptureManager.height)),
+            autoSegment: true,
+            matchId: matchId,
+            startedAt: sessionStartedAt,
+            bookmarks: bookmarkedTimestamps,
+            scoreFormatted: formattedScore,
+            scorePayload: matchScore,
+            pointsPayload: matchPoints
+        )
+        hasSavedCurrentRecording = true
+        sessionClips = savedRecord.clipFiles
+        clipsSaved = savedRecord.clipFiles.count
+        pushWatch()
+    }
+
+    /// Toggles full-session recording (`Start Recording` <-> `Finish & Upload`).
+    @MainActor
+    func toggleRecording() {
+        if isRecording {
+            Task { await finishAndUploadRecording() }
         } else {
-            engine.forceStartRally()
+            startRecording()
         }
     }
 
-    /// Ends the active court session: flushes any live rally clip, saves the session to `SessionStore`,
-    /// queues pending clip uploads, finalizes with Modal, and stops the camera + audio engines cleanly.
+    /// Ends the active court session: if recording, stops and uploads the session `.mov` first, then stops the camera.
     @MainActor
     func endSession() async {
         guard !isEndingSession else { return }
         isEndingSession = true
-        let wasActiveRally = (engineState == .live || engineState == .armed)
-        engine.endCurrentRally()
-        if wasActiveRally {
-            try? await Task.sleep(nanoseconds: 250_000_000)
+        if isRecording {
+            await finishAndUploadRecording()
         }
-        engine.stop()
+        recordingTimer?.invalidate()
+        recordingTimer = nil
         camera.stop()
-        currentBall = nil
-        ballTrail = []
         if let b = savedBrightness {
             UIScreen.main.brightness = b
             savedBrightness = nil
         }
         UIApplication.shared.isIdleTimerDisabled = false
 
-        let record = buildSessionRecord()
-        SessionStore.shared.upsertLocalSession(record)
-        finishSession()
+        if !hasSavedCurrentRecording && (!sessionClips.isEmpty || !pointsLog.isEmpty) {
+            let record = buildSessionRecord()
+            SessionStore.shared.upsertLocalSession(record)
+        }
     }
 
     @MainActor
     func buildSessionRecord() -> LocalSessionRecord {
-        let shots = max(totalSessionShots, shotCount)
-        let best = max(sessionBest, inStreak)
         let syncedClips = sessionClips.map { clip -> RallyClipRecord in
             var c = clip
             if let live = RallySegmentUploader.shared.statusByKey[clip.id] {
@@ -254,63 +309,42 @@ final class SessionController: NSObject, ObservableObject {
             endedAt: Date(),
             mode: mode,
             doubles: doubles,
-            totalShots: shots,
-            bestStreak: best,
+            totalShots: 0,
+            bestStreak: 0,
             ralliesCount: rallies,
-            inCalls: inCalls,
-            outCalls: outCalls,
+            bookmarkedTimestamps: bookmarkedTimestamps.isEmpty ? nil : bookmarkedTimestamps,
             scoreFormatted: scoreStr,
             clipFiles: syncedClips,
             uploadStatus: status,
             court: calibration.map { RallySegmentUploader.CourtJSON($0) },
-            source: "ios"
+            source: "ios_library"
         )
-    }
-
-    private func reconfigure() {
-        engine.configure(mode: mode, audioMode: audioMode, doubles: doubles)
-        updateServeRegion()
-        pushWatch()
     }
 
     // MARK: Calibration
 
-    /// Freezes the current frame for the 4-corner + 2-post overlay.
+    /// Freezes the current frame for the optional 4-corner + 2-post overlay.
     func beginCalibration() {
         guard let buffer = camera.latestPixelBuffer(), let image = CameraCaptureManager.image(from: buffer) else { return }
         calibrationFrame = CalibrationFrame(image: image, buffer: buffer)
     }
 
-    /// Accepts a calibration from the overlay and seeds the drift tracker with its frame.
+    /// Accepts a calibration from the overlay.
     func finishCalibration(_ cal: CourtCalibration) {
-        if let frame = calibrationFrame { drift.setReference(frame: frame.buffer, calibration: cal) }
         calibrationFrame = nil
-        callsPaused = false
-        engine.setCallsPaused(false)
-        apply(cal)
-        Haptics.notify(.success)
-    }
-
-    private func apply(_ cal: CourtCalibration) {
         calibration = cal
-        engine.setCalibration(cal)
+        Haptics.notify(.success)
     }
 
     // MARK: Watch & phone actions
 
+    /// Records a bookmarked moment timestamp relative to the start of the active recording.
     func bookmark() {
         Haptics.impact(.medium)
-        engine.bookmark()
-    }
-
-    /// Exports the last 6 s from the RAM ring and opens the slow-mo replay.
-    func challenge() {
-        Haptics.impact(.heavy)
-        let call = lastCall
-        Task { @MainActor in
-            guard let url = await camera.exportRecent(seconds: CameraCaptureManager.ringSeconds) else { return }
-            replay = ReplayItem(url: url, call: call)
-        }
+        let elapsed = recordingStartDate.map { max(0, Date().timeIntervalSince($0)) } ?? Double(recordingElapsedSeconds)
+        let rounded = (elapsed * 10).rounded() / 10
+        bookmarkedTimestamps.append(rounded)
+        pushWatch()
     }
 
     func point(_ winner: Player) {
@@ -320,40 +354,19 @@ final class SessionController: NSObject, ObservableObject {
         let side = score.serverSide.rawValue
         score.pointWon(by: winner)
         let after = score.formattedScore
-        let endedBy = lastCall?.call == .out ? "out" : "winner"
+        let elapsed = recordingStartDate.map { max(0, Date().timeIntervalSince($0)) } ?? Double(recordingElapsedSeconds)
         pointsLog.append(RallySegmentUploader.PointPayload(
-            pointIdx: pointsLog.count, rallyIdx: lastCompletedRallyIdx, server: srv, serveSide: side,
-            winner: winner.rawValue, endedBy: endedBy, scoreBefore: before, scoreAfter: after,
-            timestampS: lastCompletedEndS))
-        updateServeRegion()
+            pointIdx: pointsLog.count, rallyIdx: nil, server: srv, serveSide: side,
+            winner: winner.rawValue, endedBy: "winner", scoreBefore: before, scoreAfter: after,
+            timestampS: elapsed))
         pushWatch()
-        finishSession()
     }
 
     func undoPoint() {
         Haptics.impact(.light)
         score.undo()
         if !pointsLog.isEmpty { pointsLog.removeLast() }
-        updateServeRegion()
         pushWatch()
-        finishSession()
-    }
-
-    /// Sends current session/score/points state to Modal so the session can be finalized or updated in Match Mode.
-    func finishSession() {
-        guard let config = RallySegmentUploader.Config.fromBundle(
-            matchId: matchId, sessionType: mode, doubles: doubles,
-            court: calibration.map { RallySegmentUploader.CourtJSON($0) }) else { return }
-        let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
-        let matchPoints = mode == .match ? pointsLog : nil
-        RallySegmentUploader.shared.finalizeSession(config: config, score: matchScore, points: matchPoints)
-    }
-
-    /// Match Mode: the next serve must land in the box diagonally opposite the server (I'm on the near half).
-    private func updateServeRegion() {
-        guard mode == .match else { return engine.setServeRegion(nil) }
-        let half: CourtHalf = score.score.server == .me ? .near : .far
-        engine.setServeRegion(CallRegion.serviceBox(serverHalf: half, side: score.serverSide))
     }
 
     var setsLine: String {
@@ -362,29 +375,23 @@ final class SessionController: NSObject, ObservableObject {
 
     private func pushWatch() {
         guard WCSession.isSupported(), WCSession.default.activationState == .activated else { return }
-        let state = WatchState(mode: mode, shotCount: shotCount, inStreak: inStreak, sessionBest: sessionBest,
-                               setsLine: setsLine, pointsLine: score.display,
-                               serverSide: mode == .match ? score.serverSide : nil, lastCall: lastCall?.call,
-                               isLive: engineState == .live)
+        let state = WatchState(
+            mode: mode,
+            shotCount: recordingElapsedSeconds,
+            inStreak: bookmarkedTimestamps.count,
+            sessionBest: clipsSaved,
+            setsLine: setsLine,
+            pointsLine: score.display,
+            serverSide: mode == .match ? score.serverSide : nil,
+            isLive: isRecording
+        )
         try? WCSession.default.updateApplicationContext(state.message)
         if WCSession.default.isReachable { WCSession.default.sendMessage(state.message, replyHandler: nil) }
     }
 
     // MARK: Environment
 
-    /// Bluetooth / AirPlay outputs add 150–300 ms, which defeats a <150 ms line call.
-    @objc private func routeChanged() {
-        let session = AVAudioSession.sharedInstance()
-        let slow: Set<AVAudioSession.Port> = [.bluetoothA2DP, .bluetoothLE, .bluetoothHFP, .airPlay]
-        let wireless = session.currentRoute.outputs.contains { slow.contains($0.portType) }
-        let warning = wireless || session.outputLatency > 0.05
-            ? String(format: "Audio output adds ~%.0f ms — use the speaker or wired headphones for live calls",
-                     max(session.outputLatency * 1000, wireless ? 150 : 0))
-            : nil
-        DispatchQueue.main.async { self.audioLatencyWarning = warning }
-    }
-
-    /// E10: dim the screen to 0 at `.serious` / `.critical` (the engine itself drops passes / pauses the ANE).
+    /// Dim the screen to 0 at `.serious` / `.critical` thermal state to keep 1080p60 recording cool in direct sunlight.
     @objc private func thermalChanged() {
         let hot = ProcessInfo.processInfo.thermalState.rawValue >= ProcessInfo.ThermalState.serious.rawValue
         DispatchQueue.main.async {
@@ -396,116 +403,6 @@ final class SessionController: NSObject, ObservableObject {
                 self.savedBrightness = nil
             }
         }
-    }
-}
-
-// MARK: Engine delegate (main queue)
-
-extension SessionController: LiveLineCallerEngineDelegate {
-    func engine(_ engine: LiveLineCallerEngine, didChange state: EngineState) {
-        engineState = state
-        camera.exposureFrozen = state == .armed || state == .live
-        pushWatch()
-    }
-
-    func engine(_ engine: LiveLineCallerEngine, didUpdateBall current: BallSample?, trail: [BallSample]) {
-        currentBall = current
-        ballTrail = trail
-    }
-
-    func engine(_ engine: LiveLineCallerEngine, rallyStartedAt pts: CMTime) {
-        if sessionStartS == nil { sessionStartS = pts.seconds - CameraCaptureManager.preRollSeconds }
-        lastCall = nil
-        camera.beginRally(at: pts)
-    }
-
-    func engine(_ engine: LiveLineCallerEngine, rallyEnded summary: RallySummary?, lastActivity: CMTime) {
-        guard let summary else { return camera.discardRally() }
-        totalSessionShots += summary.shotCount
-        sessionBest = max(sessionBest, summary.inStreak, summary.shotCount)
-        let startS = max(0, summary.startS - CameraCaptureManager.preRollSeconds - (sessionStartS ?? 0))
-        let endS = max(0, summary.endS - (sessionStartS ?? 0))
-        let durationS = max(0, summary.endS - summary.startS + CameraCaptureManager.preRollSeconds + CameraCaptureManager.tailSeconds)
-        lastCompletedRallyIdx = summary.rallyIdx
-        lastCompletedEndS = endS
-        let rallyCall = lastCall?.call.rawValue
-        let matchScore = mode == .match ? RallySegmentUploader.ScorePayload(score) : nil
-        let matchPoints = mode == .match ? pointsLog : nil
-        let sessionMatchId = matchId
-        let config = RallySegmentUploader.Config.fromBundle(
-            matchId: sessionMatchId, sessionType: mode, doubles: doubles,
-            court: calibration.map { RallySegmentUploader.CourtJSON($0) })
-        // When flushing on "End Session", commit immediately without waiting 2.0 s for future frames.
-        let effectiveLast = isEndingSession
-            ? CMTimeSubtract(lastActivity, CMTime(seconds: CameraCaptureManager.tailSeconds, preferredTimescale: 600))
-            : lastActivity
-        camera.endRally(lastActivity: effectiveLast, rallyIdx: summary.rallyIdx) { [weak self] url in
-            guard let url else { return }
-            let uniqueFileName = "rally_\(sessionMatchId.uuidString.lowercased())_\(summary.rallyIdx).mov"
-            let sessionClipURL = CameraCaptureManager.clipsDirectory.appendingPathComponent(uniqueFileName)
-            let finalURL: URL
-            if url.path != sessionClipURL.path {
-                try? FileManager.default.removeItem(at: sessionClipURL)
-                if (try? FileManager.default.moveItem(at: url, to: sessionClipURL)) != nil {
-                    finalURL = sessionClipURL
-                } else if (try? FileManager.default.copyItem(at: url, to: sessionClipURL)) != nil {
-                    try? FileManager.default.removeItem(at: url)
-                    finalURL = sessionClipURL
-                } else {
-                    finalURL = url
-                }
-            } else {
-                finalURL = url
-            }
-            let clipRecord = RallyClipRecord(
-                id: RallySegmentUploader.uploadKey(matchId: sessionMatchId, rallyIdx: summary.rallyIdx),
-                rallyIdx: summary.rallyIdx,
-                fileName: finalURL.lastPathComponent,
-                startS: startS,
-                durationS: durationS,
-                shotCount: summary.shotCount,
-                inStreak: summary.inStreak,
-                bookmarked: summary.bookmarked,
-                liveCall: rallyCall,
-                source: "ios",
-                uploadStatus: config != nil ? .uploading : .needsToken
-            )
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.clipsSaved += 1
-                if let idx = self.sessionClips.firstIndex(where: { $0.rallyIdx == summary.rallyIdx }) {
-                    self.sessionClips[idx] = clipRecord
-                } else {
-                    self.sessionClips.append(clipRecord)
-                }
-                let record = self.buildSessionRecord()
-                SessionStore.shared.upsertLocalSession(record)
-            }
-            if let config {
-                RallySegmentUploader.shared.enqueue(
-                    clip: finalURL, rallyIdx: summary.rallyIdx, startS: startS, config: config,
-                    bookmarked: summary.bookmarked, liveCall: rallyCall,
-                    score: matchScore, points: matchPoints)
-            }
-        }
-        updateServeRegion()
-    }
-
-    func engine(_ engine: LiveLineCallerEngine, didUpdateShots shotCount: Int, inStreak: Int, sessionBest: Int) {
-        (self.shotCount, self.inStreak, self.sessionBest) = (shotCount, inStreak, max(self.sessionBest, sessionBest))
-        pushWatch()
-    }
-
-    func engine(_ engine: LiveLineCallerEngine, didCall result: LineCallResult, latencyMs: Double) {
-        lastCall = result
-        lastLatencyMs = latencyMs
-        if result.call == .in || result.call == .close {
-            inCalls += 1
-        } else if result.call == .out {
-            outCalls += 1
-            Haptics.notify(.warning)
-        }
-        pushWatch()
     }
 }
 
@@ -531,20 +428,18 @@ extension SessionController: WCSessionDelegate {
 
     private func handle(_ message: [String: Any]) {
         guard let command = WatchCommand(message: message) else { return }
-        DispatchQueue.main.async {
+        Task { @MainActor in
             switch command {
-            case .bookmark: self.bookmark()
-            case .challenge: self.challenge()
-            case .pointMe: self.point(.me)
-            case .pointOpp: self.point(.opp)
-            case .undo: self.undoPoint()
+            case .bookmark:
+                self.bookmark()
+            case .pointMe:
+                self.point(.me)
+            case .pointOpp:
+                self.point(.opp)
+            case .undo:
+                self.undoPoint()
             case .toggleRally:
-                Haptics.impact(.medium)
-                if self.engineState == .live {
-                    self.engine.endCurrentRally()
-                } else {
-                    self.engine.forceStartRally()
-                }
+                self.toggleRecording()
             }
         }
     }
@@ -566,13 +461,10 @@ struct RecordView: View {
         ZStack {
             CameraPreview(session: c.camera.session).ignoresSafeArea()
             if showCourtLines, let cal = c.calibration {
-                LiveCourtWireframeOverlay(calibration: cal, doubles: c.doubles, callsPaused: c.callsPaused)
+                LiveCourtWireframeOverlay(calibration: cal, doubles: c.doubles)
                     .ignoresSafeArea()
                     .allowsHitTesting(false)
             }
-            BallTrackingOverlay(current: c.currentBall, trail: c.ballTrail)
-                .ignoresSafeArea()
-                .allowsHitTesting(false)
             VStack(spacing: 8) {
                 topBar
                 banners
@@ -596,7 +488,6 @@ struct RecordView: View {
             CourtCalibrationOverlay(image: frame.image, intrinsics: c.camera.intrinsics, initial: c.calibration,
                                     onDone: c.finishCalibration, onCancel: { c.calibrationFrame = nil })
         }
-        .sheet(item: $c.replay) { ReplayView(item: $0) }
         .sheet(isPresented: $showClipsSheet) {
             let record = c.buildSessionRecord()
             let merged = MergedSessionItem(
@@ -608,9 +499,18 @@ struct RecordView: View {
                 doubles: record.doubles,
                 sourceLabel: "ON-DEVICE",
                 totalShots: record.totalShots,
-                bestStreak: record.bestStreak,
+                longestRally: record.bestStreak,
                 ralliesCount: record.ralliesCount,
-                inPct: record.inCallPct,
+                avgSpeedMph: nil,
+                maxSpeedMph: nil,
+                serveSpeedAvg: nil,
+                serveSpeedMax: nil,
+                fhSpeedAvg: nil,
+                fhSpeedMax: nil,
+                bhSpeedAvg: nil,
+                bhSpeedMax: nil,
+                netClearanceAvgM: nil,
+                deepPct: nil,
                 scoreFormatted: record.scoreFormatted,
                 uploadStatus: record.uploadStatus,
                 remoteStatus: nil,
@@ -621,18 +521,9 @@ struct RecordView: View {
         }
     }
 
-    private var stateDotColor: Color {
-        switch c.engineState {
-        case .live: return .green
-        case .armed: return .yellow
-        case .cooldown: return .cyan
-        case .sleeping: return .gray
-        }
-    }
-
     private var topBar: some View {
         HStack(spacing: 10) {
-            // Left Capsule Cluster: End Session + Rally/Match segmented pill
+            // Left Capsule Cluster: End Session + Rally/Match segmented pill + Doubles toggle
             HStack(spacing: 8) {
                 Button(role: .destructive) {
                     Haptics.impact(.medium)
@@ -654,6 +545,10 @@ struct RecordView: View {
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 140)
+
+                Toggle("Doubles", isOn: $c.doubles)
+                    .toggleStyle(.button)
+                    .font(.caption.bold())
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -661,21 +556,16 @@ struct RecordView: View {
 
             Spacer(minLength: 4)
 
-            // Center Capsule Cluster: Live Tracking & Calibration Status Pill + Court Lines Overlay toggle
+            // Center Capsule Cluster: Recording Status Pill (`READY TO RECORD` vs `RECORDING · 00:42`) + Optional Court Calibration
             HStack(spacing: 10) {
                 HStack(spacing: 6) {
                     Circle()
-                        .fill(stateDotColor)
+                        .fill(c.isRecording ? Color.red : Color.gray)
                         .frame(width: 9, height: 9)
-                        .scaleEffect(c.engineState != .sleeping && pulseDot ? 1.28 : 0.92)
-                    Text(c.engineState.rawValue.uppercased())
+                        .scaleEffect(c.isRecording && pulseDot ? 1.28 : 0.92)
+                    Text(c.isRecording ? "RECORDING · \(c.formattedRecordingTime)" : "READY TO RECORD")
                         .font(.caption.monospaced().bold())
-                        .foregroundStyle(c.engineState == .live ? Color.green : Color.primary)
-                    if c.currentBall != nil {
-                        Text("· BALL")
-                            .font(.caption2.monospaced().bold())
-                            .foregroundStyle(.yellow)
-                    }
+                        .foregroundStyle(c.isRecording ? Color.red : Color.primary)
                 }
 
                 Divider().frame(height: 16)
@@ -723,20 +613,8 @@ struct RecordView: View {
 
             Spacer(minLength: 4)
 
-            // Right Capsule Cluster: Audio Mode menu, Clips Saved / Upload badge, and Manual Start/Finish Rally button
+            // Right Capsule Cluster: Clips Saved / Upload badge + Start Recording / Finish & Upload button
             HStack(spacing: 8) {
-                Menu {
-                    Picker("Audio", selection: $c.audioMode) {
-                        ForEach(AudioCallMode.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    Toggle("Doubles lines", isOn: $c.doubles)
-                } label: {
-                    Label(c.audioMode == .mute ? "Muted" : "Audio",
-                          systemImage: c.audioMode == .mute ? "speaker.slash.fill" : "speaker.wave.2.fill")
-                        .font(.caption.bold())
-                }
-                .buttonStyle(.bordered)
-
                 Button {
                     Haptics.impact(.light)
                     showClipsSheet = true
@@ -751,15 +629,25 @@ struct RecordView: View {
                 }
                 .buttonStyle(.bordered)
 
-                Button {
-                    c.toggleManualRally()
-                } label: {
-                    Label(c.engineState == .live || c.engineState == .armed ? "Finish Rally" : "Start Rally",
-                          systemImage: c.engineState == .live || c.engineState == .armed ? "checkmark.circle.fill" : "record.circle")
-                        .font(.caption.bold())
+                if c.isRecording {
+                    Button {
+                        Task { await c.finishAndUploadRecording() }
+                    } label: {
+                        Label("Finish & Upload", systemImage: "checkmark.circle.fill")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.green)
+                } else {
+                    Button {
+                        c.startRecording()
+                    } label: {
+                        Label("Start Recording", systemImage: "record.circle")
+                            .font(.caption.bold())
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .tint(.red)
                 }
-                .buttonStyle(.borderedProminent)
-                .tint(c.engineState == .live || c.engineState == .armed ? .green : .blue)
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 6)
@@ -770,27 +658,33 @@ struct RecordView: View {
     @ViewBuilder private var banners: some View {
         if let error = c.setupError { Banner(text: error, color: .red) }
         if c.calibration == nil {
-            Banner(text: "Ball tracking active — tap Calibrate Court (4 corners + 2 net posts) to enable metric IN/OUT line calls",
+            Banner(text: "Optional: Calibrate court corners now, or let cloud AI auto-calibrate & analyze speeds after recording",
                    color: .blue)
         }
-        if c.callsPaused { Banner(text: "Camera moved more than 15 px — live calls paused. Recalibrate.", color: .orange) }
-        if let w = c.audioLatencyWarning { Banner(text: w, color: .yellow) }
     }
 
     @ViewBuilder private var hud: some View {
         VStack(alignment: .leading, spacing: 4) {
             switch c.mode {
             case .rally:
-                Text("\(c.shotCount)").font(.system(size: 72, weight: .heavy, design: .rounded)).monospacedDigit()
-                Text("shots · in-streak \(c.inStreak) · best \(c.sessionBest)").font(.headline)
+                Text(c.isRecording ? c.formattedRecordingTime : "READY")
+                    .font(.system(size: 56, weight: .heavy, design: .rounded))
+                    .monospacedDigit()
+                    .foregroundStyle(c.isRecording ? Color.red : Color.primary)
+                Text("Offline SwingVision AI · Serve & FH/BH Speed · Auto Rally Split")
+                    .font(.subheadline.bold())
             case .match:
                 Text(c.setsLine).font(.title2.monospacedDigit().bold())
                 Text(c.score.display).font(.system(size: 48, weight: .heavy, design: .rounded))
                 Text("Serve from \(c.score.serverSide.rawValue) side").font(.caption)
             }
-            if let call = c.lastCall { CallChip(result: call, latencyMs: c.lastLatencyMs) }
+            if !c.bookmarkedTimestamps.isEmpty {
+                Text("★ \(c.bookmarkedTimestamps.count) bookmarked moment\(c.bookmarkedTimestamps.count == 1 ? "" : "s")")
+                    .font(.caption.bold())
+                    .foregroundStyle(.yellow)
+            }
             HStack(spacing: 8) {
-                Text("\(c.clipsSaved) rally clips saved")
+                Text("\(c.clipsSaved) session recording\(c.clipsSaved == 1 ? "" : "s") saved")
                 if uploader.activeUploadsCount > 0 {
                     Text("· uploading \(uploader.activeUploadsCount)")
                         .foregroundStyle(.cyan)
@@ -808,14 +702,31 @@ struct RecordView: View {
 
     @ViewBuilder private var actionButtons: some View {
         VStack(spacing: 10) {
-            Button {
-                c.toggleManualRally()
-            } label: {
-                Label(c.engineState == .live || c.engineState == .armed ? "Finish Rally Clip" : "Start Rally",
-                      systemImage: c.engineState == .live || c.engineState == .armed ? "checkmark.circle.fill" : "record.circle")
+            if c.isRecording {
+                Button {
+                    Task { await c.finishAndUploadRecording() }
+                } label: {
+                    Label("Finish & Upload", systemImage: "checkmark.circle.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.green)
+
+                Button {
+                    c.bookmark()
+                } label: {
+                    Label("★ Bookmark Moment", systemImage: "star.fill")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.yellow)
+            } else {
+                Button {
+                    c.startRecording()
+                } label: {
+                    Label("Start Recording", systemImage: "record.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
             }
-            .buttonStyle(.borderedProminent)
-            .tint(c.engineState == .live || c.engineState == .armed ? .green : .blue)
 
             if c.mode == .match {
                 HStack {
@@ -824,12 +735,7 @@ struct RecordView: View {
                     Button { c.undoPoint() } label: { Image(systemName: "arrow.uturn.backward") }
                 }
                 .buttonStyle(.borderedProminent)
-            } else {
-                Button { c.bookmark() } label: { Label("Bookmark", systemImage: "star.fill") }
-                    .buttonStyle(.borderedProminent).tint(.yellow)
             }
-            Button { c.challenge() } label: { Label("Challenge", systemImage: "flag.fill") }
-                .buttonStyle(.borderedProminent).tint(.red)
         }
         .padding(10)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 16))
@@ -841,7 +747,6 @@ struct RecordView: View {
 struct LiveCourtWireframeOverlay: View {
     let calibration: CourtCalibration
     let doubles: Bool
-    let callsPaused: Bool
 
     private static let courtLinePairs = [
         (0, 1), (2, 3), (0, 2), (1, 3), // doubles outer rectangle
@@ -869,7 +774,7 @@ struct LiveCourtWireframeOverlay: View {
                 return
             }
 
-            let lineColor: Color = callsPaused ? .orange : .green
+            let lineColor: Color = .green
             var courtPath = Path()
             for (a, b) in Self.courtLinePairs {
                 guard let pa = courtToImage.apply(Court.points[a]),
@@ -898,70 +803,6 @@ struct LiveCourtWireframeOverlay: View {
     }
 }
 
-/// Renders the live WASB ball detection reticle and recent 15-sample trajectory trail over `CameraPreview`,
-/// mapping 1920×1080 native pixel coordinates into the `.resizeAspect` preview rectangle.
-struct BallTrackingOverlay: View {
-    let current: BallSample?
-    let trail: [BallSample]
-
-    var body: some View {
-        Canvas { ctx, size in
-            let imageW = CGFloat(CameraCaptureManager.width)
-            let imageH = CGFloat(CameraCaptureManager.height)
-            guard imageW > 0, imageH > 0, size.width > 0, size.height > 0 else { return }
-            let scale = min(size.width / imageW, size.height / imageH)
-            let fitW = imageW * scale
-            let fitH = imageH * scale
-            let originX = (size.width - fitW) / 2
-            let originY = (size.height - fitH) / 2
-            func toView(_ u: Double, _ v: Double) -> CGPoint {
-                CGPoint(x: originX + CGFloat(u) * scale, y: originY + CGFloat(v) * scale)
-            }
-
-            if trail.count >= 2 {
-                for i in 1..<trail.count {
-                    let prev = trail[i - 1], cur = trail[i]
-                    guard cur.t - prev.t < 0.25 else { continue }
-                    let alpha = Double(i) / Double(trail.count)
-                    var segment = Path()
-                    segment.move(to: toView(prev.u, prev.v))
-                    segment.addLine(to: toView(cur.u, cur.v))
-                    ctx.stroke(segment, with: .color(.yellow.opacity(0.25 + 0.65 * alpha)),
-                               style: StrokeStyle(lineWidth: CGFloat(1.5 + 2.5 * alpha), lineCap: .round))
-                }
-                for (i, sample) in trail.enumerated() {
-                    let alpha = Double(i + 1) / Double(trail.count)
-                    let pt = toView(sample.u, sample.v)
-                    let r = CGFloat(2.0 + 2.0 * alpha)
-                    ctx.fill(Path(ellipseIn: CGRect(x: pt.x - r, y: pt.y - r, width: 2 * r, height: 2 * r)),
-                             with: .color(.yellow.opacity(0.35 + 0.55 * alpha)))
-                }
-            }
-
-            if let ball = current {
-                let p = toView(ball.u, ball.v)
-                let ringRadius: CGFloat = 16
-                let outerRect = CGRect(x: p.x - ringRadius, y: p.y - ringRadius,
-                                       width: ringRadius * 2, height: ringRadius * 2)
-                ctx.stroke(Path(ellipseIn: outerRect), with: .color(.yellow), lineWidth: 2.5)
-                ctx.fill(Path(ellipseIn: CGRect(x: p.x - 4, y: p.y - 4, width: 8, height: 8)),
-                         with: .color(.green))
-
-                var crosshair = Path()
-                crosshair.move(to: CGPoint(x: p.x - 22, y: p.y))
-                crosshair.addLine(to: CGPoint(x: p.x - 10, y: p.y))
-                crosshair.move(to: CGPoint(x: p.x + 10, y: p.y))
-                crosshair.addLine(to: CGPoint(x: p.x + 22, y: p.y))
-                crosshair.move(to: CGPoint(x: p.x, y: p.y - 22))
-                crosshair.addLine(to: CGPoint(x: p.x, y: p.y - 10))
-                crosshair.move(to: CGPoint(x: p.x, y: p.y + 10))
-                crosshair.addLine(to: CGPoint(x: p.x, y: p.y + 22))
-                ctx.stroke(crosshair, with: .color(.yellow.opacity(0.9)), lineWidth: 1.5)
-            }
-        }
-    }
-}
-
 private struct Banner: View {
     let text: String
     let color: Color
@@ -969,92 +810,6 @@ private struct Banner: View {
     var body: some View {
         Text(text).font(.callout.bold()).padding(8).frame(maxWidth: .infinity)
             .background(color.opacity(0.8), in: RoundedRectangle(cornerRadius: 8))
-    }
-}
-
-/// "OUT +4.1 cm ± 1.2" with the colour of the call.
-private struct CallChip: View {
-    let result: LineCallResult
-    let latencyMs: Double?
-
-    var body: some View {
-        HStack {
-            Text(result.call.rawValue.uppercased()).bold()
-            if result.marginM.isFinite {
-                Text(String(format: "%+.1f cm ±%.1f", result.marginM * 100, 2 * result.sigmaM * 100))
-            }
-            Text(result.depthZone.rawValue)
-            if let ms = latencyMs { Text(String(format: "%.0f ms", ms)).foregroundStyle(.secondary) }
-        }
-        .font(.callout.monospacedDigit())
-        .padding(6)
-        .background(color.opacity(0.85), in: Capsule())
-    }
-
-    private var color: Color {
-        switch result.call {
-        case .in: return .green
-        case .out: return .red
-        case .close: return .orange
-        case .unknown: return .gray
-        }
-    }
-}
-
-/// 6-second slow-mo Hawk-Eye replay (0.25×, looping) with the call and the bounce on a top-down court.
-struct ReplayView: View {
-    let item: SessionController.ReplayItem
-    @State private var player: AVQueuePlayer?
-    @State private var looper: AVPlayerLooper?
-
-    var body: some View {
-        HStack(spacing: 16) {
-            VideoPlayer(player: player).aspectRatio(16 / 9, contentMode: .fit)
-            if let call = item.call {
-                VStack(alignment: .leading) {
-                    CallChip(result: call, latencyMs: nil)
-                    MiniCourt(bounce: call.court).frame(width: 140, height: 280)
-                }
-            }
-        }
-        .padding()
-        .onAppear {
-            let p = AVQueuePlayer()
-            looper = AVPlayerLooper(player: p, templateItem: AVPlayerItem(url: item.url))
-            p.defaultRate = 0.25
-            p.rate = 0.25
-            player = p
-        }
-        .onDisappear {
-            player?.pause()
-            try? FileManager.default.removeItem(at: item.url)
-        }
-    }
-}
-
-/// Top-down singles court in metres with the bounce dot (far baseline at the top).
-private struct MiniCourt: View {
-    let bounce: Point2
-
-    var body: some View {
-        Canvas { ctx, size in
-            let sx = size.width / (2 * Court.doublesHalfWidth + 1), sy = size.height / (2 * Court.halfLength + 2)
-            func p(_ x: Double, _ y: Double) -> CGPoint { CGPoint(x: size.width / 2 + x * sx, y: size.height / 2 - y * sy) }
-            ctx.fill(Path(CGRect(origin: .zero, size: size)), with: .color(.green.opacity(0.5)))
-            var lines = Path()
-            for (a, b) in [(0, 1), (2, 3), (0, 2), (1, 3), (4, 5), (6, 7), (8, 9), (10, 11), (12, 13)] {
-                let pa = Court.points[a], pb = Court.points[b]
-                lines.move(to: p(pa.x, pa.y))
-                lines.addLine(to: p(pb.x, pb.y))
-            }
-            lines.move(to: p(-Court.netPostX, 0))
-            lines.addLine(to: p(Court.netPostX, 0))
-            ctx.stroke(lines, with: .color(.white), lineWidth: 1)
-            if bounce.x.isFinite, bounce.y.isFinite {
-                let c = p(bounce.x, bounce.y)
-                ctx.fill(Path(ellipseIn: CGRect(x: c.x - 4, y: c.y - 4, width: 8, height: 8)), with: .color(.yellow))
-            }
-        }
     }
 }
 
@@ -1079,7 +834,7 @@ struct CameraPreview: UIViewRepresentable {
 
 // MARK: - Models
 
-/// Metadata for a single recorded or imported rally clip stored in `Application Support/Rallies/`.
+/// Metadata for a single recorded or imported session video / rally clip stored in `Application Support/Rallies/`.
 struct RallyClipRecord: Codable, Identifiable, Equatable, Sendable {
     var id: String
     var rallyIdx: Int
@@ -1089,8 +844,7 @@ struct RallyClipRecord: Codable, Identifiable, Equatable, Sendable {
     var shotCount: Int
     var inStreak: Int
     var bookmarked: Bool
-    var liveCall: String?
-    var source: String = "ios"
+    var source: String = "ios_library"
     var uploadStatus: ClipUploadState
 
     var fileURL: URL {
@@ -1112,19 +866,12 @@ struct LocalSessionRecord: Codable, Identifiable, Equatable, Sendable {
     var totalShots: Int
     var bestStreak: Int
     var ralliesCount: Int
-    var inCalls: Int
-    var outCalls: Int
+    var bookmarkedTimestamps: [Double]? = nil
     var scoreFormatted: String?
     var clipFiles: [RallyClipRecord]
     var uploadStatus: ClipUploadState
     var court: RallySegmentUploader.CourtJSON?
-    var source: String? = "ios"
-
-    var inCallPct: Double? {
-        let total = inCalls + outCalls
-        guard total > 0 else { return nil }
-        return (Double(inCalls) / Double(total) * 1000).rounded() / 10
-    }
+    var source: String? = "ios_library"
 }
 
 /// JSON schema returned by `GET <webBaseURL>/api/tennis/sessions`.
@@ -1133,8 +880,96 @@ struct RemoteSessionsResponse: Codable, Sendable {
         var totalSessions: Int
         var totalRallies: Int
         var totalShots: Int
+        var longestRally: Int
         var bestInStreak: Int
-        var inCallRate: Double
+        var avgRallyLength: Double?
+        var avgSpeedMph: Double?
+        var maxSpeedMph: Double?
+        var serveSpeedAvg: Double?
+        var serveSpeedMax: Double?
+        var fhSpeedAvg: Double?
+        var fhSpeedMax: Double?
+        var bhSpeedAvg: Double?
+        var bhSpeedMax: Double?
+        var netClearanceAvgM: Double?
+        var deepPct: Double?
+
+        init(
+            totalSessions: Int = 0,
+            totalRallies: Int = 0,
+            totalShots: Int = 0,
+            longestRally: Int = 0,
+            bestInStreak: Int = 0,
+            avgRallyLength: Double? = nil,
+            avgSpeedMph: Double? = nil,
+            maxSpeedMph: Double? = nil,
+            serveSpeedAvg: Double? = nil,
+            serveSpeedMax: Double? = nil,
+            fhSpeedAvg: Double? = nil,
+            fhSpeedMax: Double? = nil,
+            bhSpeedAvg: Double? = nil,
+            bhSpeedMax: Double? = nil,
+            netClearanceAvgM: Double? = nil,
+            deepPct: Double? = nil
+        ) {
+            self.totalSessions = totalSessions
+            self.totalRallies = totalRallies
+            self.totalShots = totalShots
+            self.longestRally = longestRally
+            self.bestInStreak = bestInStreak
+            self.avgRallyLength = avgRallyLength
+            self.avgSpeedMph = avgSpeedMph
+            self.maxSpeedMph = maxSpeedMph
+            self.serveSpeedAvg = serveSpeedAvg
+            self.serveSpeedMax = serveSpeedMax
+            self.fhSpeedAvg = fhSpeedAvg
+            self.fhSpeedMax = fhSpeedMax
+            self.bhSpeedAvg = bhSpeedAvg
+            self.bhSpeedMax = bhSpeedMax
+            self.netClearanceAvgM = netClearanceAvgM
+            self.deepPct = deepPct
+        }
+
+        enum CodingKeys: String, CodingKey {
+            case totalSessions
+            case totalRallies
+            case totalShots
+            case longestRally
+            case bestInStreak
+            case avgRallyLength
+            case avgSpeedMph
+            case maxSpeedMph
+            case serveSpeedAvg
+            case serveSpeedMax
+            case fhSpeedAvg
+            case fhSpeedMax
+            case bhSpeedAvg
+            case bhSpeedMax
+            case netClearanceAvgM
+            case deepPct
+        }
+
+        init(from decoder: Decoder) throws {
+            let c = try decoder.container(keyedBy: CodingKeys.self)
+            totalSessions = try c.decodeIfPresent(Int.self, forKey: .totalSessions) ?? 0
+            totalRallies = try c.decodeIfPresent(Int.self, forKey: .totalRallies) ?? 0
+            totalShots = try c.decodeIfPresent(Int.self, forKey: .totalShots) ?? 0
+            let best = try c.decodeIfPresent(Int.self, forKey: .bestInStreak) ?? 0
+            let longest = try c.decodeIfPresent(Int.self, forKey: .longestRally) ?? best
+            longestRally = max(longest, best)
+            bestInStreak = max(best, longest)
+            avgRallyLength = try c.decodeIfPresent(Double.self, forKey: .avgRallyLength)
+            avgSpeedMph = try c.decodeIfPresent(Double.self, forKey: .avgSpeedMph)
+            maxSpeedMph = try c.decodeIfPresent(Double.self, forKey: .maxSpeedMph)
+            serveSpeedAvg = try c.decodeIfPresent(Double.self, forKey: .serveSpeedAvg)
+            serveSpeedMax = try c.decodeIfPresent(Double.self, forKey: .serveSpeedMax)
+            fhSpeedAvg = try c.decodeIfPresent(Double.self, forKey: .fhSpeedAvg)
+            fhSpeedMax = try c.decodeIfPresent(Double.self, forKey: .fhSpeedMax)
+            bhSpeedAvg = try c.decodeIfPresent(Double.self, forKey: .bhSpeedAvg)
+            bhSpeedMax = try c.decodeIfPresent(Double.self, forKey: .bhSpeedMax)
+            netClearanceAvgM = try c.decodeIfPresent(Double.self, forKey: .netClearanceAvgM)
+            deepPct = try c.decodeIfPresent(Double.self, forKey: .deepPct)
+        }
     }
 
     struct RemoteSession: Codable, Identifiable, Sendable {
@@ -1152,8 +987,17 @@ struct RemoteSessionsResponse: Codable, Sendable {
         var totalShots: Int?
         var bestInStreak: Int?
         var longestRally: Int?
-        var inPct: Double?
-        var outCount: Int?
+        var avgRallyLength: Double?
+        var avgSpeedMph: Double?
+        var maxSpeedMph: Double?
+        var serveSpeedAvg: Double?
+        var serveSpeedMax: Double?
+        var fhSpeedAvg: Double?
+        var fhSpeedMax: Double?
+        var bhSpeedAvg: Double?
+        var bhSpeedMax: Double?
+        var netClearanceAvgM: Double?
+        var deepPct: Double?
         var scoreFormatted: String?
         var createdAt: String?
         var updatedAt: String?
@@ -1177,9 +1021,18 @@ struct MergedSessionItem: Identifiable {
     let doubles: Bool
     let sourceLabel: String
     let totalShots: Int
-    let bestStreak: Int
+    let longestRally: Int
     let ralliesCount: Int
-    let inPct: Double?
+    let avgSpeedMph: Double?
+    let maxSpeedMph: Double?
+    let serveSpeedAvg: Double?
+    let serveSpeedMax: Double?
+    let fhSpeedAvg: Double?
+    let fhSpeedMax: Double?
+    let bhSpeedAvg: Double?
+    let bhSpeedMax: Double?
+    let netClearanceAvgM: Double?
+    let deepPct: Double?
     let scoreFormatted: String?
     let uploadStatus: ClipUploadState
     let remoteStatus: String?
@@ -1187,13 +1040,14 @@ struct MergedSessionItem: Identifiable {
     let remoteRecord: RemoteSessionsResponse.RemoteSession?
 }
 
-/// Aggregate metrics displayed in the 4+1 summary tiles at the top of `HomeView`.
+/// Aggregate SwingVision speed & shot metrics displayed in the summary tiles at the top of `HomeView`.
 struct AggregateSessionStats {
     var totalSessions: Int = 0
     var totalShots: Int = 0
-    var bestInStreak: Int = 0
+    var longestRally: Int = 0
     var totalRallies: Int = 0
-    var inCallRatePct: Double?
+    var topSpeedMph: Double?
+    var avgSpeedMph: Double?
 }
 
 // MARK: - SessionStore
@@ -1311,13 +1165,18 @@ final class SessionStore: ObservableObject {
 
     // MARK: Upload & Retry Actions
 
-    /// Queues or re-queues all clips of a local session for background upload to Modal.
+    /// Queues or re-queues all clips of a local session for background upload to Modal (`biomech = true`).
     @discardableResult
-    func uploadSession(_ session: LocalSessionRecord, forceAll: Bool = false) -> Bool {
-        let src = session.source ?? "ios"
+    func uploadSession(
+        _ session: LocalSessionRecord,
+        forceAll: Bool = false,
+        scorePayload: RallySegmentUploader.ScorePayload? = nil,
+        pointsPayload: [RallySegmentUploader.PointPayload]? = nil
+    ) -> Bool {
+        let src = session.source ?? "ios_library"
         guard let config = RallySegmentUploader.Config.fromBundle(
             matchId: session.id, sessionType: session.mode, doubles: session.doubles,
-            court: session.court, source: src
+            court: session.court, source: src, biomech: true
         ) else {
             if let sIdx = localSessions.firstIndex(where: { $0.id == session.id }) {
                 for cIdx in localSessions[sIdx].clipFiles.indices where localSessions[sIdx].clipFiles[cIdx].uploadStatus != .uploaded {
@@ -1338,12 +1197,12 @@ final class SessionStore: ObservableObject {
             updateClipStatus(matchId: session.id, rallyIdx: clip.rallyIdx, status: .uploading)
             RallySegmentUploader.shared.enqueue(
                 clip: clip.fileURL, rallyIdx: clip.rallyIdx, startS: clip.startS, config: config,
-                bookmarked: clip.bookmarked, liveCall: clip.liveCall
+                bookmarked: clip.bookmarked, score: scorePayload, points: pointsPayload
             )
             enqueuedAny = true
         }
         if src != "ios_library" {
-            RallySegmentUploader.shared.finalizeSession(config: config, score: nil, points: nil)
+            RallySegmentUploader.shared.finalizeSession(config: config, score: scorePayload, points: pointsPayload)
         }
         return enqueuedAny
     }
@@ -1352,10 +1211,10 @@ final class SessionStore: ObservableObject {
     @discardableResult
     func uploadClip(_ clip: RallyClipRecord, in session: LocalSessionRecord) -> Bool {
         guard clip.fileExistsOnDisk else { return false }
-        let src = clip.source.isEmpty ? (session.source ?? "ios") : clip.source
+        let src = clip.source.isEmpty ? (session.source ?? "ios_library") : clip.source
         guard let config = RallySegmentUploader.Config.fromBundle(
             matchId: session.id, sessionType: session.mode, doubles: session.doubles,
-            court: session.court, source: src
+            court: session.court, source: src, biomech: true
         ) else {
             updateClipStatus(matchId: session.id, rallyIdx: clip.rallyIdx, status: .needsToken)
             return false
@@ -1363,7 +1222,7 @@ final class SessionStore: ObservableObject {
         updateClipStatus(matchId: session.id, rallyIdx: clip.rallyIdx, status: .uploading)
         RallySegmentUploader.shared.enqueue(
             clip: clip.fileURL, rallyIdx: clip.rallyIdx, startS: clip.startS, config: config,
-            bookmarked: clip.bookmarked, liveCall: clip.liveCall
+            bookmarked: clip.bookmarked
         )
         return true
     }
@@ -1376,9 +1235,9 @@ final class SessionStore: ObservableObject {
         }
     }
 
-    /// Imports a video picked from the iPhone Camera Roll into `Application Support/Rallies/`, saves a
-    /// `LocalSessionRecord`, and queues it for upload to Modal (`source = "ios_library"` for full multi-rally
-    /// segmentation or `"ios"` for a single rally clip).
+    /// Imports a recorded session `.mov` or a video picked from the iPhone Camera Roll into `Application Support/Rallies/`,
+    /// saves a `LocalSessionRecord`, and queues it for upload to Modal (`source = "ios_library"` and `biomech = true`
+    /// so Modal's `segment_match` offline pipeline segments rallies and computes speeds, shots, depth zones, and biomechanics).
     func importAndUploadLibraryVideo(
         importedURL: URL,
         durationS: Double,
@@ -1386,15 +1245,26 @@ final class SessionStore: ObservableObject {
         doubles: Bool,
         calibration: CourtCalibration?,
         imageSize: CGSize,
-        autoSegment: Bool
+        autoSegment: Bool = true,
+        matchId: UUID = UUID(),
+        startedAt: Date? = nil,
+        bookmarks: [Double] = [],
+        scoreFormatted: String? = nil,
+        scorePayload: RallySegmentUploader.ScorePayload? = nil,
+        pointsPayload: [RallySegmentUploader.PointPayload]? = nil
     ) -> LocalSessionRecord {
-        let matchId = UUID()
         let ext = importedURL.pathExtension.isEmpty ? "mov" : importedURL.pathExtension.lowercased()
-        let fileName = "library_\(matchId.uuidString.lowercased())_0.\(ext)"
-        let destURL = CameraCaptureManager.clipsDirectory.appendingPathComponent(fileName)
-        try? FileManager.default.removeItem(at: destURL)
-        if (try? FileManager.default.moveItem(at: importedURL, to: destURL)) == nil {
-            try? FileManager.default.copyItem(at: importedURL, to: destURL)
+        let alreadyInClipsDir = importedURL.deletingLastPathComponent().standardizedFileURL == CameraCaptureManager.clipsDirectory.standardizedFileURL
+        let fileName: String
+        if alreadyInClipsDir {
+            fileName = importedURL.lastPathComponent
+        } else {
+            fileName = "library_\(matchId.uuidString.lowercased())_0.\(ext)"
+            let destURL = CameraCaptureManager.clipsDirectory.appendingPathComponent(fileName)
+            try? FileManager.default.removeItem(at: destURL)
+            if (try? FileManager.default.moveItem(at: importedURL, to: destURL)) == nil {
+                try? FileManager.default.copyItem(at: importedURL, to: destURL)
+            }
         }
         let source = autoSegment ? "ios_library" : "ios"
         let courtJSON = calibration.map {
@@ -1409,31 +1279,29 @@ final class SessionStore: ObservableObject {
             durationS: max(0, durationS),
             shotCount: 0,
             inStreak: 0,
-            bookmarked: false,
-            liveCall: nil,
+            bookmarked: !bookmarks.isEmpty,
             source: source,
             uploadStatus: initialStatus
         )
-        let now = Date()
+        let start = startedAt ?? Date()
         let session = LocalSessionRecord(
             id: matchId,
-            startedAt: now,
-            endedAt: now.addingTimeInterval(max(0, durationS)),
+            startedAt: start,
+            endedAt: start.addingTimeInterval(max(0, durationS)),
             mode: mode,
             doubles: doubles,
             totalShots: 0,
             bestStreak: 0,
             ralliesCount: 1,
-            inCalls: 0,
-            outCalls: 0,
-            scoreFormatted: nil,
+            bookmarkedTimestamps: bookmarks.isEmpty ? nil : bookmarks,
+            scoreFormatted: scoreFormatted,
             clipFiles: [clip],
             uploadStatus: initialStatus,
             court: courtJSON,
             source: source
         )
         upsertLocalSession(session)
-        _ = uploadSession(session, forceAll: true)
+        _ = uploadSession(session, forceAll: true, scorePayload: scorePayload, pointsPayload: pointsPayload)
         return session
     }
 
@@ -1474,8 +1342,9 @@ final class SessionStore: ObservableObject {
                 localSessions[idx].totalShots = shots
                 changed = true
             }
-            if let streak = r.bestInStreak, streak > localSessions[idx].bestStreak {
-                localSessions[idx].bestStreak = streak
+            let longest = max(r.longestRally ?? 0, r.bestInStreak ?? 0)
+            if longest > localSessions[idx].bestStreak {
+                localSessions[idx].bestStreak = longest
                 changed = true
             }
             let rCount = r.totalRallies ?? r.ralliesDone ?? 0
@@ -1520,13 +1389,12 @@ final class SessionStore: ObservableObject {
             seenIds.insert(id)
             let remote = remoteById[id]
             let shots = max(local.totalShots, remote?.totalShots ?? 0)
-            let streak = max(local.bestStreak, remote?.bestInStreak ?? 0)
+            let longest = max(local.bestStreak, remote?.longestRally ?? 0, remote?.bestInStreak ?? 0)
             let rallies = max(local.ralliesCount, local.clipFiles.count, remote?.totalRallies ?? remote?.ralliesDone ?? 0)
-            let remoteValidInPct = remote.flatMap { ($0.inPct ?? 0) > 0 || ($0.outCount ?? 0) > 0 ? $0.inPct : nil }
-            let inPct = remoteValidInPct ?? local.inCallPct
             let score = local.scoreFormatted ?? remote?.scoreFormatted
             let status: ClipUploadState = (remote?.status == "ready" && (remote?.totalRallies ?? remote?.ralliesDone ?? 0) > 0 && local.uploadStatus != .uploading && local.uploadStatus != .failed) ? .uploaded : local.uploadStatus
-            let srcLabel = local.source == "ios_library" ? "CAMERA ROLL" : "ON-DEVICE"
+            let isCameraRoll = local.clipFiles.first?.fileName.hasPrefix("library_") == true
+            let srcLabel = isCameraRoll ? "CAMERA ROLL" : "ON-DEVICE"
             let defaultTitle = local.mode == .match ? "Match Session" : "Rally Session"
             items.append(MergedSessionItem(
                 id: id,
@@ -1537,9 +1405,18 @@ final class SessionStore: ObservableObject {
                 doubles: local.doubles,
                 sourceLabel: remote != nil ? "\(srcLabel) · CLOUD" : srcLabel,
                 totalShots: shots,
-                bestStreak: streak,
+                longestRally: longest,
                 ralliesCount: rallies,
-                inPct: inPct,
+                avgSpeedMph: remote?.avgSpeedMph,
+                maxSpeedMph: remote?.maxSpeedMph,
+                serveSpeedAvg: remote?.serveSpeedAvg,
+                serveSpeedMax: remote?.serveSpeedMax,
+                fhSpeedAvg: remote?.fhSpeedAvg,
+                fhSpeedMax: remote?.fhSpeedMax,
+                bhSpeedAvg: remote?.bhSpeedAvg,
+                bhSpeedMax: remote?.bhSpeedMax,
+                netClearanceAvgM: remote?.netClearanceAvgM,
+                deepPct: remote?.deepPct,
                 scoreFormatted: score,
                 uploadStatus: status,
                 remoteStatus: remote?.status,
@@ -1558,7 +1435,7 @@ final class SessionStore: ObservableObject {
             let mode: SessionMode = remote.sessionType == "match" ? .match : .rally
             let defaultTitle = mode == .match ? "Match Session" : "Rally Session"
             let dateStr = remote.playedOn ?? displayFmt.string(from: parsedDate)
-            let remoteValidInPct = (remote.inPct ?? 0) > 0 || (remote.outCount ?? 0) > 0 ? remote.inPct : nil
+            let longest = max(remote.longestRally ?? 0, remote.bestInStreak ?? 0)
             items.append(MergedSessionItem(
                 id: id,
                 title: remote.title ?? defaultTitle,
@@ -1568,9 +1445,18 @@ final class SessionStore: ObservableObject {
                 doubles: remote.doubles ?? false,
                 sourceLabel: (remote.source ?? "web").uppercased(),
                 totalShots: remote.totalShots ?? 0,
-                bestStreak: remote.bestInStreak ?? 0,
+                longestRally: longest,
                 ralliesCount: remote.totalRallies ?? remote.ralliesDone ?? 0,
-                inPct: remoteValidInPct,
+                avgSpeedMph: remote.avgSpeedMph,
+                maxSpeedMph: remote.maxSpeedMph,
+                serveSpeedAvg: remote.serveSpeedAvg,
+                serveSpeedMax: remote.serveSpeedMax,
+                fhSpeedAvg: remote.fhSpeedAvg,
+                fhSpeedMax: remote.fhSpeedMax,
+                bhSpeedAvg: remote.bhSpeedAvg,
+                bhSpeedMax: remote.bhSpeedMax,
+                netClearanceAvgM: remote.netClearanceAvgM,
+                deepPct: remote.deepPct,
                 scoreFormatted: remote.scoreFormatted,
                 uploadStatus: .uploaded,
                 remoteStatus: remote.status,
@@ -1586,29 +1472,27 @@ final class SessionStore: ObservableObject {
         let merged = mergedSessions
         let totalSessions = merged.count
         let totalShots = merged.reduce(0) { $0 + $1.totalShots }
-        let bestStreak = max(merged.map(\.bestStreak).max() ?? 0, remoteSummary?.bestInStreak ?? 0)
+        let longestRally = max(
+            merged.map(\.longestRally).max() ?? 0,
+            remoteSummary?.longestRally ?? 0,
+            remoteSummary?.bestInStreak ?? 0
+        )
         let totalRallies = merged.reduce(0) { $0 + $1.ralliesCount }
-        let validInPcts = merged.compactMap { item -> Double? in
-            guard let pct = item.inPct, pct > 0 || (item.localRecord.map { $0.inCalls + $0.outCalls > 0 } ?? false) else {
-                return nil
-            }
-            return pct
-        }
-        let inRate: Double?
-        if !validInPcts.isEmpty {
-            let avg = validInPcts.reduce(0, +) / Double(validInPcts.count)
-            inRate = (avg * 10).rounded() / 10
-        } else if let remoteRate = remoteSummary?.inCallRate, remoteRate > 0 {
-            inRate = remoteRate
-        } else {
-            inRate = nil
-        }
+        let maxSpeeds = merged.compactMap(\.maxSpeedMph).filter { $0 > 0 }
+        let topSpeed = max(maxSpeeds.max() ?? 0, remoteSummary?.maxSpeedMph ?? 0)
+        let avgSpeeds = merged.compactMap(\.avgSpeedMph).filter { $0 > 0 }
+        let avgSpeed: Double? = {
+            if let s = remoteSummary?.avgSpeedMph, s > 0 { return s }
+            guard !avgSpeeds.isEmpty else { return nil }
+            return (avgSpeeds.reduce(0, +) / Double(avgSpeeds.count) * 10).rounded() / 10
+        }()
         return AggregateSessionStats(
             totalSessions: totalSessions,
             totalShots: totalShots,
-            bestInStreak: bestStreak,
+            longestRally: longestRally,
             totalRallies: totalRallies,
-            inCallRatePct: inRate
+            topSpeedMph: topSpeed > 0 ? topSpeed : nil,
+            avgSpeedMph: avgSpeed
         )
     }
 
@@ -1737,7 +1621,7 @@ struct HomeView: View {
                     Text("TennisVision")
                         .font(.title2.bold())
                 }
-                Text("Live On-Court Line Caller · Rally Streak Counter · Cloud Studio")
+                Text("Offline Court Recorder · Ball Speed & Shot Analytics · Cloud Studio")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -1848,8 +1732,8 @@ struct HomeView: View {
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
-                if let inPct = stats.inCallRatePct {
-                    Text(String(format: "Line Calls: %.1f%% IN", inPct))
+                if let avgSpeed = stats.avgSpeedMph, avgSpeed > 0 {
+                    Text(String(format: "Avg Ball Speed: %.0f mph", avgSpeed))
                         .font(.caption.monospacedDigit().bold())
                         .padding(.horizontal, 10)
                         .padding(.vertical, 4)
@@ -1865,8 +1749,12 @@ struct HomeView: View {
             ], spacing: 12) {
                 StatTile(title: "Sessions", value: "\(stats.totalSessions)", icon: "calendar", tint: .cyan)
                 StatTile(title: "Total Shots", value: "\(stats.totalShots)", icon: "bolt.fill", tint: .yellow)
-                StatTile(title: "Best In-Streak", value: "\(stats.bestInStreak)", icon: "flame.fill", tint: .orange)
-                StatTile(title: "Rallies Recorded", value: "\(stats.totalRallies)", icon: "film.stack", tint: .green)
+                StatTile(title: "Longest Rally", value: "\(stats.longestRally)", icon: "flame.fill", tint: .orange)
+                if let topSpeed = stats.topSpeedMph, topSpeed > 0 {
+                    StatTile(title: "Top Speed", value: String(format: "%.0f mph", topSpeed), icon: "speedometer", tint: .green)
+                } else {
+                    StatTile(title: "Rallies", value: "\(stats.totalRallies)", icon: "film.stack", tint: .green)
+                }
             }
         }
     }
@@ -2024,7 +1912,7 @@ struct HomeView: View {
                         .foregroundStyle(.secondary)
                     Text(modeFilter == .all ? "No sessions yet" : "No \(modeFilter.rawValue.lowercased()) sessions yet")
                         .font(.headline)
-                    Text("Tap \"Start Court Session\" to record live rallies with on-device line calls, or tap \"Upload Video / Rally from Photos\" to analyze an existing video.")
+                    Text("Tap \"Start Court Session\" to record a 1080p60 court video, or tap \"Upload Video / Rally from Photos\" to analyze ball speed, rallies, and biomechanics in the cloud.")
                         .font(.caption)
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
@@ -2196,11 +2084,15 @@ private struct SessionRowCard: View {
 
                 HStack(spacing: 16) {
                     Label("\(item.totalShots) shots", systemImage: "bolt.fill")
-                    Label("Best streak \(item.bestStreak)", systemImage: "flame.fill")
+                    Label("Longest rally \(item.longestRally)", systemImage: "flame.fill")
                     Label("\(item.ralliesCount) rallies", systemImage: "film.stack")
-                    if let inPct = item.inPct {
-                        Text(String(format: "%.0f%% IN", inPct))
+                    if let topSpeed = item.maxSpeedMph ?? item.avgSpeedMph, topSpeed > 0 {
+                        Text(String(format: "%.0f mph max", topSpeed))
                             .foregroundStyle(.green)
+                    }
+                    if let deep = item.deepPct {
+                        Text(String(format: "%.0f%% deep", deep))
+                            .foregroundStyle(.cyan)
                     }
                     if let score = item.scoreFormatted, !score.isEmpty {
                         Text("Score: \(score)")
@@ -2385,7 +2277,27 @@ struct VideoLibraryUploadSheet: View {
     }
 }
 
-// MARK: - SessionDetailSheet (Replay, Save Clip to Photos, ShareLink, Call & Shot Breakdown, Re-upload)
+// MARK: - SessionDetailSheet (Replay, Save Clip to Photos, ShareLink, Ball Speed & Shot Breakdown, Re-upload)
+
+private struct SpeedMetricRow: View {
+    let label: String
+    let value: String
+    let tint: Color
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(label)
+                .font(.caption2.weight(.semibold))
+                .foregroundStyle(.secondary)
+            Text(value)
+                .font(.subheadline.monospacedDigit().bold())
+                .foregroundStyle(value == "Pending" ? Color.secondary : tint)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+        .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
 
 struct SessionDetailSheet: View {
     let item: MergedSessionItem
@@ -2406,32 +2318,17 @@ struct SessionDetailSheet: View {
         return store.localSessions.first { $0.id == id } ?? item.localRecord
     }
 
-    private var inCallsCount: Int {
-        if let local = currentLocal, local.inCalls + local.outCalls > 0 {
-            return local.inCalls
+    private func formatSpeedPair(avg: Double?, max: Double?) -> String {
+        switch (avg, max) {
+        case let (a?, m?) where a > 0 && m > 0:
+            return String(format: "%.0f / %.0f mph", a, m)
+        case let (a?, _) where a > 0:
+            return String(format: "%.0f mph avg", a)
+        case let (_, m?) where m > 0:
+            return String(format: "%.0f mph max", m)
+        default:
+            return "Pending"
         }
-        if let remote = item.remoteRecord {
-            let outs = remote.outCount ?? 0
-            let total = max(outs, item.totalShots)
-            return max(0, total - outs)
-        }
-        return 0
-    }
-
-    private var outCallsCount: Int {
-        if let local = currentLocal, local.inCalls + local.outCalls > 0 {
-            return local.outCalls
-        }
-        return item.remoteRecord?.outCount ?? 0
-    }
-
-    private var effectiveInPct: Double {
-        if let pct = currentLocal?.inCallPct ?? item.inPct {
-            return max(0, min(100, pct))
-        }
-        let total = inCallsCount + outCallsCount
-        guard total > 0 else { return 100.0 }
-        return Double(inCallsCount) / Double(total) * 100.0
     }
 
     private func saveClipToPhotos(_ clip: RallyClipRecord) {
@@ -2463,37 +2360,55 @@ struct SessionDetailSheet: View {
     var body: some View {
         NavigationStack {
             List {
-                Section("Call & Shot Breakdown") {
-                    VStack(alignment: .leading, spacing: 10) {
+                Section("Ball Speed & Shot Breakdown") {
+                    VStack(alignment: .leading, spacing: 12) {
                         HStack {
-                            Label(String(format: "%.1f%% IN", effectiveInPct), systemImage: "checkmark.circle.fill")
-                                .font(.headline.monospacedDigit().bold())
-                                .foregroundStyle(.green)
+                            if let maxSpd = item.maxSpeedMph ?? item.avgSpeedMph, maxSpd > 0 {
+                                Label(String(format: "Top Speed: %.0f mph", maxSpd), systemImage: "speedometer")
+                                    .font(.headline.monospacedDigit().bold())
+                                    .foregroundStyle(.green)
+                            } else {
+                                Label("Cloud AI Speed & Shot Breakdown", systemImage: "speedometer")
+                                    .font(.headline.bold())
+                                    .foregroundStyle(.cyan)
+                            }
                             Spacer()
-                            Text("\(inCallsCount) In-Calls · \(outCallsCount) Out-Calls")
-                                .font(.caption.monospacedDigit().bold())
-                                .foregroundStyle(.secondary)
-                        }
-
-                        GeometryReader { geo in
-                            let w = max(1, geo.size.width)
-                            let inW = w * CGFloat(effectiveInPct / 100.0)
-                            HStack(spacing: 2) {
-                                RoundedRectangle(cornerRadius: 5)
-                                    .fill(Color.green)
-                                    .frame(width: max(6, inW))
-                                if effectiveInPct < 99.9 {
-                                    RoundedRectangle(cornerRadius: 5)
-                                        .fill(Color.red)
-                                        .frame(maxWidth: .infinity)
-                                }
+                            if let avgSpd = item.avgSpeedMph, avgSpd > 0 {
+                                Text(String(format: "Avg %.0f mph", avgSpd))
+                                    .font(.caption.monospacedDigit().bold())
+                                    .foregroundStyle(.secondary)
                             }
                         }
-                        .frame(height: 10)
+
+                        LazyVGrid(columns: [
+                            GridItem(.flexible(), spacing: 10),
+                            GridItem(.flexible(), spacing: 10),
+                        ], spacing: 10) {
+                            SpeedMetricRow(
+                                label: "Forehand (Avg / Max)",
+                                value: formatSpeedPair(avg: item.fhSpeedAvg, max: item.fhSpeedMax),
+                                tint: .green
+                            )
+                            SpeedMetricRow(
+                                label: "Backhand (Avg / Max)",
+                                value: formatSpeedPair(avg: item.bhSpeedAvg, max: item.bhSpeedMax),
+                                tint: .cyan
+                            )
+                            SpeedMetricRow(
+                                label: "Serve (Avg / Max)",
+                                value: formatSpeedPair(avg: item.serveSpeedAvg, max: item.serveSpeedMax),
+                                tint: .yellow
+                            )
+                            SpeedMetricRow(
+                                label: "Deep Zone %",
+                                value: item.deepPct.map { String(format: "%.0f%%", $0) } ?? "Pending",
+                                tint: .orange
+                            )
+                        }
 
                         HStack(spacing: 16) {
                             Label("\(item.totalShots) Total Shots", systemImage: "bolt.fill")
-                            Label("Best Streak: \(item.bestStreak)", systemImage: "flame.fill")
+                            Label("Longest Rally: \(item.longestRally) shots", systemImage: "flame.fill")
                             Label("\(item.ralliesCount) Rallies", systemImage: "film.stack")
                         }
                         .font(.caption.monospacedDigit())
@@ -2504,7 +2419,7 @@ struct SessionDetailSheet: View {
                     if let local = currentLocal, !local.clipFiles.isEmpty {
                         let bookmarkedCount = local.clipFiles.filter(\.bookmarked).count
                         Toggle(isOn: $bookmarkedOnly) {
-                            Label("Bookmarked Rallies Only (\(bookmarkedCount))", systemImage: "star.fill")
+                            Label("Bookmarked Clips Only (\(bookmarkedCount))", systemImage: "star.fill")
                                 .foregroundStyle(bookmarkedOnly ? Color.yellow : Color.primary)
                         }
                         .tint(.yellow)
@@ -2572,24 +2487,17 @@ struct SessionDetailSheet: View {
                             ForEach(visibleClips) { clip in
                                 VStack(alignment: .leading, spacing: 8) {
                                     HStack(spacing: 8) {
-                                        Text(clip.source == "ios_library" ? "Full Video" : "Rally #\(clip.rallyIdx + 1)")
+                                        Text(clip.source == "ios_library" ? "Full Session Video" : "Rally #\(clip.rallyIdx + 1)")
                                             .font(.subheadline.bold())
                                         if clip.bookmarked {
                                             Label("Bookmarked", systemImage: "star.fill")
                                                 .font(.caption2.bold())
                                                 .foregroundStyle(.yellow)
                                         }
-                                        if let call = clip.liveCall {
-                                            Text(call.uppercased())
-                                                .font(.caption2.bold())
-                                                .padding(.horizontal, 6)
-                                                .padding(.vertical, 2)
-                                                .background(call == "out" ? Color.red.opacity(0.3) : Color.green.opacity(0.3),
-                                                            in: Capsule())
-                                                .foregroundStyle(call == "out" ? Color.red : Color.green)
-                                        }
                                         Spacer()
-                                        Text("\(clip.shotCount) shots · streak \(clip.inStreak) · \(clip.uploadStatus.label)")
+                                        Text(clip.durationS > 0
+                                             ? String(format: "%.0fs · %@", clip.durationS, clip.uploadStatus.label)
+                                             : "\(clip.shotCount) shots · \(clip.uploadStatus.label)")
                                             .font(.caption.monospacedDigit())
                                             .foregroundStyle(.secondary)
                                     }

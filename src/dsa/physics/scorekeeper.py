@@ -35,7 +35,7 @@ def _deep_pct(zones: list[str]) -> float | None:
 
 
 def summarize_rally_streak(shots: list[dict], max_gap_s: float = MAX_RALLY_GAP_S) -> dict:
-    """One rally's shots (dicts with t_hit_s, call, depth_zone, in hit order) -> its streak metrics."""
+    """One rally's shots (dicts with t_hit_s, call, depth_zone, in hit order) -> its streak and speed metrics."""
     shots = sorted(shots, key=lambda s: s.get("t_hit_s") or 0.0)
     calls = [s.get("call") or "unknown" for s in shots]
     in_streak = 0
@@ -48,28 +48,58 @@ def summarize_rally_streak(shots: list[dict], max_gap_s: float = MAX_RALLY_GAP_S
                     for k, c in enumerate(calls))
     t = [s["t_hit_s"] for s in shots if s.get("t_hit_s") is not None]
     gaps = [b - a for a, b in zip(t, t[1:])]
+    speeds = [float(s["speed_mph"]) for s in shots if s.get("speed_mph") is not None]
     return {"shot_count": len(shots), "in_streak": in_streak, "outs": calls.count("out"),
             "played_on_after_out": played_on, "avg_tempo_s": round(sum(gaps) / len(gaps), 3) if gaps else None,
-            "deep_pct": _deep_pct([s.get("depth_zone") or "unknown" for s in shots])}
+            "deep_pct": _deep_pct([s.get("depth_zone") or "unknown" for s in shots]),
+            "avg_speed_mph": round(sum(speeds) / len(speeds), 1) if speeds else None,
+            "max_speed_mph": round(max(speeds), 1) if speeds else None}
 
 
 def summarize_session(rallies: list[list[dict]], hide_one_shot_feeds: bool = True) -> dict:
-    """Every rally's shots -> the session's headline numbers (rally mode)."""
+    """Every rally's shots -> the session's headline SwingVision speed, clearance, depth, and rally metrics."""
     per = [summarize_rally_streak(r) for r in rallies]
     counted = [p for p in per if p["shot_count"] >= 2] if hide_one_shot_feeds else per
     shots = [s for r in rallies for s in r]
     judged = [s.get("call") for s in shots if s.get("call") in ("in", "out", "close")]
 
-    def speed(stroke):
-        v = [s["speed_mph"] for s in shots if s.get("stroke") == stroke and s.get("speed_mph") is not None]
+    def _speeds(stroke: str | None = None) -> list[float]:
+        return [float(s["speed_mph"]) for s in shots
+                if (stroke is None or s.get("stroke") == stroke) and s.get("speed_mph") is not None]
+
+    def speed_avg(stroke: str | None = None) -> float | None:
+        v = _speeds(stroke)
         return round(sum(v) / len(v), 1) if v else None
 
-    return {"rallies": len(counted), "longest_rally": max((p["shot_count"] for p in per), default=0),
+    def speed_max(stroke: str | None = None) -> float | None:
+        v = _speeds(stroke)
+        return round(max(v), 1) if v else None
+
+    clearances = [float(s["net_clearance_m"]) for s in shots if s.get("net_clearance_m") is not None]
+    shot_counts = {
+        "fh": sum(1 for s in shots if s.get("stroke") == "fh"),
+        "bh": sum(1 for s in shots if s.get("stroke") == "bh"),
+        "serve": sum(1 for s in shots if s.get("stroke") == "serve"),
+        "feed": sum(1 for s in shots if s.get("stroke") == "feed"),
+    }
+
+    return {"total_shots": len(shots),
+            "rallies": len(counted),
+            "longest_rally": max((p["shot_count"] for p in per), default=0),
             "avg_rally_length": round(sum(p["shot_count"] for p in counted) / len(counted), 1) if counted else None,
             "rallies_10_plus": sum(p["shot_count"] >= 10 for p in per),
             "deep_pct": _deep_pct([s.get("depth_zone") or "unknown" for s in shots]),
             "in_pct": round(100 * sum(c != "out" for c in judged) / len(judged), 1) if judged else None,
-            "fh_speed_avg": speed("fh"), "bh_speed_avg": speed("bh")}
+            "fh_speed_avg": speed_avg("fh"),
+            "fh_speed_max": speed_max("fh"),
+            "bh_speed_avg": speed_avg("bh"),
+            "bh_speed_max": speed_max("bh"),
+            "serve_speed_avg": speed_avg("serve"),
+            "serve_speed_max": speed_max("serve"),
+            "avg_speed_mph": speed_avg(),
+            "max_speed_mph": speed_max(),
+            "net_clearance_avg_m": round(sum(clearances) / len(clearances), 3) if clearances else None,
+            "shot_counts": shot_counts}
 
 
 # --- match mode ---------------------------------------------------------------------------------------------
