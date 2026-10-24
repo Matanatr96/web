@@ -210,11 +210,21 @@ export default function ExploreTabScreen() {
 
   const pinned = useMemo(
     () =>
-      visible.filter(
-        (v): v is { r: Restaurant & { lat: number; lng: number }; dist: number | null } =>
-          v.r.lat !== null && v.r.lng !== null,
-      ),
+      visible
+        .map((v) => ({
+          r: v.r,
+          dist: v.dist,
+          lat: v.r.lat !== null && v.r.lat !== undefined ? Number(v.r.lat) : NaN,
+          lng: v.r.lng !== null && v.r.lng !== undefined ? Number(v.r.lng) : NaN,
+        }))
+        .filter((v) => Number.isFinite(v.lat) && Number.isFinite(v.lng)),
     [visible],
+  );
+
+  const [selectedPinId, setSelectedPinId] = useState<number | null>(null);
+  const selectedPin = useMemo(
+    () => (selectedPinId !== null ? pinned.find((p) => p.r.id === selectedPinId) ?? null : null),
+    [pinned, selectedPinId],
   );
 
   const hasActiveFilters = Boolean(
@@ -238,6 +248,7 @@ export default function ExploreTabScreen() {
 
   // ── Map camera ──────────────────────────────────────────────────────────
   const mapRef = useRef<MapView | null>(null);
+  const [mapReady, setMapReady] = useState(false);
   const filterKey = `${query}|${status}|${city}|${nearMe ? `${nearMe.lat},${nearMe.lng},${radiusMi}` : ""}|${category}|${cuisine}|${minScore}`;
   const initialRegion = useMemo<Region>(() => {
     const sf = restaurants.filter(
@@ -245,76 +256,84 @@ export default function ExploreTabScreen() {
     );
     const first = sf[0] ?? restaurants.find((r) => r.lat !== null && r.lng !== null);
     return first && first.lat !== null && first.lng !== null
-      ? { latitude: first.lat, longitude: first.lng, latitudeDelta: 0.12, longitudeDelta: 0.12 }
+      ? {
+          latitude: Number(first.lat),
+          longitude: Number(first.lng),
+          latitudeDelta: 0.12,
+          longitudeDelta: 0.12,
+        }
       : SF_REGION;
     // Only computed for the first render; FitBounds effect handles later changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const didInitialFit = useRef(false);
-  useEffect(() => {
-    if (!mapRef.current || pinned.length === 0) return;
-    // First fit: prefer SF pins (mirrors web FitBounds); later fits: refit to filtered pins.
-    let pts = pinned;
-    if (!didInitialFit.current && !hasActiveFilters) {
-      const sf = pinned.filter((p) => p.r.city === "San Francisco");
-      if (sf.length > 0) pts = sf;
-    }
-    didInitialFit.current = true;
-    const coords = pts.map((p) => ({ latitude: p.r.lat, longitude: p.r.lng }));
-    if (nearMe) coords.push({ latitude: nearMe.lat, longitude: nearMe.lng });
-    const t = setTimeout(() => {
-      mapRef.current?.fitToCoordinates(coords, {
-        edgePadding: { top: 80, right: 50, bottom: 360, left: 50 },
+  const fitMapToPins = useCallback(
+    (preferSf = false) => {
+      if (!mapRef.current || !mapReady || pinned.length === 0) return;
+      let pts = pinned;
+      if (preferSf && !hasActiveFilters) {
+        const sf = pinned.filter((p) => p.r.city === "San Francisco");
+        if (sf.length > 0) pts = sf;
+      }
+      const coords = pts.map((p) => ({ latitude: p.lat, longitude: p.lng }));
+      if (nearMe) coords.push({ latitude: nearMe.lat, longitude: nearMe.lng });
+      if (coords.length === 1) {
+        mapRef.current.animateToRegion(
+          {
+            latitude: coords[0].latitude,
+            longitude: coords[0].longitude,
+            latitudeDelta: 0.025,
+            longitudeDelta: 0.025,
+          },
+          350,
+        );
+        return;
+      }
+      mapRef.current.fitToCoordinates(coords, {
+        edgePadding: { top: 72, right: 48, bottom: 260, left: 48 },
         animated: true,
       });
-    }, 250);
-    return () => clearTimeout(t);
-    // Refit only when the filter set changes or the catalog first arrives.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filterKey, restaurants.length > 0]);
+    },
+    [mapReady, pinned, hasActiveFilters, nearMe],
+  );
 
-  // ── Bottom sheet (3 detents) ────────────────────────────────────────────
+  useEffect(() => {
+    if (!mapReady || pinned.length === 0) return;
+    const preferSf = !didInitialFit.current;
+    didInitialFit.current = true;
+    const t = setTimeout(() => {
+      fitMapToPins(preferSf);
+    }, 200);
+    return () => clearTimeout(t);
+    // Refit when map finishes mounting, filter set changes, or catalog arrives.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mapReady, filterKey, pinned.length > 0]);
+
+  // ── Bottom sheet (3 detents anchored at bottom: 0 so Map hits work) ─────
   const [containerH, setContainerH] = useState(0);
   const [detent, setDetent] = useState<Detent>("medium");
-  const detentY = useMemo(
+  const detentHeights = useMemo(
     () => ({
-      large: LARGE_TOP,
-      medium: Math.round(containerH * 0.48),
-      peek: Math.max(LARGE_TOP, containerH - PEEK_HEIGHT),
+      peek: PEEK_HEIGHT,
+      medium: Math.max(PEEK_HEIGHT + 80, Math.round(containerH * 0.5)),
+      large: Math.max(PEEK_HEIGHT + 160, containerH - LARGE_TOP),
     }),
     [containerH],
   );
-  const detentYRef = useRef(detentY);
-  detentYRef.current = detentY;
-  const translateY = useRef(new Animated.Value(0)).current;
-  const currentY = useRef(0);
-  const dragStartY = useRef(0);
+  const detentHeightsRef = useRef(detentHeights);
+  detentHeightsRef.current = detentHeights;
+  const detentRef = useRef<Detent>(detent);
+  detentRef.current = detent;
+  const dragOffsetY = useRef(new Animated.Value(0)).current;
 
   const snapTo = useCallback(
     (d: Detent) => {
-      const y = detentYRef.current[d];
-      currentY.current = y;
+      dragOffsetY.setValue(0);
       setDetent(d);
-      Animated.spring(translateY, {
-        toValue: y,
-        damping: 24,
-        stiffness: 240,
-        mass: 0.8,
-        useNativeDriver: true,
-      }).start();
     },
-    [translateY],
+    [dragOffsetY],
   );
-
-  useEffect(() => {
-    if (containerH <= 0) return;
-    const y = detentY[detent];
-    currentY.current = y;
-    translateY.setValue(y);
-    // Only re-seat on container resize.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [containerH]);
 
   const panResponder = useMemo(
     () =>
@@ -322,28 +341,23 @@ export default function ExploreTabScreen() {
         onStartShouldSetPanResponder: () => false,
         onMoveShouldSetPanResponder: (_e: GestureResponderEvent, g: PanState) =>
           Math.abs(g.dy) > 6 && Math.abs(g.dy) > Math.abs(g.dx),
-        onPanResponderGrant: () => {
-          dragStartY.current = currentY.current;
-        },
         onPanResponderMove: (_e: GestureResponderEvent, g: PanState) => {
-          const { large, peek } = detentYRef.current;
-          const y = Math.min(peek, Math.max(large, dragStartY.current + g.dy));
-          currentY.current = y;
-          translateY.setValue(y);
+          dragOffsetY.setValue(g.dy);
         },
         onPanResponderRelease: (_e: GestureResponderEvent, g: PanState) => {
-          const d = detentYRef.current;
-          const projected = currentY.current + g.vy * 140;
-          const candidates: Detent[] = ["large", "medium", "peek"];
+          const hMap = detentHeightsRef.current;
+          const curH = hMap[detentRef.current];
+          const projectedH = curH - (g.dy + g.vy * 120);
+          const candidates: Detent[] = ["peek", "medium", "large"];
           const nearest = candidates.reduce((best, c) =>
-            Math.abs(d[c] - projected) < Math.abs(d[best] - projected) ? c : best,
+            Math.abs(hMap[c] - projectedH) < Math.abs(hMap[best] - projectedH) ? c : best,
           );
           tapHaptic();
           snapTo(nearest);
         },
         onPanResponderTerminationRequest: () => true,
       }),
-    [snapTo, translateY],
+    [dragOffsetY, snapTo],
   );
 
   const onContainerLayout = useCallback((e: LayoutChangeEvent) => {
@@ -515,51 +529,137 @@ export default function ExploreTabScreen() {
     [isAdmin, openRestaurantDetailSheet, showRowActions],
   );
 
+  const sheetHeight = detentHeights[detent];
+
   return (
     <View style={styles.container} onLayout={onContainerLayout}>
       <MapView
         ref={mapRef}
         style={StyleSheet.absoluteFillObject}
         initialRegion={initialRegion}
+        onMapReady={() => setMapReady(true)}
+        onPress={() => setSelectedPinId(null)}
         showsUserLocation={nearMe !== null}
+        showsCompass
+        showsScale
+        pitchEnabled
+        rotateEnabled
+        zoomEnabled
+        scrollEnabled
         showsPointsOfInterest={false}
         userInterfaceStyle="dark"
-        mapPadding={{ top: 0, right: 0, bottom: PEEK_HEIGHT, left: 0 }}
+        mapPadding={{ top: 12, right: 12, bottom: Math.min(sheetHeight, 260), left: 12 }}
       >
-        {pinned.map(({ r }) => {
+        {pinned.map(({ r, lat, lng }) => {
           const rated = isRatedRestaurant(r);
           return (
             <Marker
               key={r.id}
-              coordinate={{ latitude: r.lat, longitude: r.lng }}
+              identifier={String(r.id)}
+              coordinate={{ latitude: lat, longitude: lng }}
+              title={`${r.name} · ${rated ? fmt(r.overall, 2) : "Want to Go"}`}
+              description={`${r.cuisines.join(", ") || r.category} · ${r.city}`}
+              pinColor={rated ? ratingHex(r.overall) : WANT_TO_GO_HEX}
               onPress={() => {
+                tapHaptic();
+                setSelectedPinId(r.id);
+              }}
+              onCalloutPress={() => {
                 tapHaptic();
                 openRestaurantDetailSheet(r.id);
               }}
-              tracksViewChanges={false}
               zIndex={rated ? Math.round(r.overall * 10) : 0}
-            >
-              <View
-                style={[
-                  styles.pin,
-                  { backgroundColor: rated ? ratingHex(r.overall) : WANT_TO_GO_HEX },
-                ]}
-              >
-                <Text style={styles.pinText}>{rated ? r.overall.toFixed(1) : "🔖"}</Text>
-              </View>
-            </Marker>
+            />
           );
         })}
       </MapView>
 
+      {/* Floating Map Controls (visible whenever Map is uncovered) */}
+      {detent !== "large" ? (
+        <View style={styles.mapControls} pointerEvents="box-none">
+          <Pressable
+            onPress={() => {
+              tapHaptic();
+              fitMapToPins(false);
+            }}
+            style={styles.mapCtrlBtn}
+            accessibilityLabel="Fit map to visible pins"
+          >
+            <Text style={styles.mapCtrlText}>🎯 Fit ({pinned.length})</Text>
+          </Pressable>
+          <Pressable
+            onPress={() => {
+              tapHaptic();
+              if (nearMe) {
+                setNearMe(null);
+              } else {
+                void enableNearMe();
+              }
+            }}
+            style={cx(styles.mapCtrlBtn, nearMe !== null && styles.mapCtrlBtnActive)}
+            accessibilityLabel="Toggle Near Me"
+          >
+            <Text style={styles.mapCtrlText}>{nearMe ? "📍 Near Me ✓" : "📍 Near Me"}</Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {/* Selected Pin Preview Card */}
+      {selectedPin && detent !== "large" ? (
+        <View style={[styles.pinPreviewWrap, { bottom: sheetHeight + 10 }]} pointerEvents="box-none">
+          <Pressable
+            onPress={() => {
+              tapHaptic();
+              openRestaurantDetailSheet(selectedPin.r.id);
+            }}
+            style={styles.pinPreviewCard}
+          >
+            <View style={styles.flex1}>
+              <Text style={styles.rowTitle} numberOfLines={1}>
+                {selectedPin.r.name}
+              </Text>
+              <Text style={styles.metaText} numberOfLines={1}>
+                {selectedPin.r.city} · {selectedPin.r.cuisines.join(", ") || selectedPin.r.category}
+              </Text>
+            </View>
+            <View
+              style={[
+                styles.scoreBadge,
+                {
+                  backgroundColor: isRatedRestaurant(selectedPin.r)
+                    ? ratingHex(selectedPin.r.overall)
+                    : WANT_TO_GO_HEX,
+                },
+              ]}
+            >
+              <Text style={styles.scoreText}>
+                {isRatedRestaurant(selectedPin.r) ? fmt(selectedPin.r.overall, 2) : "🔖"}
+              </Text>
+            </View>
+            <Pressable
+              hitSlop={10}
+              onPress={() => setSelectedPinId(null)}
+              style={styles.pinPreviewClose}
+            >
+              <Text style={styles.metaText}>✕</Text>
+            </Pressable>
+          </Pressable>
+        </View>
+      ) : null}
+
       {containerH > 0 ? (
         <Animated.View
-          style={[styles.sheet, { height: containerH, transform: [{ translateY }] }]}
+          style={[
+            styles.sheet,
+            { height: sheetHeight, transform: [{ translateY: dragOffsetY }] },
+          ]}
         >
-          {/* Drag zone: grabber + search + segmented toggle */}
+          {/* Drag zone: grabber + search + 3-way segmented toggle */}
           <View {...panResponder.panHandlers} style={styles.sheetHeader}>
             <Pressable
-              onPress={() => snapTo(detent === "large" ? "medium" : "large")}
+              onPress={() =>
+                snapTo(detent === "peek" ? "medium" : detent === "medium" ? "large" : "peek")
+              }
               hitSlop={10}
               style={styles.grabberHit}
             >
@@ -590,19 +690,25 @@ export default function ExploreTabScreen() {
               </Pressable>
             </View>
             <View style={styles.segment}>
-              {(["map", "list"] as const).map((m) => {
-                const active = m === "list" ? detent === "large" : detent !== "large";
+              {(
+                [
+                  { key: "peek", label: "🗺️ Map" },
+                  { key: "medium", label: "Split" },
+                  { key: "large", label: "List" },
+                ] as const
+              ).map((m) => {
+                const active = detent === m.key;
                 return (
                   <Pressable
-                    key={m}
+                    key={m.key}
                     onPress={() => {
                       tapHaptic();
-                      snapTo(m === "list" ? "large" : "medium");
+                      snapTo(m.key);
                     }}
                     style={cx(styles.segmentItem, active && styles.segmentItemActive)}
                   >
                     <Text style={active ? styles.segmentTextActive : styles.segmentText}>
-                      {m === "list" ? "Full List" : "Map + Sheet"}
+                      {m.label}
                     </Text>
                   </Pressable>
                 );
@@ -677,7 +783,7 @@ export default function ExploreTabScreen() {
               keyboardShouldPersistTaps="handled"
               initialNumToRender={14}
               maxToRenderPerBatch={20}
-              contentContainerStyle={{ paddingBottom: detentY[detent] + 32 }}
+              contentContainerStyle={{ paddingBottom: 36 }}
               refreshControl={
                 <RefreshControl
                   refreshing={isSyncing}
@@ -922,22 +1028,63 @@ function PickerOption({
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: "#0c0a09" },
   flex1: { flex: 1 },
-  pin: {
-    minWidth: 30,
-    height: 30,
-    paddingHorizontal: 4,
-    borderRadius: 15,
-    borderWidth: 2,
-    borderColor: "#ffffff",
-    alignItems: "center",
-    justifyContent: "center",
+  mapControls: {
+    position: "absolute",
+    top: 12,
+    right: 12,
+    gap: 8,
+    alignItems: "flex-end",
   },
-  pinText: { color: "#ffffff", fontSize: 11, fontWeight: "800" },
+  mapCtrlBtn: {
+    backgroundColor: "rgba(28, 25, 23, 0.92)",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: "#44403c",
+    shadowColor: "#000",
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    shadowOffset: { width: 0, height: 2 },
+  },
+  mapCtrlBtnActive: {
+    backgroundColor: "rgba(16, 185, 129, 0.22)",
+    borderColor: "#10b981",
+  },
+  mapCtrlText: {
+    color: "#fafaf9",
+    fontSize: 12,
+    fontWeight: "700",
+  },
+  pinPreviewWrap: {
+    position: "absolute",
+    left: 12,
+    right: 12,
+  },
+  pinPreviewCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "rgba(28, 25, 23, 0.96)",
+    borderRadius: 16,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderWidth: 1,
+    borderColor: "#44403c",
+    shadowColor: "#000",
+    shadowOpacity: 0.4,
+    shadowRadius: 12,
+    shadowOffset: { width: 0, height: 4 },
+  },
+  pinPreviewClose: {
+    paddingHorizontal: 6,
+    paddingVertical: 4,
+  },
   sheet: {
     position: "absolute",
     left: 0,
     right: 0,
-    top: 0,
+    bottom: 0,
     backgroundColor: "#1c1917",
     borderTopLeftRadius: 22,
     borderTopRightRadius: 22,
