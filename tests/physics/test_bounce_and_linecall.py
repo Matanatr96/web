@@ -364,3 +364,21 @@ def test_ball_track_hysteresis_recovers_blurred_peaks_along_trajectory():
     assert tr[0, 1] == 0.0
     assert tr[1:, 1].tolist() == [1.0] * 5
     assert np.allclose(tr[1:, 2], [(40 + 12 * i) * 1280 / 512 for i in range(1, 6)], atol=0.6)
+
+
+def test_margin_net_guard_matches_swift_and_clean_anisotropic_height():
+    """Balls that cross the net measure margin to the outer sidelines/baseline rather than clamping y0/y1=0."""
+    m_over, n_over = B.margin([0.0, 0.02], "singles", hitter="near")
+    assert m_over == pytest.approx(-4.115) and np.allclose(abs(n_over), [1.0, 0.0])
+    assert B.call([0.0, 0.02], 0.02, "singles", hitter="near")["call"] == "in"
+    m_net, n_net = B.margin([0.0, -0.5], "singles", hitter="near")
+    assert m_net == pytest.approx(0.5) and np.allclose(n_net, [0.0, -1.0])
+    assert B.call([0.0, -0.5], 0.02, "singles", hitter="near")["call"] == "out"
+
+    # Portrait 1080x1920 fast vertical trajectory: clean(width=1080, height=1920) preserves valid samples
+    ts = np.arange(5) / 60.0
+    us = np.full(5, 540.0)
+    vs = np.array([200.0, 260.0, 320.0, 480.0, 640.0])  # accel jump 100 px native -> 15 px in 288H (47 px in 512W)
+    tr = np.c_[ts, np.ones(5), us, vs, np.ones(5)]
+    cleaned = B.clean(tr, gate_px=30.0, width=1080.0, height=1920.0)
+    assert cleaned[:, 1].tolist() == [1.0] * 5

@@ -208,18 +208,21 @@ def wasb_heatmaps(device: str = "cuda") -> Callable[[np.ndarray], np.ndarray]:
 
 
 def clean(track: np.ndarray, gate_px: float = GATE_PX, still_frames: int = STILL_FRAMES,
-          width: float | None = None) -> np.ndarray:
+          width: float | None = None, height: float | None = None) -> np.ndarray:
     """E12: a copy of the track without blobs that stay put for still_frames detections (within STILL_PX at
     512 x 288: a second ball on the ground, a logo) and without jumps of more than gate_px (at 512 x 288) from
     the constant-velocity prediction of the last two kept samples. After REACQUIRE frames without a kept sample
-    the next detection starts a new track (a new rally, a re-feed). width: the frame's width in pixels (default:
-    the widest detection, which slightly overstates the scale)."""
+    the next detection starts a new track (a new rally, a re-feed). width/height: the frame's dimensions in
+    pixels (default: the widest detection, which slightly overstates the scale)."""
     out = track.copy()
     ok = out[:, 1] > 0
     if not ok.any():
         return out
     W = width or max(out[ok, 2].max(), SMALL_W)
-    p = out[:, 2:4] * (SMALL_W / W)                      # native -> 512 x 288 pixels
+    if height is not None and height > 0:
+        p = np.c_[out[:, 2] * (SMALL_W / W), out[:, 3] * (SMALL_H / float(height))]
+    else:
+        p = out[:, 2:4] * (SMALL_W / W)                  # native -> 512 x 288 pixels
     run = 0
     for i in range(len(out)):                            # still blobs
         if ok[i] and i > 0 and ok[i - 1] and np.linalg.norm(p[i] - p[i - 1]) < STILL_PX:
@@ -491,7 +494,9 @@ def contact_point(track: np.ndarray, i: int, cal: Calibration,
     s = track[:, [0, 2, 3]].copy()
     if frame_at is not None:
         for k in np.r_[pre, post]:
-            s[k, 1:] = refine_roi(frame_at(int(k)), s[k, 1:])
+            frm = frame_at(int(k))
+            if frm is not None:
+                s[k, 1:] = refine_roi(frm, s[k, 1:])
     a, b = s[pre], s[post]
     dof = sum(max(len(x) - 3, 0) for x in (a, b))
     sigma = max(SIGMA_PX_FLOOR, float(np.sqrt((_rss_quad(a) + _rss_quad(b)) / (2 * dof))) if dof else 0.0)
@@ -499,10 +504,31 @@ def contact_point(track: np.ndarray, i: int, cal: Calibration,
         sigma *= 2
     if method == "arc":
         f = arc_fit(cal, a, b)
-        xy = f["xy"]
-        res.update(ok=True, t_star=f["t_star"], xy=xy, uv=project_ground(cal, xy), cov=sigma ** 2 * f["cov_xy"],
-                   sigma_px=sigma, v_pre=f["v_pre"], v_post=f["v_post"])
-        return res
+        j = int(np.argmin(np.abs(track[:, 0] - f["t_star"])))
+        if j != i and abs(track[j, 0] - f["t_star"]) < abs(track[i, 0] - f["t_star"]) - 1e-3:
+            pre2, post2 = _sides(track, j, n=ARC_SIDE)
+            if len(pre2) >= MIN_SIDE and len(post2) >= MIN_SIDE and s[pre2[-1], 0] <= f["t_star"] <= s[post2[0], 0]:
+                if frame_at is not None:
+                    for k in np.setdiff1d(np.r_[pre2, post2], np.r_[pre, post]):
+                        frm = frame_at(int(k))
+                        if frm is not None:
+                            s[k, 1:] = refine_roi(frm, s[k, 1:])
+                f2 = arc_fit(cal, s[pre2], s[post2])
+                if f2["rms_px"] < f["rms_px"]:
+                    f, a, b = f2, s[pre2], s[post2]
+        if f["rms_px"] > ARC_RETRY_PX:
+            a3, b3 = a[-FULL_SIDE:], b[:FULL_SIDE]
+            if len(a3) >= MIN_SIDE and len(b3) >= MIN_SIDE:
+                f3 = arc_fit(cal, a3, b3)
+                if f3["rms_px"] < f["rms_px"]:
+                    f = f3
+        if f["rms_px"] <= 10.0 and np.all(np.isfinite(f["xy"])):
+            xy = f["xy"]
+            res.update(ok=True, t_star=f["t_star"], xy=xy, uv=project_ground(cal, xy), cov=sigma ** 2 * f["cov_xy"],
+                       sigma_px=sigma, v_pre=f["v_pre"], v_post=f["v_post"])
+            return res
+        a, b = a[-FULL_SIDE:], b[:FULL_SIDE]
+        res["method"] = "quadratic"
     ts, uv = subframe(a, b)
     J = jacobian(cal.Hr, uv)
     res.update(ok=True, t_star=ts, uv=uv, xy=to_court(cal.Hr, uv), cov=sigma ** 2 * J @ J.T, sigma_px=sigma)
@@ -762,11 +788,11 @@ def margin(xy, region: str = "singles", hitter: str | None = None,
     """Signed distance (m, positive = out) of a bounce from the region's boundary, as the largest excess over
     its four edges, and the outward normal of that edge."""
     x0, x1, y0, y1 = REGIONS[region]
-    if hitter == "near":
-        y0 = max(y0, 0.0)
-    elif hitter == "far":
-        y1 = min(y1, 0.0)
     X, Y = float(xy[0]), float(xy[1])
+    if hitter == "near" and Y < 0:
+        y0 = max(y0, 0.0)
+    elif hitter == "far" and Y > 0:
+        y1 = min(y1, 0.0)
     ex = [(x0 - X - contact_r, (-1.0, 0.0)), (X - x1 - contact_r, (1.0, 0.0)),
           (y0 - Y - contact_r, (0.0, -1.0)), (Y - y1 - contact_r, (0.0, 1.0))]
     m, n = max(ex, key=lambda e: e[0])

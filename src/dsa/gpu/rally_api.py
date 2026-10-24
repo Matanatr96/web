@@ -220,16 +220,33 @@ def analyse_track(track: np.ndarray, cal, session_type: str = "rally", doubles: 
     quadratic when that fails), called with 2 sigma against the full court ('rally' mode, every shot,
     the first one too) or the serve box (the first shot in 'match' mode), and given a depth zone. Its speed and
     net clearance come from the 3D drag fit (fit_shot, pure drag) on the samples between hit and bounce."""
-    if cal is None:
-        return [], []
     from dsa.physics import ballistics as BL
     from dsa.physics import bounce_and_linecall as BC
     from dsa.physics.homography import plane_homography, to_court
 
-    ev = BC.events(track, cal, catboost)
     ok = np.flatnonzero(track[:, 1] > 0)
     if not len(ok):
-        return [], ev
+        return [], []
+    if cal is None:
+        ev = [{"i": int(k_i), "t": float(track[k_i, 0]), "inferred": False,
+               "kind": "bounce" if (vv := BC._image_v_turn(track, int(k_i))) is not None and vv[0] > 0 > vv[1] else "hit"}
+              for k_i in BC.candidates(track)]
+        hits = [e for e in ev if e["kind"] == "hit"]
+        first_bounce = next((e for e in ev if e["kind"] == "bounce"), None)
+        if not hits or (first_bounce is not None and first_bounce["t"] < hits[0]["t"] - 1e-6):
+            hits = [{"i": int(ok[0]), "t": float(track[ok[0], 0]), "kind": "hit", "inferred": True}] + hits
+        shots = []
+        for k, h in enumerate(hits):
+            t_next = hits[k + 1]["t"] if k + 1 < len(hits) else np.inf
+            bounce = next((e for e in ev if e["kind"] == "bounce" and h["t"] < e["t"] < t_next), None)
+            shots.append({"shot_idx": k, "hitter": None, "t_hit_s": round(h["t"], 3), "hit_x": None, "hit_y": None,
+                          "stroke": ("serve" if session_type == "match" else "feed") if k == 0 else "shot",
+                          "direction": None, "depth_zone": "unknown",
+                          "t_bounce_s": round(float(bounce["t"]), 4) if bounce is not None else None,
+                          "bounce_x": None, "bounce_y": None, "speed_mph": None, "net_clearance_m": None,
+                          "call": "unknown", "margin_m": None, "sigma_m": None})
+        return shots, ev
+    ev = BC.events(track, cal, catboost)
     hits = [e for e in ev if e["kind"] == "hit"]
     first_bounce = next((e for e in ev if e["kind"] == "bounce"), None)
     if not hits or (first_bounce is not None and first_bounce["t"] < hits[0]["t"] - 1e-6):
@@ -255,7 +272,7 @@ def analyse_track(track: np.ndarray, cal, session_type: str = "rally", doubles: 
             except (ValueError, np.linalg.LinAlgError):
                 f = None
         hp = np.asarray(h["xyz"][:2], float) if "xyz" in h else to_court(cal.Hr, track[h["i"], 2:4])
-        if f is not None and f["ok"] and (hp[1] * f["p0"][1] < 0 or f["p0"][2] > 1.5):
+        if f is not None and f["ok"] and f.get("rms_px", 0.0) < 15.0 and (hp[1] * f["p0"][1] < 0 or f["p0"][2] > 1.5):
             hp = np.asarray(f["p0"][:2], float)
         elif h.get("half") in ("near", "far") and (hp[1] < 0) != (h["half"] == "near"):
             hp = to_court(plane_homography(cal, 2.2), track[h["i"], 2:4])
@@ -277,6 +294,80 @@ def analyse_track(track: np.ndarray, cal, session_type: str = "rally", doubles: 
             shot["net_clearance_m"] = round(nc, 3) if nc is not None else None
         shots.append(shot)
     return shots, ev
+
+
+def annotate_bounce_calls(track: np.ndarray, ev: list[dict], cal, session_type: str = "rally",
+                          doubles: bool = False, max_gap_s: float = MAX_RALLY_GAP_S) -> list[dict]:
+    """Annotate bounce events in `ev` with line calls (`'in'|'out'|'close'|'unknown'`), judging only the first
+    bounce of the first hit of each rally against a serve box in `'match'` mode."""
+    if cal is None:
+        return ev
+    from dsa.physics.bounce_and_linecall import call, contact_point, region_for
+    from dsa.physics.homography import to_court
+
+    t_last_hit: float | None = None
+    last_hit: dict | None = None
+    hits_in_rally = 0
+    bounces_since_hit = 0
+    ended = False
+    for e in ev:
+        kind = e["kind"]
+        if kind == "hit":
+            new = (t_last_hit is None or ended or bounces_since_hit >= 2 or e["t"] - t_last_hit > max_gap_s)
+            hits_in_rally = 1 if new else (hits_in_rally + 1)
+            t_last_hit = float(e["t"])
+            last_hit = e
+            bounces_since_hit, ended = 0, False
+        elif kind in ("net", "break"):
+            if t_last_hit is not None and not ended:
+                ended = True
+        elif kind == "bounce":
+            bounces_since_hit += 1
+            c = contact_point(track, e["i"], cal, method="arc")
+            if not c["ok"] or not np.all(np.isfinite(c["xy"])):
+                c = contact_point(track, e["i"], cal)
+            is_first_hit = (last_hit is not None and not ended and hits_in_rally == 1 and bounces_since_hit == 1)
+            serve = None
+            if session_type == "match" and is_first_hit and last_hit is not None:
+                hp = to_court(cal.Hr, track[last_hit["i"], 2:4])
+                hitter = last_hit.get("half") or ("near" if hp[1] < 0 else "far")
+                serve = _serve_region(hitter, float(hp[0]))
+            hitter_e = last_hit.get("half") if last_hit is not None else None
+            e["call"] = call(c["xy"], c["cov"], region_for(session_type, doubles, serve),
+                             hitter=hitter_e)["call"] if c["ok"] else "unknown"
+            if session_type == "match" and e["call"] == "out" and t_last_hit is not None:
+                ended = True
+    return ev
+
+
+def score_match_rallies(per_rally: list[list[dict]], **config) -> tuple[dict, list[dict]]:
+    """Score completed rallies in match mode -> (score_out, points_out)."""
+    from dsa.physics.scorekeeper import apply as apply_point, format_score as fmt_score, new_match, summary as score_summary
+
+    st = new_match(**config)
+    points_out: list[dict] = []
+    for r_idx, r_shots in enumerate(per_rally):
+        if not r_shots:
+            continue
+        if st.get("winner") is not None:
+            break
+        before_str = fmt_score(st)
+        srv = st["server"]
+        s_side = "deuce" if sum(st["points"]) % 2 == 0 else "ad"
+        last_s = r_shots[-1]
+        last_h = "me" if last_s.get("hitter") == "near" else "opp"
+        opp_h = "opp" if last_h == "me" else "me"
+        win = opp_h if last_s.get("call") == "out" else last_h
+        ended_by = ("double_fault" if (len(r_shots) == 1 and last_s.get("call") == "out")
+                    else "out" if last_s.get("call") == "out" else "winner")
+        st = apply_point(st, win)
+        ts = last_s.get("t_bounce_s") if last_s.get("t_bounce_s") is not None else last_s.get("t_hit_s")
+        points_out.append({"point_idx": len(points_out), "rally_idx": r_idx, "server": srv,
+                           "serve_side": s_side, "winner": win, "ended_by": ended_by,
+                           "score_before": before_str, "score_after": fmt_score(st),
+                           "timestamp_s": ts, "at_s": ts})
+    score_out = st | score_summary(st) | {"formatted": fmt_score(st)}
+    return score_out, points_out
 
 
 # --- the webhook --------------------------------------------------------------------------------------------
@@ -597,7 +688,7 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
 # --- video ----------------------------------------------------------------------------------------------------
 
 def decode(path: str, start_s: float = 0.0, end_s: float | None = None):
-    """Native BGR frames and their presentation timestamps (s) between start_s and end_s, via PyAV."""
+    """Display-oriented BGR frames and their presentation timestamps (s) between start_s and end_s, via PyAV."""
     import av
 
     with av.open(path) as c:
@@ -611,7 +702,11 @@ def decode(path: str, start_s: float = 0.0, end_s: float | None = None):
                 continue
             if end_s is not None and t > end_s:
                 break
-            yield t, f.to_ndarray(format="bgr24")
+            bgr = f.to_ndarray(format="bgr24")
+            k = (int(getattr(f, "rotation", 0) or 0) % 360) // 90
+            if k:
+                bgr = np.ascontiguousarray(np.rot90(bgr, k=k))
+            yield t, bgr
 
 
 def cut_clip(src: str, dest: str, start_s: float, end_s: float, height: int = CLIP_HEIGHT) -> None:
@@ -648,11 +743,11 @@ def track_video(path: str, start_s: float = 0.0, end_s: float | None = None, dev
     def frames():
         for t, f in decode(path, start_s, end_s):
             ts.append(t)                    # filled as ball_track streams the frames
-            size[:] = [f.shape[1]]
+            size[:] = [f.shape[1], f.shape[0]]
             yield f
 
     track = ball_track(frames(), ts, wasb_heatmaps(device))
-    return clean(track, width=size[0] if size else None)
+    return clean(track, width=size[0] if size else None, height=size[1] if len(size) > 1 else None)
 
 
 try:
@@ -678,6 +773,7 @@ if modal is not None:
         """One rally: its 720p clip on the volume, its shots, rally.ready. An iOS clip is the whole file
         (start_s is where it sits in the session); a web session is cut at [start_s, end_s]."""
         import cv2
+        from dsa.physics.bounce_and_linecall import candidates
         from dsa.physics.homography import reregister
         from dsa.physics.scorekeeper import summarize_rally_streak
 
@@ -690,24 +786,32 @@ if modal is not None:
             track = np.load(saved) if saved.exists() else track_video(src, a, b)
             dest = TENNIS / match_id / "rallies" / f"{rally_idx}.mp4"
             cut_clip(src, str(dest), a, b if b is not None else track[-1, 0] + 0.001 if len(track) else 0.001)
+            cand_idx = candidates(track) if cal is not None and len(track) else np.empty(0, int)
+            keep_frames = {int(j) for c_i in cand_idx
+                           for j in range(max(0, int(c_i) - 8), min(len(track), int(c_i) + 9))}
             drift_px = None
             frames_cache: dict[int, np.ndarray] = {}
-            for k_idx, (_, frm) in enumerate(decode(src, a, b)):
-                frames_cache[k_idx] = frm
-                if k_idx == 0 and cal is not None:
-                    f0_path = TENNIS / match_id / "frame0.png"
-                    if f0_path.exists():
-                        ref0 = cv2.imread(str(f0_path))
-                        if ref0 is not None and ref0.shape[:2] == frm.shape[:2]:
-                            cal_new, d_px = reregister(cal, ref0, frm)
-                            if np.isfinite(d_px):
-                                cal, drift_px = cal_new, round(float(d_px), 3)
-                    else:
-                        f0_path.parent.mkdir(parents=True, exist_ok=True)
-                        cv2.imwrite(str(f0_path), frm)
+            if cal is not None:
+                for k_idx, (_, frm) in enumerate(decode(src, a, b)):
+                    if k_idx in keep_frames:
+                        frames_cache[k_idx] = frm
+                    if k_idx == 0:
+                        f0_path = TENNIS / match_id / "frame0.png"
+                        if f0_path.exists():
+                            ref0 = cv2.imread(str(f0_path))
+                            if ref0 is not None and ref0.shape[:2] == frm.shape[:2]:
+                                cal_new, d_px = reregister(cal, ref0, frm)
+                                if np.isfinite(d_px):
+                                    cal, drift_px = cal_new, round(float(d_px), 3)
+                        elif rally_idx == 0:
+                            f0_path.parent.mkdir(parents=True, exist_ok=True)
+                            tmp_f0 = f0_path.with_suffix(".tmp.png")
+                            cv2.imwrite(str(tmp_f0), frm)
+                            os.replace(tmp_f0, f0_path)
+                    if k_idx > 0 and (not keep_frames or k_idx >= max(keep_frames)):
+                        break
             frame_at = (lambda idx: frames_cache.get(idx)) if frames_cache else None
-            shots, _ = analyse_track(track, cal, session_type, doubles,
-                                     frame_at=(lambda idx: frames_cache[idx]) if len(frames_cache) == len(track) else None)
+            shots, _ = analyse_track(track, cal, session_type, doubles, frame_at=frame_at)
             offset = start_s if whole else 0.0
             for s in shots:
                 for k in ("t_hit_s", "t_bounce_s"):
@@ -740,44 +844,36 @@ if modal is not None:
     def segment_match(match_id: str, path: str, session_type: str, court: dict | None, doubles: bool, source: str,
                       biomech: bool = False) -> dict:
         """A whole web-uploaded session: ball track once, rallies, one process_rally each, match.ready."""
-        from dsa.physics.bounce_and_linecall import call, contact_point, events, region_for
-        from dsa.physics.homography import to_court
-        from dsa.physics.scorekeeper import apply as apply_point, formatted as fmt_score, new_match, summarize_session
-
         volume.reload()
         src = str(TENNIS / path)
         try:
+            import cv2
+            from dsa.physics.bounce_and_linecall import _image_v_turn, candidates, events
+            from dsa.physics.scorekeeper import summarize_session
+
             cal = calibration(court)
             track = track_video(src)
             if cal is not None:
                 ev = events(track, cal)
             else:
-                from dsa.physics.bounce_and_linecall import _image_v_turn, candidates
                 ev = [{"i": int(k_i), "t": float(track[k_i, 0]),
                        "kind": "bounce" if (vv := _image_v_turn(track, int(k_i))) is not None and vv[0] > 0 > vv[1] else "hit"}
                       for k_i in candidates(track)]
-            hits = [e for e in ev if e["kind"] == "hit"]
-            for idx_e, e in enumerate(ev):
-                if e["kind"] == "bounce" and cal is not None:
-                    c = contact_point(track, e["i"], cal, method="arc")
-                    prev_h = next((x for x in reversed(ev[:idx_e]) if x["kind"] == "hit"), None)
-                    is_first_hit = prev_h is not None and (not hits or prev_h["t"] == hits[0]["t"]
-                                                           or any(x.get("call") == "out" for x in ev[:idx_e]
-                                                                  if x["kind"] == "bounce"))
-                    serve = None
-                    if session_type == "match" and is_first_hit and prev_h is not None:
-                        hp = to_court(cal.Hr, track[prev_h["i"], 2:4])
-                        hitter = prev_h.get("half") or ("near" if hp[1] < 0 else "far")
-                        serve = _serve_region(hitter, float(hp[0]))
-                    hitter_e = prev_h.get("half") if prev_h is not None else None
-                    e["call"] = call(c["xy"], c["cov"], region_for(session_type, doubles, serve),
-                                     hitter=hitter_e)["call"] if c["ok"] else "unknown"
+            annotate_bounce_calls(track, ev, cal, session_type=session_type, doubles=doubles)
             duration = float(track[-1, 0]) if len(track) else 0.0
             rallies = segment_rallies(ev, session_type, duration=duration)
             fps = float(1 / np.median(np.diff(track[:, 0]))) if len(track) > 1 else None
             _event(type="match.status", match_id=match_id, status="processing", rallies_expected=len(rallies),
                    session_type=session_type, source=source, doubles=doubles,
                    court=cal.to_json() if cal is not None else court, fps=fps)
+            f0_path = TENNIS / match_id / "frame0.png"
+            if cal is not None and not f0_path.exists():
+                for _, frm0 in decode(src, 0.0):
+                    f0_path.parent.mkdir(parents=True, exist_ok=True)
+                    tmp_f0 = f0_path.with_suffix(".tmp.png")
+                    cv2.imwrite(str(tmp_f0), frm0)
+                    os.replace(tmp_f0, f0_path)
+                    break
             (TENNIS / match_id / "tracks").mkdir(parents=True, exist_ok=True)
             for k, r in enumerate(rallies):
                 sel = (track[:, 0] >= r["start_s"]) & (track[:, 0] <= r["end_s"])
@@ -787,32 +883,12 @@ if modal is not None:
                 [(match_id, path, session_type, court, doubles, source, k, r["start_s"], r["end_s"])
                  for k, r in enumerate(rallies)]))
             per_rally = [r["shots"] for r in results]
-            stats = summarize_session(per_rally)
+            stats = summarize_session(per_rally) | {"source": source, "origin_source": source}
             if biomech:
                 bio = compute_session_biomechanics(per_rally, src=src, cal=cal)
                 stats = stats | {"biomechanics": bio, "biomech_traits": bio["traits"],
                                  "coach_notes": bio["coach_notes"]}
-            score_out, points_out = None, []
-            if session_type == "match":
-                st = new_match()
-                for r_idx, r_shots in enumerate(per_rally):
-                    if not r_shots:
-                        continue
-                    before_str = fmt_score(st)
-                    srv = st["server"]
-                    s_side = "deuce" if sum(st["points"]) % 2 == 0 else "ad"
-                    last_s = r_shots[-1]
-                    last_h = "me" if last_s["hitter"] == "near" else "opp"
-                    opp_h = "opp" if last_h == "me" else "me"
-                    win = opp_h if last_s["call"] == "out" else last_h
-                    ended_by = ("double_fault" if (len(r_shots) == 1 and last_s["call"] == "out")
-                                else "out" if last_s["call"] == "out" else "winner")
-                    st = apply_point(st, "W" if win == "me" else "L")
-                    points_out.append({"point_idx": len(points_out), "rally_idx": r_idx, "server": srv,
-                                       "serve_side": s_side, "winner": win, "ended_by": ended_by,
-                                       "score_before": before_str, "score_after": fmt_score(st),
-                                       "timestamp_s": last_s.get("t_bounce_s") or last_s.get("t_hit_s")})
-                score_out = st | {"formatted": fmt_score(st)}
+            score_out, points_out = (score_match_rallies(per_rally) if session_type == "match" else (None, []))
             _event(type="match.ready", match_id=match_id, status="ready", rallies_done=len(results),
                    session_type=session_type, source=source, doubles=doubles,
                    court=cal.to_json() if cal is not None else court,

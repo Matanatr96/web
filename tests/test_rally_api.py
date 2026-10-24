@@ -318,7 +318,10 @@ def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, m
     assert shots[0]["stroke"] == "serve" and shots[0]["hitter"] == "near"
     assert abs(shots[0]["t_hit_s"] - 1.5) < 0.05 and shots[0]["hit_y"] == pytest.approx(-11.95, abs=0.5)
     assert shots[0]["hit_x"] == pytest.approx(0.4, abs=0.2) and shots[0]["call"] == "in"
-    assert RA.analyse_track(tr, None) == ([], [])
+    u_shots, u_ev = RA.analyse_track(tr, None, "match")
+    assert len(u_shots) == 1 and u_shots[0]["stroke"] == "serve" and u_shots[0]["call"] == "unknown"
+    assert abs(u_shots[0]["t_hit_s"] - 1.5) < 0.05 and u_shots[0]["t_bounce_s"] is not None
+    assert RA.analyse_track(tr * [1, 0, 1, 1, 1], None) == ([], [])
 
     # Subsequent rally shots get 'fh' / 'bh' stroke classification
     r_tr, _, _ = rally(np.random.default_rng(31), cal, noise_px=0.3)
@@ -363,3 +366,86 @@ def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, m
     assert client.post(f"/jobs/{mid_lib}.r0/commit", headers=tok(scope="any")).status_code == 200
     assert spawned[-1][0] == "segment_match"
     assert spawned[-1][1]["path"] == f"{mid_lib}/source.mov"
+
+
+def test_match_mode_scoring_first_hit_serve_and_rotated_decode(tmp_path):
+    """Round 2 regressions: score_match_rallies (C1/C2/L1), annotate_bounce_calls is_first_hit (H3),
+    uncalibrated rally shots (H7), and rotated video decode (H4)."""
+    import shutil
+    import subprocess
+
+    cal = true_camera()
+    r1_tr, _, _ = rally(np.random.default_rng(31), cal, noise_px=0.2)
+    u_rshots, _ = RA.analyse_track(r1_tr, None, "rally")
+    assert len(u_rshots) >= 2 and u_rshots[0]["stroke"] == "feed" and u_rshots[1]["stroke"] == "shot"
+
+    # Match-mode scoring: handles me/opp winners, emits display/formatted/at_s/timestamp_s, and stops once match won
+    per_rally = [
+        [{"shot_idx": 0, "hitter": "near", "call": "in", "t_hit_s": 1.0, "t_bounce_s": 1.6}],
+        [{"shot_idx": 0, "hitter": "near", "call": "out", "t_hit_s": 5.0, "t_bounce_s": 5.5}],
+        [{"shot_idx": 0, "hitter": "far", "call": "out", "t_hit_s": 9.0, "t_bounce_s": 9.7,
+          " dummy": 1}, {"shot_idx": 1, "hitter": "far", "call": "out", "t_hit_s": 10.2, "t_bounce_s": 10.8}],
+    ]
+    score_out, points_out = RA.score_match_rallies(per_rally)
+    assert score_out["display"] == score_out["formatted"] == "0-0 30-15"
+    assert score_out["points"] == "30-15"
+    assert [p["winner"] for p in points_out] == ["me", "opp", "me"]
+    assert [p["ended_by"] for p in points_out] == ["winner", "double_fault", "out"]
+    assert points_out[0]["at_s"] == points_out[0]["timestamp_s"] == 1.6
+
+    # Match-over guard: extra rallies after match point do not raise ValueError("the match is over")
+    win_rally = [{"shot_idx": 0, "hitter": "near", "call": "in", "t_hit_s": 1.0, "t_bounce_s": 1.5}]
+    over_score, over_pts = RA.score_match_rallies([win_rally] * 60)
+    assert over_score["winner"] == "me" and len(over_pts) == 48
+
+    # H3: after an "out" bounce in Rally 1, Rally 2's 2nd shot (a deep groundstroke at Y=-10.87m) is judged on full court ("in")
+    from dsa.physics import ballistics as BL
+    from dsa.physics.homography import project
+    from synth import COR, FRICTION, aim, landing
+
+    fps = 60.0
+    p_srv = np.array([0.4, -11.95, 2.85])
+    v_srv = aim(p_srv, [-2.0, 5.5], 0.43)
+    tb, pb, vb = landing(p_srv, v_srv)
+    t_s1 = np.arange(0.0, tb, 1 / fps)
+    t_s2 = np.arange(tb, tb + 0.35, 1 / fps)
+    ts_srv = np.r_[t_s1, t_s2]
+    xyz_srv = np.vstack([BL.simulate(p_srv, v_srv, t_s1),
+                         BL.simulate(pb, np.r_[vb[:2] * FRICTION, -vb[2] * COR], t_s2 - tb)])
+    srv_tr = np.c_[ts_srv, np.ones_like(ts_srv), project(cal, xyz_srv), np.ones_like(ts_srv)]
+    i_b_srv = len(t_s1) - 1
+
+    # Rally 2: valid serve (lands at Y=+5.5m in ad_far box) followed by deep groundstroke (i=114 of r1_tr at Y=-10.87m)
+    r2_gs = r1_tr.copy()
+    r2_gs[:, 0] += 10.0
+    srv2_tr = srv_tr.copy()
+    srv2_tr[:, 0] += 8.0
+    combined = np.vstack([r1_tr, srv2_tr, r2_gs])
+    n1, n2 = len(r1_tr), len(r1_tr) + len(srv2_tr)
+    combined_mod = combined.copy()
+    combined_mod[110:118, 3] = 5.0  # force Rally 1 bounce at i=114 out of court
+    ev_all = [
+        {"i": 0, "t": float(combined_mod[0, 0]), "kind": "hit", "half": "near"},
+        {"i": 114, "t": float(combined_mod[114, 0]), "kind": "bounce", "half": "far"},
+        {"i": n1, "t": float(combined_mod[n1, 0]), "kind": "hit", "half": "near"},
+        {"i": n1 + i_b_srv, "t": float(combined_mod[n1 + i_b_srv, 0]), "kind": "bounce", "half": "far"},
+        {"i": n2 + 73, "t": float(combined_mod[n2 + 73, 0]), "kind": "hit", "half": "far"},
+        {"i": n2 + 114, "t": float(combined_mod[n2 + 114, 0]), "kind": "bounce", "half": "near"},
+    ]
+    annotated = RA.annotate_bounce_calls(combined_mod, ev_all, cal, session_type="match")
+    bounces_ann = [e for e in annotated if e["kind"] == "bounce"]
+    assert [b["call"] for b in bounces_ann] == ["out", "in", "in"]
+
+    # H4: rotated video decode() applies display rotation metadata so dimensions and corners match ffmpeg
+    if shutil.which("ffmpeg") is not None:
+        raw_mp4 = str(tmp_path / "raw.mp4")
+        rot_mp4 = str(tmp_path / "rot90.mp4")
+        subprocess.run(["ffmpeg", "-y", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=30:d=0.1",
+                        "-vf", "drawbox=x=0:y=0:w=40:h=40:color=red:t=fill",
+                        "-c:v", "libx264", "-pix_fmt", "yuv420p", raw_mp4], check=True, capture_output=True)
+        subprocess.run(["ffmpeg", "-y", "-display_rotation", "90", "-i", raw_mp4, "-c", "copy", rot_mp4],
+                       check=True, capture_output=True)
+        _, frm_rot = next(RA.decode(rot_mp4))
+        assert frm_rot.shape == (320, 180, 3) and frm_rot.flags["C_CONTIGUOUS"]
+        # 90 deg CCW moves top-left (x=0..40, y=0..40) to bottom-left (y=280..320, x=0..40)
+        assert frm_rot[300, 20, 2] > 150 and frm_rot[20, 20, 2] < 50
