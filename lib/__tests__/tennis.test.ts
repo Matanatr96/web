@@ -13,13 +13,16 @@ import {
   getUploadResumeKey,
   invertHomography,
   isValidUuid,
+  listTennisMatches,
   parseWebhookEvent,
   type Point2D,
   type Quad,
   resolveClipUrl,
   scaleCalibrationPoints,
   signModalJobToken,
+  summarizeAllSessions,
   summarizeSession,
+  type TennisMatch,
   type TennisRally,
   type TennisShot,
   toClipLocalTimeS,
@@ -1026,6 +1029,100 @@ describe("applyWebhookEvent and getTennisMatch", () => {
       ],
       coachNotes: "Load the back leg deeper on the trophy pose.",
       finalStatus: "ready",
+    });
+
+    const listed = await listTennisMatches("all", client);
+    const allSummary = summarizeAllSessions(listed);
+    expect({
+      summary: allSummary.summary,
+      firstMatchId: allSummary.sessions[0]?.matchId,
+      firstScoreFormatted: allSummary.sessions[0]?.scoreFormatted,
+    }).toEqual({
+      summary: {
+        totalSessions: 1,
+        totalRallies: 1,
+        totalShots: 2,
+        bestInStreak: 2,
+        inCallRate: 100,
+      },
+      firstMatchId: MATCH_ID,
+      firstScoreFormatted: "1-0, 2-1 (30-15)",
+    });
+  });
+
+  it("summarizeAllSessions aggregates across multiple sessions and handles empty lists", () => {
+    const baseMatch: TennisMatch = {
+      id: MATCH_ID,
+      title: "Morning Hit",
+      playedOn: "2026-10-23",
+      sessionType: "rally",
+      source: "ios",
+      status: "ready",
+      court: null,
+      doubles: false,
+      fps: 60,
+      ralliesExpected: 10,
+      ralliesDone: 10,
+      score: null,
+      stats: {
+        totalRallies: 10,
+        totalShots: 60,
+        longestRally: 18,
+        longestInStreak: 15,
+        inPct: 90,
+        outCount: 6,
+      },
+      error: null,
+      createdAt: "2026-10-23T08:00:00.000Z",
+      updatedAt: "2026-10-23T08:30:00.000Z",
+    };
+
+    const secondMatch: TennisMatch = {
+      ...baseMatch,
+      id: "223e4567-e89b-42d3-a456-426614174000",
+      title: "Evening Set",
+      sessionType: "match",
+      source: "web",
+      ralliesDone: 8,
+      score: { sets: [[6, 4]], games: [0, 0], points: ["0", "0"] },
+      stats: {
+        totalRallies: 8,
+        totalShots: 40,
+        longestRally: 12,
+        longestInStreak: 12,
+        inPct: 80,
+        outCount: 8,
+      },
+    };
+
+    const processingMatch: TennisMatch = {
+      ...baseMatch,
+      id: "323e4567-e89b-42d3-a456-426614174000",
+      status: "processing",
+      ralliesDone: 2,
+      stats: {},
+    };
+
+    expect({
+      empty: summarizeAllSessions([]).summary,
+      multi: summarizeAllSessions([baseMatch, secondMatch, processingMatch]).summary,
+      secondScore: summarizeAllSessions([baseMatch, secondMatch]).sessions[1]?.scoreFormatted,
+    }).toEqual({
+      empty: {
+        totalSessions: 0,
+        totalRallies: 0,
+        totalShots: 0,
+        bestInStreak: 0,
+        inCallRate: 0,
+      },
+      multi: {
+        totalSessions: 3,
+        totalRallies: 20,
+        totalShots: 100,
+        bestInStreak: 15,
+        inCallRate: 86,
+      },
+      secondScore: "6-4",
     });
   });
 });
