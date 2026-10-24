@@ -7,7 +7,7 @@ import React, {
   useState,
 } from "react";
 import AsyncStorage from "@react-native-async-storage/async-storage";
-import { MMKV } from "react-native-mmkv";
+import type { MMKV } from "react-native-mmkv";
 import type { Restaurant } from "@web-lib/types";
 import type { Diner, WizardItem } from "@web-lib/receipts";
 import { partitionRestaurants } from "@web-lib/restaurants-query";
@@ -111,13 +111,25 @@ export type RestaurantsContextValue = {
 
 const RestaurantsContext = createContext<RestaurantsContextValue | null>(null);
 
+declare const require: (moduleId: string) => {
+  MMKV?: new (config?: { id?: string }) => MMKV;
+};
+
 let _mmkv: MMKV | null = null;
+let _mmkvFailed = false;
 function getMmkv(): MMKV | null {
   if (_mmkv) return _mmkv;
+  if (_mmkvFailed) return null;
   try {
-    _mmkv = new MMKV({ id: "tlm-restaurants-storage" });
+    const mod = require("react-native-mmkv");
+    if (!mod?.MMKV) {
+      _mmkvFailed = true;
+      return null;
+    }
+    _mmkv = new mod.MMKV({ id: "tlm-restaurants-storage" });
     return _mmkv;
   } catch {
+    _mmkvFailed = true;
     return null;
   }
 }
