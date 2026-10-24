@@ -131,11 +131,12 @@ export interface TennisPoint {
 export interface TennisMatchScore {
   sets: Array<[number, number]>;
   games: [number, number];
-  points: [string, string] | string;
+  points: [string | number, string | number] | string;
   server?: "me" | "opp";
   side?: "deuce" | "ad";
   tiebreak?: boolean;
   display?: string;
+  formatted?: string;
   winner?: "me" | "opp" | null;
 }
 
@@ -176,6 +177,7 @@ export interface TennisSessionSummary {
   pointsLost: number;
   biomechTraits?: BiomechTraitScore[];
   coachNotes?: string | null;
+  originSource?: string;
 }
 
 /** Top-level session row (`tennis_matches`). */
@@ -242,6 +244,7 @@ export interface MatchStatusEvent {
   ralliesExpected: number | null;
   sessionType: TennisSessionType | null;
   source: "web" | "ios" | null;
+  originSource?: "ios_library";
   fps: number | null;
   doubles?: boolean | null;
   court?: CourtCalibrationV1 | Record<string, unknown> | null;
@@ -255,6 +258,7 @@ export interface RallyReadyEvent {
   rally: TennisRally;
   sessionType: TennisSessionType | null;
   source: "web" | "ios" | null;
+  originSource?: "ios_library";
   doubles: boolean | null;
   court: CourtCalibrationV1 | Record<string, unknown> | null;
   score: TennisMatchScore | null;
@@ -271,6 +275,7 @@ export interface MatchReadyEvent {
   score: TennisMatchScore | null;
   sessionType: TennisSessionType | null;
   source: "web" | "ios" | null;
+  originSource?: "ios_library";
   doubles: boolean | null;
   court: CourtCalibrationV1 | Record<string, unknown> | null;
   stats: Partial<TennisSessionSummary> | null;
@@ -421,10 +426,11 @@ export function normalizeTappedCornersToQuad(cornersPx: Point2D[]): Point2D[] {
   const [p0, p1, p2, p3] = cornersPx;
   const firstPairMidY = 0.5 * (p0[1] + p1[1]);
   const secondPairMidY = 0.5 * (p2[1] + p3[1]);
-  if (firstPairMidY < secondPairMidY) {
-    return [p2, p3, p1, p0];
-  }
-  return cornersPx;
+  const [nearA, nearB, farA, farB] =
+    firstPairMidY < secondPairMidY ? [p2, p3, p0, p1] : [p0, p1, p2, p3];
+  const [nearLeft, nearRight] = nearA[0] <= nearB[0] ? [nearA, nearB] : [nearB, nearA];
+  const [farLeft, farRight] = farA[0] <= farB[0] ? [farA, farB] : [farB, farA];
+  return [nearLeft, nearRight, farRight, farLeft];
 }
 
 /**
@@ -442,6 +448,7 @@ export function formatSessionSource(
   const raw =
     source === "ios_library" ||
     stats?.originSource === "ios_library" ||
+    stats?.origin_source === "ios_library" ||
     stats?.source === "ios_library"
       ? "ios_library"
       : source;
@@ -506,6 +513,11 @@ export function validateCourtCalibration(input: {
       errors.push("Provide both Left and Right net-post tops (or omit both).");
     } else {
       const [leftPost, rightPost] = input.netPostsPx;
+      [leftPost, rightPost].forEach(([u, v], idx) => {
+        if (!Number.isFinite(u) || !Number.isFinite(v) || u < 0 || u > width || v < 0 || v > height) {
+          errors.push(`Net post ${idx + 1} lies outside the video frame bounds.`);
+        }
+      });
       if (leftPost[0] >= rightPost[0]) errors.push("Left net post must be to the left of Right net post.");
       // Post tops sit 1.07 m above the court, so they may project slightly above the far baseline.
       const postMidY = 0.5 * (leftPost[1] + rightPost[1]);
@@ -893,8 +905,28 @@ export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResp
   };
 }
 
+const POINT_LABELS = ["0", "15", "30", "40"] as const;
+
+function formatPointPair(
+  rawMe: string | number | undefined,
+  rawOpp: string | number | undefined,
+  tiebreak = false,
+): [string, string] {
+  if (typeof rawMe === "number" && typeof rawOpp === "number" && Number.isFinite(rawMe) && Number.isFinite(rawOpp)) {
+    const a = Math.max(0, Math.trunc(rawMe));
+    const b = Math.max(0, Math.trunc(rawOpp));
+    if (tiebreak) return [String(a), String(b)];
+    if (a >= 3 && b >= 3) {
+      if (a === b) return ["40", "40"];
+      return a > b ? ["Ad", "40"] : ["40", "Ad"];
+    }
+    return [POINT_LABELS[a] ?? String(a), POINT_LABELS[b] ?? String(b)];
+  }
+  return [String(rawMe ?? "0"), String(rawOpp ?? "0")];
+}
+
 /**
- * Formats a Match Mode scoreboard. Uses the backend's `display` string when present.
+ * Formats a Match Mode scoreboard. Uses the backend's `display` or `formatted` string when present.
  *
  * @param score - Scoreboard or `null`.
  * @returns e.g. `"6-4, 3-2 (40-15)"`, `"6-3, 6-4"`, or `"No score recorded"`.
@@ -902,10 +934,11 @@ export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResp
 export function formatScore(score: TennisMatchScore | null | undefined): string {
   if (!score) return "No score recorded";
   if (score.display) return score.display;
+  if (score.formatted) return score.formatted;
   const parts = (score.sets ?? []).map(([me, opp]) => `${me}-${opp}`);
   const [gMe, gOpp] = score.games ?? [0, 0];
-  const pts = typeof score.points === "string" ? score.points.split("-") : (score.points ?? ["0", "0"]);
-  const [pMe = "0", pOpp = "0"] = pts;
+  const rawPts = typeof score.points === "string" ? score.points.split("-") : (score.points ?? ["0", "0"]);
+  const [pMe, pOpp] = formatPointPair(rawPts[0], rawPts[1], Boolean(score.tiebreak));
   const pointsInPlay = pMe !== "0" || pOpp !== "0";
   if (gMe > 0 || gOpp > 0 || pointsInPlay) parts.push(`${gMe}-${gOpp}`);
   const base = parts.length > 0 ? parts.join(", ") : "0-0";
@@ -1046,7 +1079,7 @@ function parsePlayerSide(val: unknown): "me" | "opp" | null {
   return null;
 }
 
-/** Normalises court calibration JSON from either Web (`CourtCalibrationV1`), Modal (`ModalCourtJson`), or iOS. */
+/** Normalises court calibration JSON from either Web (`CourtCalibrationV1`), Modal (`ModalCourtJson` / `cal.to_json()`), or iOS. */
 function normalizeWebhookCourt(
   raw: unknown,
   doublesFallback = false,
@@ -1069,6 +1102,37 @@ function normalizeWebhookCourt(
     });
     if (validated.calibration) return validated.calibration;
   }
+  if (
+    Array.isArray(obj.size) &&
+    obj.size.length === 2 &&
+    Array.isArray(obj.H0) &&
+    obj.H0.length === 3 &&
+    obj.H0.every((row) => Array.isArray(row) && row.length === 3)
+  ) {
+    const flatH0 = (obj.H0 as number[][]).flat().map(Number);
+    if (flatH0.length === 9 && flatH0.every(Number.isFinite)) {
+      try {
+        const scale = Math.abs(flatH0[8]) > 1e-12 ? flatH0[8] : 1;
+        const homographyToCourt = flatH0.map((v) => v / scale) as HomographyMatrix;
+        const homographyToImage = invertHomography(homographyToCourt);
+        const cornersPx = getOuterCourtCornersM().map((pt) => {
+          const [u, v] = applyHomography(homographyToImage, pt);
+          return [Number(u.toFixed(2)), Number(v.toFixed(2))] as Point2D;
+        }) as Quad;
+        return {
+          ...obj,
+          version: 1,
+          imageSize: [Number(obj.size[0]), Number(obj.size[1])],
+          cornersPx,
+          doubles: typeof obj.doubles === "boolean" ? obj.doubles : doublesFallback,
+          homographyToCourt,
+          homographyToImage,
+        } as CourtCalibrationV1;
+      } catch {
+        // Fall through if H0 is singular.
+      }
+    }
+  }
   return obj;
 }
 
@@ -1086,7 +1150,7 @@ function parseWebhookPoints(raw: unknown): TennisPoint[] {
       server,
       source: src,
       bookmarked: Boolean(p.bookmarked),
-      atS: num(p.at_s ?? p.atS ?? p.t_s ?? p.end_s),
+      atS: num(p.at_s ?? p.atS ?? p.timestamp_s ?? p.timestampS ?? p.t_s ?? p.end_s),
     };
   });
 }
@@ -1148,6 +1212,10 @@ function normalizeStatsRecord(raw: unknown): Partial<TennisSessionSummary> {
   if (coachNotes !== null) {
     out.coachNotes = coachNotes;
   }
+  const originSource = str(s.originSource) ?? str(s.origin_source);
+  if (originSource !== null) {
+    out.originSource = originSource;
+  }
   return out;
 }
 
@@ -1203,6 +1271,24 @@ function mapRally(raw: Record<string, unknown>, shots: TennisShot[]): TennisRall
   };
 }
 
+const explicitPointsEvents = new WeakSet<TennisWebhookEvent>();
+
+function parseOriginSource(raw: Record<string, unknown>, nested?: Record<string, unknown>): "ios_library" | undefined {
+  const stats = asRecord(raw.stats);
+  if (
+    raw.source === "ios_library" ||
+    nested?.source === "ios_library" ||
+    raw.origin_source === "ios_library" ||
+    raw.originSource === "ios_library" ||
+    stats.origin_source === "ios_library" ||
+    stats.originSource === "ios_library" ||
+    stats.source === "ios_library"
+  ) {
+    return "ios_library";
+  }
+  return undefined;
+}
+
 /**
  * Validates and normalises a webhook body from the Modal `tennis-rally` app
  * (`match.status`, `rally.ready`, or `match.ready`; snake_case fields matching the SQL columns).
@@ -1231,6 +1317,7 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
       }
       const doubles = boolOrNull(obj.doubles);
       const court = normalizeWebhookCourt(obj.court, doubles ?? false);
+      const originSource = parseOriginSource(obj);
       return {
         type: "match.status",
         eventId,
@@ -1240,6 +1327,7 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
         ralliesExpected: num(obj.rallies_expected),
         sessionType: parseSessionType(obj.session_type),
         source: parseSource(obj.source),
+        ...(originSource ? { originSource } : {}),
         fps: num(obj.fps),
         ...(doubles !== null ? { doubles } : {}),
         ...(court !== null ? { court } : {}),
@@ -1277,26 +1365,31 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
             ? (r.score as TennisMatchScore)
             : null;
       const rawPoints = obj.points ?? r.points ?? (score ? asRecord(score).history ?? asRecord(score).points_log : undefined);
-      return {
+      const originSource = parseOriginSource(obj, r);
+      const evt: RallyReadyEvent = {
         type: "rally.ready",
         eventId,
         matchId,
         rally: mapRally({ ...r, bookmarked }, shots),
         sessionType: parseSessionType(obj.session_type ?? r.session_type),
         source: parseSource(obj.source ?? r.source),
+        ...(originSource ? { originSource } : {}),
         doubles,
         court: normalizeWebhookCourt(obj.court ?? r.court, doubles ?? false),
         score,
         stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
         points: parseWebhookPoints(rawPoints),
       };
+      if (Array.isArray(rawPoints)) explicitPointsEvents.add(evt);
+      return evt;
     }
     case "session.finalize":
     case "match.ready": {
       const doubles = boolOrNull(obj.doubles);
       const score = obj.score && typeof obj.score === "object" ? (obj.score as TennisMatchScore) : null;
       const rawPoints = obj.points ?? (score ? asRecord(score).history ?? asRecord(score).points_log : undefined);
-      return {
+      const originSource = parseOriginSource(obj);
+      const evt: MatchReadyEvent = {
         type: "match.ready",
         eventId,
         matchId,
@@ -1304,11 +1397,14 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
         score,
         sessionType: parseSessionType(obj.session_type),
         source: parseSource(obj.source),
+        ...(originSource ? { originSource } : {}),
         doubles,
         court: normalizeWebhookCourt(obj.court, doubles ?? false),
         stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
         points: parseWebhookPoints(rawPoints),
       };
+      if (Array.isArray(rawPoints)) explicitPointsEvents.add(evt);
+      return evt;
     }
     default:
       throw new Error("INVALID_ARGUMENT: unsupported webhook event type.");
@@ -1333,12 +1429,32 @@ export async function applyWebhookEvent(
   const supabase = client ?? getServiceClient();
   const now = new Date().toISOString();
 
+  let resolvedCourt = event.court ?? null;
+  if (resolvedCourt && "H0" in resolvedCourt) {
+    const { data: existingMatch } = await supabase
+      .from("tennis_matches")
+      .select("court")
+      .eq("id", event.matchId)
+      .maybeSingle();
+    const existingCourt = asRecord(existingMatch?.court);
+    if (Array.isArray(existingCourt.cornersPx)) {
+      resolvedCourt = {
+        ...resolvedCourt,
+        cornersPx: existingCourt.cornersPx as Quad,
+        ...(Array.isArray(existingCourt.netPostsPx)
+          ? { netPostsPx: existingCourt.netPostsPx as [Point2D, Point2D] }
+          : {}),
+      } as CourtCalibrationV1;
+    }
+  }
+
   // Web sessions are created by createTennisMatch; iOS sessions first appear here.
   const seed: Record<string, unknown> = { id: event.matchId, source: "ios", status: "processing" };
   if (event.source) seed.source = event.source;
   if (event.sessionType) seed.session_type = event.sessionType;
   if (typeof event.doubles === "boolean") seed.doubles = event.doubles;
-  if (event.court) seed.court = event.court;
+  if (resolvedCourt) seed.court = resolvedCourt;
+  if (event.originSource) seed.stats = { originSource: event.originSource };
 
   const { error: seedErr } = await supabase
     .from("tennis_matches")
@@ -1346,20 +1462,31 @@ export async function applyWebhookEvent(
   if (seedErr) throw new Error(`tennis_matches insert failed: ${seedErr.message}`);
 
   if (event.type === "match.status") {
-    const update: Record<string, unknown> = { status: event.status, updated_at: now };
-    if (event.error !== null) update.error = event.error;
-    if (event.ralliesExpected !== null) update.rallies_expected = event.ralliesExpected;
-    if (event.sessionType !== null) update.session_type = event.sessionType;
-    if (event.source !== null) update.source = event.source;
-    if (event.fps !== null) update.fps = event.fps;
-    if (typeof event.doubles === "boolean") update.doubles = event.doubles;
-    if (event.court) update.court = event.court;
-    const { error } = await supabase
+    const metaUpdate: Record<string, unknown> = { updated_at: now };
+    if (event.error !== null) metaUpdate.error = event.error;
+    if (event.ralliesExpected !== null) metaUpdate.rallies_expected = event.ralliesExpected;
+    if (event.sessionType !== null) metaUpdate.session_type = event.sessionType;
+    if (event.source !== null) metaUpdate.source = event.source;
+    if (event.fps !== null) metaUpdate.fps = event.fps;
+    if (typeof event.doubles === "boolean") metaUpdate.doubles = event.doubles;
+    if (resolvedCourt) metaUpdate.court = resolvedCourt;
+    if (event.status === "failed") {
+      metaUpdate.status = "failed";
+    }
+    const { error: metaErr } = await supabase
       .from("tennis_matches")
-      .update(update)
-      .eq("id", event.matchId)
-      .neq("status", "ready");
-    if (error) throw new Error(`tennis_matches update failed: ${error.message}`);
+      .update(metaUpdate)
+      .eq("id", event.matchId);
+    if (metaErr) throw new Error(`tennis_matches update failed: ${metaErr.message}`);
+
+    if (event.status === "processing") {
+      const { error } = await supabase
+        .from("tennis_matches")
+        .update({ status: "processing", updated_at: now })
+        .eq("id", event.matchId)
+        .neq("status", "ready");
+      if (error) throw new Error(`tennis_matches update failed: ${error.message}`);
+    }
   }
 
   if (event.type === "rally.ready") {
@@ -1409,13 +1536,19 @@ export async function applyWebhookEvent(
       );
       if (shotsErr) throw new Error(`tennis_shots upsert failed: ${shotsErr.message}`);
     }
+    const { error: delShotsErr } = await supabase
+      .from("tennis_shots")
+      .delete()
+      .eq("match_id", event.matchId)
+      .eq("rally_idx", r.rallyIdx)
+      .gte("shot_idx", r.shots.length);
+    if (delShotsErr) throw new Error(`tennis_shots delete failed: ${delShotsErr.message}`);
 
     const matchMetaUpdate: Record<string, unknown> = { updated_at: now };
     if (event.sessionType !== null) matchMetaUpdate.session_type = event.sessionType;
     if (event.source !== null) matchMetaUpdate.source = event.source;
     if (event.doubles !== null) matchMetaUpdate.doubles = event.doubles;
-    if (event.court !== null) matchMetaUpdate.court = event.court;
-    if (event.score !== null) matchMetaUpdate.score = event.score;
+    if (resolvedCourt !== null) matchMetaUpdate.court = resolvedCourt;
     if (Object.keys(matchMetaUpdate).length > 1) {
       const { error: metaErr } = await supabase
         .from("tennis_matches")
@@ -1425,20 +1558,30 @@ export async function applyWebhookEvent(
     }
   }
 
-  if ((event.type === "rally.ready" || event.type === "match.ready") && event.points.length > 0) {
-    const { error: pointsErr } = await supabase.from("tennis_points").upsert(
-      event.points.map((p) => ({
-        match_id: event.matchId,
-        point_idx: p.pointIdx,
-        winner: p.winner,
-        server: p.server,
-        source: p.source,
-        bookmarked: p.bookmarked,
-        at_s: p.atS,
-      })),
-      { onConflict: "match_id,point_idx" },
-    );
-    if (pointsErr) throw new Error(`tennis_points upsert failed: ${pointsErr.message}`);
+  if (event.type === "rally.ready" || event.type === "match.ready") {
+    if (event.points.length > 0) {
+      const { error: pointsErr } = await supabase.from("tennis_points").upsert(
+        event.points.map((p) => ({
+          match_id: event.matchId,
+          point_idx: p.pointIdx,
+          winner: p.winner,
+          server: p.server,
+          source: p.source,
+          bookmarked: p.bookmarked,
+          at_s: p.atS,
+        })),
+        { onConflict: "match_id,point_idx" },
+      );
+      if (pointsErr) throw new Error(`tennis_points upsert failed: ${pointsErr.message}`);
+    }
+    if (event.type === "match.ready" && (event.points.length > 0 || explicitPointsEvents.has(event))) {
+      const { error: delPointsErr } = await supabase
+        .from("tennis_points")
+        .delete()
+        .eq("match_id", event.matchId)
+        .gte("point_idx", event.points.length);
+      if (delPointsErr) throw new Error(`tennis_points delete failed: ${delPointsErr.message}`);
+    }
   }
 
   if (event.type === "match.ready") {
@@ -1447,7 +1590,7 @@ export async function applyWebhookEvent(
     if (event.sessionType !== null) matchUpdate.session_type = event.sessionType;
     if (event.source !== null) matchUpdate.source = event.source;
     if (event.doubles !== null) matchUpdate.doubles = event.doubles;
-    if (event.court !== null) matchUpdate.court = event.court;
+    if (resolvedCourt !== null) matchUpdate.court = resolvedCourt;
     const { error } = await supabase.from("tennis_matches").update(matchUpdate).eq("id", event.matchId);
     if (error) throw new Error(`tennis_matches update failed: ${error.message}`);
   }
@@ -1464,11 +1607,16 @@ export async function applyWebhookEvent(
         : detail.stats && "biomechanics" in detail.stats
           ? (detail.stats as Record<string, unknown>).biomechanics
           : undefined;
+    const originSource =
+      event.originSource ??
+      (eventStats && "originSource" in eventStats ? str((eventStats as Record<string, unknown>).originSource) : null) ??
+      (detail.stats && "originSource" in detail.stats ? str((detail.stats as Record<string, unknown>).originSource) : null);
     const mergedStats: TennisSessionSummary & Record<string, unknown> = {
       ...detail.summary,
       ...(mergedBiomechTraits ? { biomechTraits: mergedBiomechTraits } : {}),
       ...(mergedCoachNotes !== undefined ? { coachNotes: mergedCoachNotes } : {}),
       ...(rawBiomech !== undefined ? { biomechanics: rawBiomech } : {}),
+      ...(originSource ? { originSource } : {}),
     };
 
     const statsUpdate: Record<string, unknown> = {
@@ -1478,13 +1626,27 @@ export async function applyWebhookEvent(
     };
     if (
       event.type === "rally.ready" &&
-      detail.rallies.length > 0 &&
-      (detail.source === "ios" ||
-        detail.ralliesExpected === null ||
-        detail.rallies.length >= detail.ralliesExpected)
+      event.score !== null &&
+      event.points.length >= detail.points.length
     ) {
+      statsUpdate.score = event.score;
+    }
+    const isCameraRoll = originSource === "ios_library";
+    const allExpectedRalliesPresent =
+      detail.ralliesExpected !== null
+        ? detail.rallies.length >= detail.ralliesExpected
+        : detail.source === "ios" && !isCameraRoll;
+    if (event.type === "rally.ready" && detail.rallies.length > 0 && allExpectedRalliesPresent) {
       statsUpdate.status = "ready";
       statsUpdate.error = null;
+    } else if (
+      event.type === "match.status" &&
+      event.status === "processing" &&
+      detail.status === "ready" &&
+      detail.ralliesExpected !== null &&
+      detail.rallies.length < detail.ralliesExpected
+    ) {
+      statsUpdate.status = "processing";
     }
 
     const { error } = await supabase

@@ -65,7 +65,9 @@ export default async function TennisSessionDetailPage({
   const [detail, admin] = await Promise.all([getTennisMatch(id), isAdmin()]);
   if (!detail) notFound();
 
-  const hideOneShotFeeds = resolvedSearch.hide1 !== "0";
+  const isRallyMode = detail.sessionType === "rally";
+  const hideOneShotFeeds =
+    resolvedSearch.hide1 !== undefined ? resolvedSearch.hide1 !== "0" : isRallyMode;
   const summary = summarizeSession({
     sessionType: detail.sessionType,
     rallies: detail.rallies,
@@ -91,14 +93,11 @@ export default async function TennisSessionDetailPage({
   });
 
   const explicitRallyIdx =
-    resolvedSearch.rally !== undefined && Number.isFinite(Number(resolvedSearch.rally))
+    resolvedSearch.rally !== undefined &&
+    resolvedSearch.rally.trim() !== "" &&
+    Number.isFinite(Number(resolvedSearch.rally))
       ? Number(resolvedSearch.rally)
       : null;
-
-  const selectedRallyIdx =
-    explicitRallyIdx !== null
-      ? explicitRallyIdx
-      : (filteredRallies[0]?.rallyIdx ?? null);
 
   const activeRally =
     explicitRallyIdx !== null
@@ -108,7 +107,9 @@ export default async function TennisSessionDetailPage({
       : (filteredRallies[0] ?? null);
 
   const selectedShotIdx =
-    resolvedSearch.shot !== undefined && Number.isFinite(Number(resolvedSearch.shot))
+    resolvedSearch.shot !== undefined &&
+    resolvedSearch.shot.trim() !== "" &&
+    Number.isFinite(Number(resolvedSearch.shot))
       ? Number(resolvedSearch.shot)
       : null;
 
@@ -117,12 +118,16 @@ export default async function TennisSessionDetailPage({
       ? (activeRally.shots.find((s) => s.shotIdx === selectedShotIdx) ?? null)
       : null;
 
+  const isSlowMo = resolvedSearch.slowmo === "1";
   const clipSeekTimeS =
     activeRally && activeShot
-      ? (toClipLocalTimeS(activeShot.tHitS, activeRally.startS) ??
-        toClipLocalTimeS(activeShot.tBounceS, activeRally.startS))
+      ? isSlowMo
+        ? (toClipLocalTimeS(activeShot.tBounceS, activeRally.startS) ??
+          toClipLocalTimeS(activeShot.tHitS, activeRally.startS))
+        : (toClipLocalTimeS(activeShot.tHitS, activeRally.startS) ??
+          toClipLocalTimeS(activeShot.tBounceS, activeRally.startS))
       : null;
-  const playbackRate = resolvedSearch.slowmo === "1" ? 0.25 : 1;
+  const playbackRate = isSlowMo ? 0.25 : 1;
 
   const activeRallyPos = activeRally
     ? filteredRallies.findIndex((r) => r.rallyIdx === activeRally.rallyIdx)
@@ -132,7 +137,9 @@ export default async function TennisSessionDetailPage({
   const nextRally =
     activeRallyPos >= 0 && activeRallyPos < filteredRallies.length - 1
       ? filteredRallies[activeRallyPos + 1]
-      : null;
+      : activeRallyPos === -1
+        ? (filteredRallies[0] ?? null)
+        : null;
   const prevRallyHref = prevRally
     ? `/tennis/${detail.id}?filter=${activeFilter}&rally=${prevRally.rallyIdx}&hide1=${hideOneShotFeeds ? "1" : "0"}`
     : null;
@@ -153,7 +160,6 @@ export default async function TennisSessionDetailPage({
     ? resolveClipUrl(activeRally.clipUrl, process.env.NEXT_PUBLIC_TENNIS_MODAL_URL)
     : null;
 
-  const isRallyMode = detail.sessionType === "rally";
   const sourceBadgeLabel = formatSessionSource(
     detail.source,
     detail.stats as Record<string, unknown>,
@@ -314,7 +320,10 @@ export default async function TennisSessionDetailPage({
       {/* Rally Quick Filter Pills */}
       <div className="flex flex-wrap items-center gap-2 mb-5">
         {[
-          { key: "all", label: `All Rallies (${detail.rallies.length})` },
+          {
+            key: "all",
+            label: `All Rallies (${hideOneShotFeeds ? summary.qualifyingRallies : detail.rallies.length})`,
+          },
           { key: "10plus", label: `🔥 10+ Shots (${summary.rallies10Plus})` },
           {
             key: "bookmarked",
@@ -392,7 +401,7 @@ export default async function TennisSessionDetailPage({
                     playbackRate={playbackRate}
                     prevRallyHref={prevRallyHref}
                     nextRallyHref={nextRallyHref}
-                    activeShotIdx={selectedShotIdx}
+                    activeShotIdx={activeShot?.shotIdx ?? null}
                   />
                 ) : (
                   <div className="flex w-full aspect-video items-center justify-center rounded-md bg-stone-950 text-xs text-stone-400">
@@ -629,7 +638,7 @@ export default async function TennisSessionDetailPage({
               shots={minimapShots}
               doubles={detail.doubles}
               showDeepZones={true}
-              activeShotIdx={selectedShotIdx}
+              activeShotIdx={activeShot?.shotIdx ?? null}
             />
           </div>
 

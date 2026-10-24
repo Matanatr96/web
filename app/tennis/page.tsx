@@ -320,7 +320,7 @@ export default async function TennisIndexPage({ searchParams }: Props) {
                       <div>
                         <div className="text-xs text-stone-500">FH / BH Speed</div>
                         <div className="font-semibold tabular-nums">
-                          {fhAvg ? `${fhAvg}` : "—"} / {bhAvg ? `${bhAvg} mph` : "—"}
+                          {fhAvg || bhAvg ? `${fhAvg ?? "—"} / ${bhAvg ?? "—"} mph` : "— / —"}
                         </div>
                       </div>
                     </>
