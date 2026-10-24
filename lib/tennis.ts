@@ -205,6 +205,33 @@ export interface TennisMatchDetail extends TennisMatch {
   summary: TennisSessionSummary;
 }
 
+/** Aggregate statistics across all sessions returned by `GET /api/tennis/sessions`. */
+export interface TennisAllSessionsSummary {
+  totalSessions: number;
+  totalRallies: number;
+  totalShots: number;
+  bestInStreak: number;
+  inCallRate: number;
+}
+
+/** Enriched session item returned by `GET /api/tennis/sessions` for the iOS Home Screen and web tools. */
+export interface TennisSessionListItem extends TennisMatch {
+  matchId: string;
+  totalRallies: number;
+  totalShots: number;
+  bestInStreak: number;
+  longestRally: number;
+  inPct: number;
+  outCount: number;
+  scoreFormatted: string | null;
+}
+
+/** Response payload of `GET /api/tennis/sessions`. */
+export interface TennisSessionsResponse {
+  summary: TennisAllSessionsSummary;
+  sessions: TennisSessionListItem[];
+}
+
 /** `match.status` webhook: processing started (with `rallies_expected`) or failed. */
 export interface MatchStatusEvent {
   type: "match.status";
@@ -766,6 +793,64 @@ export function summarizeSession(params: {
 }
 
 /**
+ * Aggregates session-level statistics across a list of `TennisMatch` rows for the iOS Home Screen
+ * and `GET /api/tennis/sessions`, returning both the top-level summary (`totalSessions`,
+ * `totalRallies`, `totalShots`, `bestInStreak`, `inCallRate`) and enriched session items.
+ *
+ * @param matches - Sessions ordered newest first (from `listTennisMatches` / `getTennisMatches`).
+ * @returns `{ summary, sessions }`.
+ */
+export function summarizeAllSessions(matches: TennisMatch[]): TennisSessionsResponse {
+  let totalRallies = 0;
+  let totalShots = 0;
+  let bestInStreak = 0;
+  let weightedInSum = 0;
+  let weightTotal = 0;
+
+  const sessions: TennisSessionListItem[] = matches.map((m) => {
+    const rallies = m.stats.totalRallies ?? m.ralliesDone ?? 0;
+    const shots = m.stats.totalShots ?? 0;
+    const longestRally = m.stats.longestRally ?? 0;
+    const streak = m.stats.longestInStreak ?? longestRally;
+    const inPct = m.stats.inPct ?? 0;
+    const outCount = m.stats.outCount ?? 0;
+
+    totalRallies += rallies;
+    totalShots += shots;
+    bestInStreak = Math.max(bestInStreak, streak);
+
+    if (inPct > 0 || outCount > 0) {
+      const weight = shots > 0 ? shots : 1;
+      weightedInSum += inPct * weight;
+      weightTotal += weight;
+    }
+
+    return {
+      ...m,
+      matchId: m.id,
+      totalRallies: rallies,
+      totalShots: shots,
+      bestInStreak: streak,
+      longestRally,
+      inPct,
+      outCount,
+      scoreFormatted: m.score ? formatScore(m.score) : null,
+    };
+  });
+
+  return {
+    summary: {
+      totalSessions: matches.length,
+      totalRallies,
+      totalShots,
+      bestInStreak,
+      inCallRate: weightTotal > 0 ? round1(weightedInSum / weightTotal) : 0,
+    },
+    sessions,
+  };
+}
+
+/**
  * Formats a Match Mode scoreboard. Uses the backend's `display` string when present.
  *
  * @param score - Scoreboard or `null`.
@@ -904,6 +989,7 @@ function parseSessionType(val: unknown): TennisSessionType | null {
 }
 
 function parseSource(val: unknown): "web" | "ios" | null {
+  if (val === "ios_library") return "ios";
   return val === "web" || val === "ios" ? val : null;
 }
 
@@ -1376,7 +1462,7 @@ function mapMatchRow(row: Record<string, unknown>): TennisMatch {
     title: str(row.title),
     playedOn: String(row.played_on ?? ""),
     sessionType: row.session_type === "match" ? "match" : "rally",
-    source: row.source === "ios" ? "ios" : "web",
+    source: row.source === "ios" || row.source === "ios_library" ? "ios" : "web",
     status: status === "processing" || status === "ready" || status === "failed" ? status : "uploading",
     court,
     doubles,
@@ -1395,10 +1481,15 @@ function mapMatchRow(row: Record<string, unknown>): TennisMatch {
  * Lists sessions, newest first, optionally filtered by session type. Uses the public (RLS) client.
  *
  * @param filter - `"all"` (default), `"rally"`, or `"match"`.
+ * @param client - Optional Supabase client override for testing.
  * @returns Sessions; an empty array if the query fails (logged).
  */
-export async function getTennisMatches(filter: TennisSessionType | "all" = "all"): Promise<TennisMatch[]> {
-  let query = getSupabase()
+export async function getTennisMatches(
+  filter: TennisSessionType | "all" = "all",
+  client?: ReturnType<typeof getServiceClient>,
+): Promise<TennisMatch[]> {
+  const supabase = client ?? getSupabase();
+  let query = supabase
     .from("tennis_matches")
     .select("*")
     .order("played_on", { ascending: false })
@@ -1411,6 +1502,16 @@ export async function getTennisMatches(filter: TennisSessionType | "all" = "all"
   }
   return ((data ?? []) as Array<Record<string, unknown>>).map(mapMatchRow);
 }
+
+/**
+ * Alias for `getTennisMatches`: lists tennis sessions ordered newest first, optionally filtered by
+ * session type (`"all"` | `"rally"` | `"match"`).
+ *
+ * @param filter - `"all"` (default), `"rally"`, or `"match"`.
+ * @param client - Optional Supabase client override for testing.
+ * @returns Sessions; an empty array if the query fails (logged).
+ */
+export const listTennisMatches = getTennisMatches;
 
 /**
  * Loads one session with its rallies, shots and points, and computes its summary.
