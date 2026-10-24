@@ -1,7 +1,8 @@
 "use client";
 
+import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   courtToSvg,
   ITF_DOUBLES_HALF_WIDTH_M,
@@ -51,13 +52,23 @@ function callColor(call: TennisShot["call"]): {
   return { fill: "#a8a29e", stroke: "#57534e", label: "UNKNOWN" };
 }
 
+function formatStrokeLabel(stroke: string | null): string {
+  if (!stroke) return "Shot";
+  const lower = stroke.toLowerCase();
+  if (lower === "fh" || lower === "forehand") return "FH";
+  if (lower === "bh" || lower === "backhand") return "BH";
+  if (lower === "serve") return "Serve";
+  return stroke.toUpperCase();
+}
+
 /**
  * Server-safe 2D ITF metric SVG court minimap displaying shaded Deep Target Zones
- * ($6.40\text{–}11.885\text{ m}$), shot trajectory vectors, and color-coded bounce locations
- * (`in` green, `out` red, `close` amber) with uncertainty rings.
+ * ($6.40\text{–}11.885\text{ m}$), shot trajectory vectors, color-coded bounce locations
+ * (`in` green, `out` red, `close` amber) with uncertainty rings, a `◆ Selected Shot`
+ * diamond marker, a visual legend, and a compact selected-shot callout badge.
  *
- * @param props - `TennisCourtMinimapProps` containing shots, doubles mode, and deep-zone shading options.
- * @returns Rendered `<svg>` court minimap element.
+ * @param props - `TennisCourtMinimapProps` containing shots, doubles mode, deep-zone shading, and `activeShotIdx`.
+ * @returns Rendered `<svg>` court minimap, visual legend, and selected-shot callout.
  */
 export default function TennisCourtMinimap({
   shots,
@@ -70,6 +81,11 @@ export default function TennisCourtMinimap({
     rallyIdx !== null && rallyIdx !== undefined
       ? shots.filter((s) => s.rallyIdx === rallyIdx)
       : shots;
+
+  const selectedShot =
+    activeShotIdx !== null && activeShotIdx !== undefined
+      ? (filteredShots.find((s) => s.shotIdx === activeShotIdx) ?? null)
+      : null;
 
   const activeHalfW = doubles ? ITF_DOUBLES_HALF_WIDTH_M : ITF_SINGLES_HALF_WIDTH_M;
 
@@ -168,7 +184,7 @@ export default function TennisCourtMinimap({
               textAnchor="middle"
               className="fill-emerald-200/75 text-[8px] font-semibold tracking-wider uppercase"
             >
-              Deep Zone (6.4–11.9m)
+              Deep Target Zone (6.4–11.9m)
             </text>
             <text
               x={VIEW_W / 2}
@@ -176,7 +192,7 @@ export default function TennisCourtMinimap({
               textAnchor="middle"
               className="fill-emerald-200/75 text-[8px] font-semibold tracking-wider uppercase"
             >
-              Deep Zone (6.4–11.9m)
+              Deep Target Zone (6.4–11.9m)
             </text>
           </g>
         )}
@@ -266,8 +282,8 @@ export default function TennisCourtMinimap({
             }
             const pHit = pt(shot.hitX, shot.hitY);
             const pBounce = pt(shot.bounceX, shot.bounceY);
-            const isHighlighted =
-              activeShotIdx === null || activeShotIdx === shot.shotIdx;
+            const isSelected = activeShotIdx === shot.shotIdx;
+            const isHighlighted = activeShotIdx === null || isSelected;
 
             return (
               <line
@@ -276,37 +292,38 @@ export default function TennisCourtMinimap({
                 y1={pHit.y}
                 x2={pBounce.x}
                 y2={pBounce.y}
-                stroke="#38bdf8"
-                strokeWidth={isHighlighted ? "1.6" : "1.0"}
-                strokeOpacity={isHighlighted ? "0.72" : "0.25"}
+                stroke={isSelected ? "#facc15" : "#38bdf8"}
+                strokeWidth={isSelected ? "2.4" : isHighlighted ? "1.6" : "1.0"}
+                strokeOpacity={isHighlighted ? "0.85" : "0.25"}
                 markerEnd="url(#shot-arrow)"
               />
             );
           })}
         </g>
 
-        {/* Bounce impact dots + 2-sigma uncertainty halo */}
+        {/* Bounce impact dots, 2-sigma uncertainty halo, and ◆ Selected Shot diamond */}
         <g>
           {filteredShots.map((shot) => {
             if (shot.bounceX === null || shot.bounceY === null) return null;
             const pBounce = pt(shot.bounceX, shot.bounceY);
             const colors = callColor(shot.call);
-            const isHighlighted =
-              activeShotIdx === null || activeShotIdx === shot.shotIdx;
+            const isSelected = activeShotIdx === shot.shotIdx;
+            const isHighlighted = activeShotIdx === null || isSelected;
             const sigmaRadiusPx = Math.min(
               14,
               Math.max(5.5, (shot.sigmaM ?? 0.03) * 2 * 18),
             );
             const marginCm =
               shot.marginM !== null ? `${(Math.abs(shot.marginM) * 100).toFixed(1)} cm` : "—";
+            const d = 6.8;
 
             return (
               <g
                 key={`bounce-${shot.rallyIdx}-${shot.shotIdx}`}
-                opacity={isHighlighted ? 1 : 0.4}
+                opacity={isHighlighted ? 1 : 0.38}
               >
                 <title>
-                  {`Rally #${shot.rallyIdx + 1} · Shot #${shot.shotIdx + 1} (${(shot.stroke ?? "shot").toUpperCase()}) · ${colors.label} (${marginCm}) · ${shot.speedMph ? `${shot.speedMph} mph` : "speed n/a"} · Zone: ${shot.depthZone ?? "unknown"}`}
+                  {`Rally #${shot.rallyIdx + 1} · Shot #${shot.shotIdx + 1} (${formatStrokeLabel(shot.stroke)}) · ${colors.label} (${marginCm}) · ${shot.speedMph ? `${shot.speedMph} mph` : "speed n/a"} · Zone: ${shot.depthZone ?? "unknown"}`}
                 </title>
                 {shot.call === "close" && (
                   <circle
@@ -319,63 +336,158 @@ export default function TennisCourtMinimap({
                     strokeDasharray="2 2"
                   />
                 )}
-                <circle
-                  cx={pBounce.x}
-                  cy={pBounce.y}
-                  r={isHighlighted ? "4.6" : "3.5"}
-                  fill={colors.fill}
-                  stroke="#0f172a"
-                  strokeWidth="1.2"
-                />
+                {isSelected ? (
+                  <>
+                    <circle
+                      cx={pBounce.x}
+                      cy={pBounce.y}
+                      r="9.5"
+                      fill="none"
+                      stroke="#facc15"
+                      strokeWidth="1.5"
+                      strokeOpacity="0.9"
+                    />
+                    <polygon
+                      points={`${pBounce.x},${pBounce.y - d} ${pBounce.x + d},${pBounce.y} ${pBounce.x},${pBounce.y + d} ${pBounce.x - d},${pBounce.y}`}
+                      fill={colors.fill}
+                      stroke="#ffffff"
+                      strokeWidth="1.6"
+                    />
+                  </>
+                ) : (
+                  <circle
+                    cx={pBounce.x}
+                    cy={pBounce.y}
+                    r={isHighlighted ? "4.4" : "3.4"}
+                    fill={colors.fill}
+                    stroke="#0f172a"
+                    strokeWidth="1.2"
+                  />
+                )}
               </g>
             );
           })}
         </g>
       </svg>
 
-      {/* Legend */}
-      <div className="mt-2.5 flex flex-wrap items-center justify-center gap-3 text-xs text-stone-600 dark:text-stone-400">
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-emerald-500 inline-block" />
-          In
+      {/* Visual Legend */}
+      <div className="mt-3 flex flex-wrap items-center justify-center gap-x-3 gap-y-1.5 text-[11px] font-medium text-stone-600 dark:text-stone-400">
+        <span className="inline-flex items-center gap-1 text-emerald-700 dark:text-emerald-400">
+          <span>●</span> IN
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-amber-500 inline-block" />
-          Close (±2σ)
+        <span className="inline-flex items-center gap-1 text-amber-700 dark:text-amber-400">
+          <span>●</span> CLOSE
         </span>
-        <span className="inline-flex items-center gap-1.5">
-          <span className="h-2.5 w-2.5 rounded-full bg-rose-500 inline-block" />
-          Out (Play-On Tracked)
+        <span className="inline-flex items-center gap-1 text-rose-700 dark:text-rose-400">
+          <span>●</span> OUT
+        </span>
+        <span className="inline-flex items-center gap-1 text-amber-600 dark:text-amber-300">
+          <span>◆</span> Selected Shot
         </span>
         {showDeepZones && (
-          <span className="inline-flex items-center gap-1.5">
+          <span className="inline-flex items-center gap-1">
             <span className="h-2.5 w-2.5 rounded-sm bg-emerald-500/30 border border-emerald-500 inline-block" />
-            Deep Target (6.4–11.9m)
+            Deep Target Zone
           </span>
+        )}
+      </div>
+
+      {/* Selected-Shot Detail Callout Badge */}
+      <div className="mt-3 w-full">
+        {selectedShot ? (
+          <div className="rounded-md border border-emerald-300 dark:border-emerald-800/80 bg-emerald-50/70 dark:bg-emerald-950/30 px-3 py-2 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-1.5">
+              <span className="font-semibold text-stone-900 dark:text-stone-100">
+                ◆ Shot #{selectedShot.shotIdx + 1} · {formatStrokeLabel(selectedShot.stroke)}
+              </span>
+              <span
+                className={`rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase ${
+                  selectedShot.call === "in"
+                    ? "bg-emerald-200/80 text-emerald-900 dark:bg-emerald-900/70 dark:text-emerald-200"
+                    : selectedShot.call === "close"
+                      ? "bg-amber-200/80 text-amber-900 dark:bg-amber-900/70 dark:text-amber-200"
+                      : selectedShot.call === "out"
+                        ? "bg-rose-200/80 text-rose-900 dark:bg-rose-900/70 dark:text-rose-200"
+                        : "bg-stone-200 text-stone-700 dark:bg-stone-800 dark:text-stone-300"
+                }`}
+              >
+                {selectedShot.call}
+              </span>
+            </div>
+            <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-stone-600 dark:text-stone-300 tabular-nums">
+              <span>
+                Speed:{" "}
+                <strong>
+                  {selectedShot.speedMph !== null ? `${selectedShot.speedMph} mph` : "— mph"}
+                </strong>
+              </span>
+              <span>
+                Depth: <strong className="uppercase">{selectedShot.depthZone ?? "unknown"}</strong>
+              </span>
+              <span>
+                Margin:{" "}
+                <strong>
+                  {selectedShot.marginM !== null
+                    ? `${selectedShot.marginM >= 0 ? "+" : "−"}${Math.abs(selectedShot.marginM * 100).toFixed(1)} cm`
+                    : "±0.0 cm"}
+                </strong>
+              </span>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-md border border-dashed border-stone-200 dark:border-stone-800 px-3 py-2 text-center text-[11px] text-stone-400">
+            Click any shot in the scrubber to highlight its ◆ bounce &amp; line margin
+          </div>
         )}
       </div>
     </div>
   );
 }
 
+export interface TennisClipPlayerProps {
+  /** Modal HTTP Byte-Range video clip URL. */
+  src: string;
+  /** Optional clip-local timestamp (seconds) to seek to when a shot or challenge is selected. */
+  seekToS?: number | null;
+  /** Initial playback rate (`1`, `0.5`, or `0.25`). */
+  playbackRate?: number;
+  /** Optional href for navigating to the previous rally in the active filter view. */
+  prevRallyHref?: string | null;
+  /** Optional href for navigating to the next rally in the active filter view. */
+  nextRallyHref?: string | null;
+  /** Optional active shot index so re-selecting a shot re-triggers seek cleanly. */
+  activeShotIdx?: number | null;
+}
+
+const SPEED_OPTIONS: Array<{ rate: number; label: string }> = [
+  { rate: 1, label: "1.0×" },
+  { rate: 0.5, label: "0.5×" },
+  { rate: 0.25, label: "0.25× Slow-Mo" },
+];
+
 /**
- * Client-side `<video>` player for Modal HTTP Byte-Range rally clips that seeks to a selected
- * shot/bounce timestamp (`seekToS = tBounceS - activeRally.startS`) and applies slow-motion
- * playback (`playbackRate = 0.25`) when triggered from a Hawk-Eye Challenge card.
+ * Client-side `<video>` player for Modal HTTP Byte-Range rally clips with an integrated
+ * 1-click control bar right beneath the video (**← Prev Rally**, **Next Rally →**, **Replay Rally**,
+ * and **Playback Speed pills (`1.0×`, `0.5×`, `0.25× Slow-Mo`)**). Automatically seeks to a
+ * selected shot/bounce timestamp (`seekToS`) and applies the selected playback speed.
  *
- * @param props - `src` clip URL, optional `seekToS` in clip-local seconds, and `playbackRate`.
- * @returns Rendered `<video>` element.
+ * @param props - `TennisClipPlayerProps` with clip `src`, `seekToS`, `playbackRate`, and rally nav links.
+ * @returns Rendered `<video>` element and interactive rally/speed control bar.
  */
 export function TennisClipPlayer({
   src,
   seekToS = null,
   playbackRate = 1,
-}: {
-  src: string;
-  seekToS?: number | null;
-  playbackRate?: number;
-}) {
+  prevRallyHref = null,
+  nextRallyHref = null,
+  activeShotIdx = null,
+}: TennisClipPlayerProps) {
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [rate, setRate] = useState<number>(playbackRate);
+
+  useEffect(() => {
+    setRate(playbackRate);
+  }, [playbackRate]);
 
   useEffect(() => {
     const video = videoRef.current;
@@ -404,18 +516,96 @@ export function TennisClipPlayer({
     return () => {
       video.removeEventListener("loadedmetadata", applySeekAndRate);
     };
-  }, [src, seekToS, playbackRate]);
+  }, [src, seekToS, playbackRate, activeShotIdx]);
+
+  const handleSpeedChange = (newRate: number) => {
+    setRate(newRate);
+    if (videoRef.current) {
+      videoRef.current.playbackRate = newRate;
+    }
+  };
+
+  const handleReplayRally = () => {
+    const video = videoRef.current;
+    if (!video) return;
+    video.currentTime = 0;
+    video.playbackRate = rate;
+    void video.play().catch(() => {});
+  };
 
   return (
-    <video
-      ref={videoRef}
-      key={src}
-      src={src}
-      controls
-      playsInline
-      preload="metadata"
-      className="w-full aspect-video rounded-md bg-stone-950 border border-stone-800"
-    />
+    <div className="space-y-2.5">
+      <video
+        ref={videoRef}
+        key={src}
+        src={src}
+        controls
+        playsInline
+        preload="metadata"
+        className="w-full aspect-video rounded-md bg-stone-950 border border-stone-800"
+      />
+
+      {/* Sleek Rally Navigation & Playback Speed Control Bar */}
+      <div className="flex flex-wrap items-center justify-between gap-2 rounded-md border border-stone-200 dark:border-stone-800 bg-stone-50 dark:bg-stone-950/60 px-3 py-2 text-xs">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {prevRallyHref ? (
+            <Link
+              href={prevRallyHref}
+              className="rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-2.5 py-1 font-medium text-stone-700 dark:text-stone-200 hover:border-stone-400 transition"
+            >
+              ← Prev Rally
+            </Link>
+          ) : (
+            <span className="rounded border border-stone-200 dark:border-stone-800 px-2.5 py-1 font-medium text-stone-400 dark:text-stone-600 cursor-not-allowed">
+              ← Prev Rally
+            </span>
+          )}
+
+          {nextRallyHref ? (
+            <Link
+              href={nextRallyHref}
+              className="rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-2.5 py-1 font-medium text-stone-700 dark:text-stone-200 hover:border-stone-400 transition"
+            >
+              Next Rally →
+            </Link>
+          ) : (
+            <span className="rounded border border-stone-200 dark:border-stone-800 px-2.5 py-1 font-medium text-stone-400 dark:text-stone-600 cursor-not-allowed">
+              Next Rally →
+            </span>
+          )}
+
+          <button
+            type="button"
+            onClick={handleReplayRally}
+            className="rounded border border-stone-300 dark:border-stone-700 bg-white dark:bg-stone-900 px-2.5 py-1 font-medium text-stone-700 dark:text-stone-200 hover:border-stone-400 transition cursor-pointer"
+          >
+            ↺ Replay Rally
+          </button>
+        </div>
+
+        <div className="flex items-center gap-1" role="group" aria-label="Playback Speed">
+          <span className="text-[11px] text-stone-400 mr-1">Speed:</span>
+          {SPEED_OPTIONS.map((opt) => {
+            const isActive = Math.abs(rate - opt.rate) < 0.01;
+            return (
+              <button
+                key={opt.rate}
+                type="button"
+                onClick={() => handleSpeedChange(opt.rate)}
+                aria-pressed={isActive}
+                className={`rounded-full px-2.5 py-0.5 font-medium transition cursor-pointer ${
+                  isActive
+                    ? "bg-emerald-600 text-white"
+                    : "border border-stone-200 dark:border-stone-700 bg-white dark:bg-stone-900 text-stone-600 dark:text-stone-400 hover:border-stone-400"
+                }`}
+              >
+                {opt.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+    </div>
   );
 }
 

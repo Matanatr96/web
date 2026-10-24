@@ -11,6 +11,7 @@ import {
   ITF_SERVICE_LINE_M,
   ITF_SINGLES_HALF_WIDTH_M,
   MODAL_PART_SIZE_BYTES,
+  normalizeTappedCornersToQuad,
   type Point2D,
   scaleCalibrationPoints,
   type TennisSessionType,
@@ -18,13 +19,24 @@ import {
 } from "@/lib/tennis";
 
 const TAP_STEPS = [
+  "Far-Left outer corner",
+  "Far-Right outer corner",
   "Near-Left outer corner",
   "Near-Right outer corner",
-  "Far-Right outer corner",
-  "Far-Left outer corner",
   "Left net-post top",
   "Right net-post top",
 ] as const;
+
+const CORNER_GUIDE_PILLS: ReadonlyArray<{
+  label: string;
+  indices: readonly number[];
+}> = [
+  { label: "1: Far-Left", indices: [0] },
+  { label: "2: Far-Right", indices: [1] },
+  { label: "3: Near-Left", indices: [2] },
+  { label: "4: Near-Right", indices: [3] },
+  { label: "5–6: Net Posts", indices: [4, 5] },
+];
 
 const LOUPE_PX = 128;
 const LOUPE_ZOOM = 4;
@@ -151,7 +163,10 @@ export default function TennisCalibUploader() {
   const overlayCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const loupeCanvasRef = useRef<HTMLCanvasElement | null>(null);
 
-  const cornersPx = useMemo(() => points.slice(0, 4), [points]);
+  const cornersPx = useMemo(
+    () => normalizeTappedCornersToQuad(points.slice(0, 4)),
+    [points],
+  );
   // Pass netPostsPx whenever the user has tapped >4 points so a 5th tap validates and prompts for the 6th tap.
   const netPostsPx = useMemo(() => (points.length > 4 ? points.slice(4, 6) : undefined), [points]);
   const validation = useMemo(
@@ -442,14 +457,55 @@ export default function TennisCalibUploader() {
     </button>
   );
 
+  const step1Done = Boolean(videoFile || frameLoaded);
+  const step2Done = validation.valid;
+  const activeWizardStep: 1 | 2 | 3 = !step1Done ? 1 : !step2Done ? 2 : 3;
+
   return (
     <section className="w-full rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 mb-8">
-      <div className="flex items-baseline justify-between mb-4">
-        <h2 className="text-lg font-semibold tracking-tight">New session</h2>
+      <div className="flex items-baseline justify-between mb-3">
+        <h2 className="text-lg font-semibold tracking-tight">New Session</h2>
         <button type="button" onClick={() => setIsOpen(false)} disabled={busy} className="text-xs text-stone-500 hover:underline">
           Close
         </button>
       </div>
+
+      {/* 3-Step Progress Header */}
+      <ol
+        aria-label="Session Upload Steps"
+        className="grid grid-cols-1 sm:grid-cols-3 gap-2 mb-4 text-xs"
+      >
+        {[
+          { step: 1 as const, label: "1. Choose Video", done: step1Done },
+          {
+            step: 2 as const,
+            label: "2. Tap 4 Corners + 2 Net Posts",
+            done: step2Done,
+          },
+          {
+            step: 3 as const,
+            label: "3. Upload & Analyze",
+            done: progressPct === 100,
+          },
+        ].map((item) => {
+          const isCurrent = activeWizardStep === item.step;
+          return (
+            <li
+              key={item.step}
+              className={`flex items-center justify-between rounded-md border px-3 py-2 font-medium transition ${
+                item.done
+                  ? "border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/30 text-emerald-800 dark:text-emerald-300"
+                  : isCurrent
+                    ? "border-stone-900 dark:border-stone-200 bg-stone-900 text-white dark:bg-stone-100 dark:text-stone-900"
+                    : "border-stone-200 dark:border-stone-800 text-stone-500"
+              }`}
+            >
+              <span>{item.label}</span>
+              {item.done && <span aria-hidden="true">✓</span>}
+            </li>
+          );
+        })}
+      </ol>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 mb-4">
         {modeCard(
@@ -509,6 +565,33 @@ export default function TennisCalibUploader() {
         </p>
       )}
 
+      {/* Visual Corner-Order Guide Pill Strip */}
+      <div className="mb-2.5 flex flex-wrap items-center gap-1.5 text-[11px]">
+        {CORNER_GUIDE_PILLS.map((pill, idx) => {
+          const isActiveTap = pill.indices.includes(points.length as 0 | 1 | 2 | 3 | 4 | 5);
+          const isCompletedTap = points.length > Math.max(...pill.indices);
+          return (
+            <div key={pill.label} className="inline-flex items-center gap-1.5">
+              <span
+                className={`rounded-full px-2.5 py-0.5 font-medium transition ${
+                  isActiveTap
+                    ? "bg-emerald-600 text-white ring-2 ring-emerald-400/50"
+                    : isCompletedTap
+                      ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+                      : "border border-stone-200 dark:border-stone-800 text-stone-500"
+                }`}
+              >
+                {pill.label}
+                {isCompletedTap ? " ✓" : ""}
+              </span>
+              {idx < CORNER_GUIDE_PILLS.length - 1 && (
+                <span className="text-stone-300 dark:text-stone-700">→</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-2 mb-2 text-xs">
         <span>
           {points.length < 6 ? (
@@ -525,17 +608,17 @@ export default function TennisCalibUploader() {
             type="button"
             onClick={() => setPoints((p) => p.slice(0, -1))}
             disabled={points.length === 0 || busy}
-            className="rounded border border-stone-200 dark:border-stone-700 px-2 py-1 disabled:opacity-40"
+            className="rounded border border-stone-200 dark:border-stone-700 px-2.5 py-1 font-medium disabled:opacity-40 cursor-pointer"
           >
-            Undo
+            Undo Last Tap
           </button>
           <button
             type="button"
             onClick={() => setPoints([])}
             disabled={points.length === 0 || busy}
-            className="rounded border border-stone-200 dark:border-stone-700 px-2 py-1 disabled:opacity-40"
+            className="rounded border border-stone-200 dark:border-stone-700 px-2.5 py-1 font-medium disabled:opacity-40 cursor-pointer"
           >
-            Reset
+            Clear All
           </button>
         </span>
       </div>
@@ -599,7 +682,7 @@ export default function TennisCalibUploader() {
           disabled={!videoFile || !validation.valid || busy}
           className="rounded-md bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-500 disabled:opacity-40 transition"
         >
-          {busy ? "Uploading…" : "Upload & analyse"}
+          {busy ? "Uploading…" : "Upload & Analyze"}
         </button>
       </div>
     </section>
