@@ -10,10 +10,6 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "com.thelastmattapalli.restaurants",
-      "associatedDomains": [
-        "applinks:www.thelastmattapalli.com",
-        "applinks:thelastmattapalli.com"
-      ],
       "infoPlist": {
         "NSCameraUsageDescription": "Snap photos of restaurant receipts to itemize and split the bill, or attach dish photos to a visit.",
         "NSPhotoLibraryUsageDescription": "Choose receipt or dish photos from your library.",
