@@ -16,7 +16,7 @@ import sys
 import cv2
 import numpy as np
 
-from dsa.paths import TCD, TCD_WEIGHTS, WASB
+from dsa.paths import MODELS, TCD, TCD_WEIGHTS, WASB
 
 KP = list(range(23)) + list(range(91, 133))
 RTMW_URL = ("https://download.openmmlab.com/mmpose/v1/projects/rtmw/onnx_sdk/"
@@ -97,8 +97,10 @@ class Ball:
 class Pose:
     def __init__(self, device: str = "cuda"):
         from rtmlib import RTMPose
+        from rtmlib.tools.file import download_checkpoint
 
-        self.m = RTMPose(RTMW_URL, model_input_size=(288, 384), backend="onnxruntime", device=device)
+        onnx = download_checkpoint(RTMW_URL, dst_dir=str(MODELS / "rtmw"))     # kept under models/ (on Modal: the volume)
+        self.m = RTMPose(onnx, model_input_size=(288, 384), backend="onnxruntime", device=device)
         shape = self.m.session.get_inputs()[0].shape
         self.batched = not isinstance(shape[0], int) or shape[0] != 1
 

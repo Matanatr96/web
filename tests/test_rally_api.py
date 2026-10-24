@@ -91,7 +91,7 @@ def test_upload_resume_and_commit_a_session(api):
     assert not (root / MID / "jobs/session/parts").exists()
     assert spawned == [("segment_match", {"match_id": MID, "path": f"{MID}/source.mp4", "session_type": "rally",
                                           "court": {"size": [1920, 1080]}, "doubles": False, "source": "web",
-                                          "biomech": True})]
+                                          "biomech": True, "handedness": "right"})]
     assert client.post(f"/jobs/{MID}/commit", headers=tok()).json()["status"] == "processing"
     assert len(spawned) == 1                                                 # committing twice is a no-op
     assert client.get(f"/jobs/{MID}", headers=tok()).json()["received_parts"] == [0, 1, 2]
@@ -351,16 +351,25 @@ def test_preroll_serve_strokes_netted_call_and_multi_replica_refresh(tmp_path, m
                                                          "score": {"games": [6, 4]}}, headers=tok(scope="any"))
     assert fin.status_code == 200 and spawned[-1][0] == "finalize_session"
 
-    # Phase 3 biomechanics summary schema matches web normalizeBiomechTrait expectations
+    # Biomechanics come only from posed strokes (pose_hits): none here, so no traits and a plain note
     bio = RA.compute_session_biomechanics([shots, r_shots])
-    assert isinstance(bio["traits"], list) and len(bio["traits"]) >= 4
-    assert isinstance(bio["coach_notes"], str) and len(bio["coach_notes"]) > 10
+    assert bio["traits"] == [] and "Not enough" in bio["coach_notes"]
+    # MIN_STROKES posed strokes of a kind -> the median of each benchmarked trait; the schema the web's
+    # normalizeBiomechTrait expects
+    posed = [[{"hitter": "near", "stroke": "fh", "biomech": {"shoulder_coil": c, "knee_bend": 120.0,
+                                                               "contact_height": None}}
+              for c in (90.0, 95.0, 130.0)]]
+    bio = RA.compute_session_biomechanics(posed)
+    assert {t["trait"] for t in bio["traits"]} == {"shoulder_coil", "knee_bend"}      # contact_height: no values
+    coil = next(t for t in bio["traits"] if t["trait"] == "shoulder_coil")
+    assert coil["user_value"] == 95.0 and coil["stroke"] == "fh" and coil["unit"] == "deg"
     for tr_item in bio["traits"]:
         assert set(tr_item.keys()) == {"trait", "stroke", "user_value", "pro_mean", "pro_std", "z_score", "unit"}
-        assert tr_item["stroke"] in ("fh", "bh", "serve")
-        assert tr_item["pro_std"] > 0
         assert tr_item["z_score"] == pytest.approx((tr_item["user_value"] - tr_item["pro_mean"]) / tr_item["pro_std"],
                                                    abs=0.02)
+    assert "KNEE BEND" in bio["coach_notes"] or "knee bend" in bio["coach_notes"]      # the furthest from the tour
+    assert RA.compute_session_biomechanics(posed[:1][:1])["traits"] and \
+        RA.compute_session_biomechanics([posed[0][:2]])["traits"] == []               # below MIN_STROKES
 
     # Full unsegmented Camera Roll / web upload with rally_idx == 0 routes to segment_match
     mid_lib = str(uuid.uuid4())
@@ -511,4 +520,65 @@ def test_auto_calibrate_video_and_finalize_session_stats(tmp_path, monkeypatch):
     assert st["avg_speed_mph"] == pytest.approx(77.3, abs=0.1) and st["max_speed_mph"] == 102.0
     assert st["net_clearance_avg_m"] == pytest.approx(0.507, abs=0.005)
     assert st["shot_counts"] == {"fh": 1, "bh": 1, "serve": 1, "feed": 0}
-    assert "biomechanics" in st and len(st["biomech_traits"]) >= 4
+    assert "biomechanics" in st and st["biomech_traits"] == [] and "coach_notes" in st   # no posed strokes saved
+
+
+def test_pose_hits_measures_the_near_player_at_his_hits():
+    """pose_hits: at each 30 Hz step around a near-court hit the box whose feet stand nearest the hit point is
+    the hitter's (the far player's never is), his skeletons are measured with dsa.measure.technique, and far-court
+    shots, feeds and shots with nobody within POSE_MAX_M are left alone."""
+    from dsa.measure import technique as T
+    from dsa.physics.homography import project
+
+    cal = true_camera()
+    W, H = 1920, 1080
+
+    def box_at(xy_court, h_px):
+        u, v = project(cal, [xy_court[0], xy_court[1], 0.0])
+        return [u - h_px / 4, v - h_px, u + h_px / 4, v, 0.9]
+
+    me, opp = box_at((1.2, -12.6), 320.0), box_at((-0.5, 10.5), 70.0)
+    picked = []
+
+    def people(bgr):
+        return np.array([opp, me, [5.0, 5.0, 20.0, 40.0, 0.4]])        # the opponent, me, a bystander off court
+
+    def keypoints(bgr, box):
+        picked.append(tuple(box[:4]))
+        x1, y1, x2, y2 = box[:4]
+        cx, h = (x1 + x2) / 2, y2 - y1
+        kp = np.full((65, 3), np.nan)
+        swing = np.sin(len(picked) / 6.0)                                 # the hitting wrist moving through the window
+        body = {0: (cx, y1 + 0.05 * h), 5: (cx - 0.12 * h, y1 + 0.2 * h), 6: (cx + 0.12 * h, y1 + 0.2 * h),
+                7: (cx - 0.2 * h, y1 + 0.35 * h), 8: (cx + 0.2 * h, y1 + 0.35 * h), 9: (cx - 0.25 * h, y1 + 0.5 * h),
+                10: (cx + 0.3 * h * swing, y1 + 0.45 * h - 0.1 * h * swing), 11: (cx - 0.08 * h, y1 + 0.5 * h),
+                12: (cx + 0.08 * h, y1 + 0.5 * h), 13: (cx - 0.08 * h, y1 + 0.75 * h), 14: (cx + 0.08 * h, y1 + 0.75 * h),
+                15: (cx - 0.08 * h, y1 + 0.98 * h), 16: (cx + 0.08 * h, y1 + 0.98 * h)}
+        for j, (x, y) in body.items():
+            kp[j] = (x, y, 0.9)
+        return kp
+
+    frames = ((i / 60.0, np.zeros((H, W, 3), np.uint8)) for i in range(160))
+    shots = [{"shot_idx": 0, "hitter": "near", "stroke": "fh", "t_hit_s": 1.2, "hit_x": 1.0, "hit_y": -12.0},
+             {"shot_idx": 1, "hitter": "far", "stroke": "bh", "t_hit_s": 1.9, "hit_x": -1.0, "hit_y": 11.0},
+             {"shot_idx": 2, "hitter": "near", "stroke": "feed", "t_hit_s": 2.3, "hit_x": 0.0, "hit_y": -11.0}]
+    RA.pose_hits(frames, shots, cal, people, keypoints)
+    assert "biomech" not in shots[1] and "biomech" not in shots[2]
+    assert set(picked) == {tuple(me[:4])}                                 # never the opponent or the bystander
+    assert len(picked) == len(T.GRID)                                      # one pose per 30 Hz step of the window
+    b = shots[0]["biomech"]
+    assert list(b) == [n for n in T.STROKE if n not in T.GROUND] and shots[0]["biomech_seen"] == 1.0
+    assert all(np.isfinite(b[k]) for k in ("contact_height", "elbow_angle", "knee_bend", "wrist_speed", "shoulder_coil"))
+    assert 0 < b["knee_bend"] <= 180 and 0 <= b["elbow_angle"] <= 180 and b["wrist_speed"] > 0
+
+    # a left-hander is mirrored before measuring: the same stroke measures, the sideways ones flipped
+    shots_l = [dict(shots[0], biomech=None)]
+    picked.clear()
+    RA.pose_hits(((i / 60.0, np.zeros((H, W, 3), np.uint8)) for i in range(160)), shots_l, cal, people, keypoints,
+                 handedness="left")
+    assert set(shots_l[0]["biomech"]) == set(b)
+
+    # nobody within POSE_MAX_M of the hit point: not measured
+    far = [{"shot_idx": 0, "hitter": "near", "stroke": "serve", "t_hit_s": 1.2, "hit_x": 3.0, "hit_y": -8.0}]
+    RA.pose_hits(((i / 60.0, np.zeros((H, W, 3), np.uint8)) for i in range(160)), far, cal, people, keypoints)
+    assert "biomech" not in far[0]

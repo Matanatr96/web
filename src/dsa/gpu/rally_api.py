@@ -133,7 +133,7 @@ def _serve_region(hitter: str, hit_x: float) -> str:
     return f"{'deuce' if deuce else 'ad'}_{'far' if hitter == 'near' else 'near'}"
 
 
-PRO_BIOMECH_BENCHMARKS: dict[str, list[tuple[str, float, float, str]]] = {
+PRO_BIOMECH_BENCHMARKS: dict[str, list[tuple[str, float, float, str]]] = {     # trait, tour mean, sd, unit
     "fh": [
         ("shoulder_coil", 104.0, 8.5, "deg"),
         ("separation", 31.0, 6.0, "deg"),
@@ -155,48 +155,114 @@ PRO_BIOMECH_BENCHMARKS: dict[str, list[tuple[str, float, float, str]]] = {
         ("into_court", 0.58, 0.15, "m"),
     ],
 }
+POSE_MAX_M = 3.0                # m: the hitter's feet stand at most this far from the hit point, else no box is his
+POSE_MIN_SEEN = 0.6             # share of the window's steps with his skeleton, else the stroke is not measured
+MIN_STROKES = 3                 # measured strokes of a kind before its traits are compared with the tour
+KIND = {"fh": "forehand", "bh": "backhand", "serve": "serve"}       # shot stroke -> dsa.measure.technique KINDS
 
 
-def compute_session_biomechanics(per_rally: list[list[dict]], src: str | None = None, cal=None) -> dict:
-    """Session biomechanics summary ({traits, coach_notes}) comparing the player's strokes against tour pro
-    benchmarks (dsa.measure.technique STROKE / SERVE)."""
-    all_shots = [s for r in per_rally for s in r]
-    near_shots = [s for s in all_shots if s.get("hitter") == "near"] or all_shots
-    by_stroke: dict[str, list[dict]] = {"fh": [], "bh": [], "serve": []}
-    for s in near_shots:
-        st = s.get("stroke")
-        if st in by_stroke:
-            by_stroke[st].append(s)
-    active_strokes = [st for st in ("fh", "bh", "serve") if by_stroke[st]] or ["fh", "bh", "serve"]
-    base_speed = {"fh": 78.0, "bh": 70.0, "serve": 108.0}
+def pose_hits(frames: Iterable[tuple[float, np.ndarray]], shots: list[dict], cal,
+              people: Callable[[np.ndarray], np.ndarray], keypoints: Callable[[np.ndarray, np.ndarray], np.ndarray],
+              handedness: str = "right") -> None:
+    """Measure the near player's technique at each of his fh / bh / serve shots, in place: shot['biomech'] =
+    {trait: value} (dsa.measure.technique STROKE / SERVE, the pose measures only) and shot['biomech_seen'].
+
+    frames: the clip's (t, bgr), t on the shots' t_hit_s clock. At each 30 Hz step of the -PRE .. +POST window
+    around a hit (technique.GRID), people(bgr) -> (n, 5) boxes; the one whose feet stand nearest the hit point on
+    the court (within POSE_MAX_M) is his; keypoints(bgr, box) -> (65, 3) his joints (dsa.gpu.models.Pose). The
+    window is cleaned (dsa.scene.clean.joints), a left-hander mirrored to right-handed and a backhand to look like
+    a forehand, as upstream's technique.hits / prepare, then measured with technique.features / serve_features."""
+    import warnings
+
+    from dsa.measure import technique as T
+    from dsa.physics.homography import HALF_LEN, to_court
+    from dsa.scene import clean
+
+    targets = [s for s in shots if s.get("hitter") == "near" and s.get("stroke") in KIND
+               and s.get("t_hit_s") is not None and s.get("hit_x") is not None]
+    if not targets:
+        return
+    grid, half_step = T.GRID, 0.5 / T.HZ
+    kp = np.full((len(targets), len(grid), 65, 3), np.nan)
+    box_h = np.full((len(targets), len(grid)), np.nan)
+    feet_px = np.full((len(targets), len(grid), 2), np.nan)
+    hit_xy = np.array([[s["hit_x"], s["hit_y"]] for s in targets], float)
+    t_hit = np.array([s["t_hit_s"] for s in targets], float)
+    t_stop = float(t_hit.max()) + T.POST + half_step
+    width = 0
+    for t, bgr in frames:
+        if t > t_stop:
+            break
+        width = bgr.shape[1]
+        due = []
+        for j in range(len(targets)):
+            k = int(np.argmin(np.abs(grid - (t - t_hit[j]))))
+            if abs(grid[k] - (t - t_hit[j])) <= half_step and np.isnan(box_h[j, k]):
+                due.append((j, k))
+        if not due:
+            continue
+        boxes = np.asarray(people(bgr), float).reshape(-1, 5)
+        if not len(boxes):
+            continue
+        feet = np.c_[(boxes[:, 0] + boxes[:, 2]) / 2, boxes[:, 3]]
+        on_court = to_court(cal.H0, feet)
+        for j, k in due:
+            d = np.linalg.norm(on_court - hit_xy[j], axis=1)
+            i = int(np.argmin(d))
+            if d[i] <= POSE_MAX_M:
+                kp[j, k], box_h[j, k], feet_px[j, k] = keypoints(bgr, boxes[i]), boxes[i, 3] - boxes[i, 1], feet[i]
+    for j, s in enumerate(targets):
+        seen = float(np.isfinite(kp[j, :, 0, 0]).mean())
+        if seen < POSE_MIN_SEEN:
+            continue
+        kind = KIND[s["stroke"]]
+        win = T.KINDS[kind].get("win", T.WIN)
+        try:
+            with warnings.catch_warnings(), np.errstate(all="ignore"):
+                warnings.simplefilter("ignore")
+                pose = clean.joints(kp[j], box_h[j])[:, T.JOINTS]                 # (T, 13, 3) px
+                if handedness == "left":
+                    pose = pose[:, T.MIRROR]
+                    pose[..., 0] = width - pose[..., 0]
+                xy = T.normalise(pose[None])
+                if T.KINDS[kind]["flip"]:
+                    xy[..., 0] = -xy[..., 0]
+                g = to_court(cal.H0, feet_px[j])                                   # (T, 2) court metres
+                feet = np.c_[-HALF_LEN - g[:, 1], g[:, 0]][None]                   # behind the near baseline, right of centre
+                lo = int(np.argmin(np.abs(grid - win[0])))
+                w = T.align(T.fill(xy), grid, win)
+                fw = T.fill(feet)[:, lo:][:, :w.shape[1]]
+                if kind == "serve":
+                    f, names = T.serve_features(w, fw, win)[0][0], list(T.SERVE)
+                else:
+                    f, names = T.features(w, fw)[0][0], [n for n in T.STROKE if n not in T.GROUND]
+        except (ValueError, IndexError, FloatingPointError):
+            continue
+        s["biomech"] = {n: (round(float(v), 3) if np.isfinite(v) else None) for n, v in zip(names, f)}
+        s["biomech_seen"] = round(seen, 2)
+
+
+def compute_session_biomechanics(per_rally: list[list[dict]]) -> dict:
+    """{traits, coach_notes}: the near player's measured strokes (pose_hits: shot['biomech']) against the tour
+    benchmarks, for each stroke kind with at least MIN_STROKES measured: the median of each trait and its z-score."""
+    by: dict[str, list[dict]] = {st: [] for st in PRO_BIOMECH_BENCHMARKS}
+    for s in (s for r in per_rally for s in r):
+        if s.get("biomech") and s.get("stroke") in by:
+            by[s["stroke"]].append(s["biomech"])
     traits: list[dict] = []
-    for st in active_strokes:
-        s_list = by_stroke[st]
-        speeds = [float(s["speed_mph"]) for s in s_list if s.get("speed_mph") is not None]
-        clearances = [float(s["net_clearance_m"]) for s in s_list if s.get("net_clearance_m") is not None]
-        depths = [abs(float(s["hit_y"])) for s in s_list if s.get("hit_y") is not None]
-        v_ratio = (float(np.mean(speeds)) / base_speed[st]) if speeds else 0.88
-        clr = float(np.mean(clearances)) if clearances else 0.65
-        depth_m = float(np.mean(depths)) if depths else 11.885
-        for trait, pro_mean, pro_std, unit in PRO_BIOMECH_BENCHMARKS[st]:
-            if trait in ("wrist_speed", "separation", "shoulder_coil", "trophy_tilt", "reach"):
-                user_val = pro_mean * (0.75 + 0.22 * np.clip(v_ratio, 0.5, 1.3))
-            elif trait == "knee_bend":
-                user_val = pro_mean + (1.0 - np.clip(v_ratio, 0.5, 1.3)) * 18.0
-            elif trait == "contact_height":
-                user_val = pro_mean + 0.04 * np.clip(clr - 0.6, -0.5, 0.8)
-            elif trait == "into_court":
-                user_val = max(0.05, pro_mean - 0.25 * max(0.0, depth_m - 11.885))
-            else:
-                user_val = pro_mean * (0.92 + 0.06 * np.clip(v_ratio, 0.5, 1.3))
-            user_val = round(float(user_val), 2)
-            z = round((user_val - pro_mean) / pro_std, 2)
-            traits.append({"trait": trait, "stroke": st, "user_value": user_val,
-                           "pro_mean": pro_mean, "pro_std": pro_std, "z_score": z, "unit": unit})
+    for st, bench in PRO_BIOMECH_BENCHMARKS.items():
+        for trait, pro_mean, pro_std, unit in bench:
+            vals = [b[trait] for b in by[st] if b.get(trait) is not None]
+            if len(vals) < MIN_STROKES:
+                continue
+            user_val = round(float(np.median(vals)), 2)
+            traits.append({"trait": trait, "stroke": st, "user_value": user_val, "pro_mean": pro_mean,
+                           "pro_std": pro_std, "z_score": round((user_val - pro_mean) / pro_std, 2), "unit": unit})
     worst = max(traits, key=lambda x: abs(x["z_score"])) if traits else None
     notes = (f"Focus on {worst['stroke'].upper()} {worst['trait'].replace('_', ' ')} "
              f"({worst['user_value']} {worst['unit']} vs tour avg {worst['pro_mean']} {worst['unit']}, "
-             f"z={worst['z_score']:+.2f})." if worst else "No stroke biomechanics recorded.")
+             f"z={worst['z_score']:+.2f})." if worst
+             else f"Not enough clearly seen near-court strokes to measure technique ({MIN_STROKES} of a kind needed).")
     return {"traits": traits, "coach_notes": notes}
 
 
@@ -474,6 +540,7 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
         title: str | None = Field(default=None, max_length=200)
         played_on: str | None = Field(default=None, max_length=10)
         biomech: bool = True
+        handedness: str = Field(default="right", pattern="^(right|left)$")
         bookmarked: bool = False
         live_call: str | None = Field(default=None, pattern="^(in|out|close|unknown)$")
         score: dict | None = None
@@ -621,9 +688,10 @@ def create_app(root: Path, job_secret: str | None, spawn: Callable[[str, dict], 
         shutil.rmtree(job_dir(job_id) / "parts", ignore_errors=True)
         persist()
         payload = {"match_id": job["match_id"], "path": job["path"], "session_type": req["session_type"],
-                   "court": req["court"], "doubles": req["doubles"], "source": req["source"]}
+                   "court": req["court"], "doubles": req["doubles"], "source": req["source"],
+                   "biomech": req["biomech"], "handedness": req.get("handedness", "right")}
         if unsegmented:
-            spawn("segment_match", payload | {"biomech": req["biomech"]})
+            spawn("segment_match", payload)
         else:
             extra = {k: req[k] for k in ("bookmarked", "live_call", "score", "points") if req.get(k)}
             spawn("process_rally", payload | {"rally_idx": job["rally_idx"], "start_s": req["start_s"] or 0.0} | extra)
@@ -799,14 +867,13 @@ def load_session_rally_shots(root: Path, match_id: str) -> list[list[dict]]:
     return out
 
 
-def compute_session_stats(per_rally: list[list[dict]], source: str = "web", biomech: bool = True,
-                          src: str | None = None, cal=None) -> dict:
+def compute_session_stats(per_rally: list[list[dict]], source: str = "web", biomech: bool = True) -> dict:
     """Compute full SwingVision session stats (summarize_session + optional biomechanics)."""
     from dsa.physics.scorekeeper import summarize_session
 
     stats = summarize_session(per_rally) | {"source": source, "origin_source": source}
     if biomech:
-        bio = compute_session_biomechanics(per_rally, src=src, cal=cal)
+        bio = compute_session_biomechanics(per_rally)
         stats = stats | {"biomechanics": bio, "biomech_traits": bio["traits"],
                          "coach_notes": bio["coach_notes"]}
     return stats
@@ -837,20 +904,37 @@ except ImportError:
 if modal is not None:
     from dsa.gpu.volume import image, volume
 
-    app = modal.App("tennis-rally", image=image("catboost==1.2.10", "fastapi>=0.115", "httpx>=0.27", "av>=12", core=True))
+    app = modal.App("tennis-rally", image=image("catboost==1.2.10", "fastapi>=0.115", "httpx>=0.27", "av>=12",
+                                                "onnxruntime-gpu==1.30.0", core=True))
     secrets = [modal.Secret.from_name("tennis-rally")]
     TENNIS = Path("/vol/tennis")
 
     def _event(**kw) -> None:
         send_webhook(os.environ.get("TENNIS_WEBHOOK_URL"), os.environ.get("TENNIS_WEBHOOK_SECRET"), kw)
 
+    _POSE: dict = {}
+
+    def pose_models(device: str = "cuda"):
+        """The person detector and RTMW-x, loaded once per container (dsa.gpu.models Detector / Pose)."""
+        if not _POSE:
+            import onnxruntime as ort
+            import torch  # noqa: F401  (CUDA libraries for onnxruntime)
+
+            from dsa.gpu.models import Detector, Pose
+
+            ort.preload_dlls()
+            _POSE["det"], _POSE["pose"] = Detector(device), Pose(device)
+        return _POSE["det"], _POSE["pose"]
+
     @app.function(gpu="L4", volumes={"/vol": volume}, secrets=secrets, cpu=4, memory=32_768, timeout=30 * 60)
     def process_rally(match_id: str, path: str, session_type: str, court: dict | None, doubles: bool, source: str,
                       rally_idx: int, start_s: float = 0.0, end_s: float | None = None,
                       bookmarked: bool = False, live_call: str | None = None,
-                      score: dict | None = None, points: list[dict] | None = None) -> dict:
-        """One rally: its 720p clip on the volume, its shots, rally.ready. An iOS clip is the whole file
-        (start_s is where it sits in the session); a web session is cut at [start_s, end_s]."""
+                      score: dict | None = None, points: list[dict] | None = None,
+                      biomech: bool = True, handedness: str = "right") -> dict:
+        """One rally: its 720p clip on the volume, its shots (with the near player's technique at each of his
+        hits when biomech and the court is calibrated), rally.ready. An iOS clip is the whole file (start_s is
+        where it sits in the session); a web session is cut at [start_s, end_s]."""
         import cv2
         from dsa.physics.bounce_and_linecall import candidates
         from dsa.physics.homography import reregister
@@ -893,6 +977,16 @@ if modal is not None:
                         break
             frame_at = (lambda idx: frames_cache.get(idx)) if frames_cache else None
             shots, _ = analyse_track(track, cal, session_type, doubles, frame_at=frame_at)
+            pose_error = None
+            if biomech and cal is not None and shots:
+                try:                                    # technique is extra: never holds up the rally
+                    det, pose = pose_models()
+                    pose_hits(decode(src, a, b), shots, cal, people=lambda f: det.people([f])[0],
+                              keypoints=lambda f, box: pose.run([pose.prepare(f, box)])[0], handedness=handedness)
+                except Exception as e:                  # noqa: BLE001  (Modal keeps the traceback)
+                    import traceback
+                    traceback.print_exc()
+                    pose_error = str(e)[:200]
             offset = start_s if whole else 0.0
             for s in shots:
                 for k in ("t_hit_s", "t_bounce_s"):
@@ -914,7 +1008,8 @@ if modal is not None:
                      "bookmarked": bookmarked, "live_call": live_call,
                      "clip_url": f"/clips/{match_id}/{rally_idx}.mp4",
                      "ball_track": [[int(round(1000 * (offset + t))), int(round(u)), int(round(v))]
-                                    for t, u, v in track[ok][:, [0, 2, 3]]], "drift_px": drift_px}
+                                    for t, u, v in track[ok][:, [0, 2, 3]]], "drift_px": drift_px,
+                     "pose_error": pose_error}
             volume.commit()
             _event(type="rally.ready", match_id=match_id, rally=rally, shots=shots,
                    session_type=session_type, source=source, doubles=doubles,
@@ -928,7 +1023,7 @@ if modal is not None:
 
     @app.function(gpu="L4", volumes={"/vol": volume}, secrets=secrets, cpu=8, memory=65_536, timeout=3 * 60 * 60)
     def segment_match(match_id: str, path: str, session_type: str, court: dict | None, doubles: bool, source: str,
-                      biomech: bool = True) -> dict:
+                      biomech: bool = True, handedness: str = "right") -> dict:
         """A whole web-uploaded session: ball track once, rallies, one process_rally each, match.ready."""
         volume.reload()
         src = str(TENNIS / path)
@@ -968,10 +1063,10 @@ if modal is not None:
                 np.save(TENNIS / match_id / "tracks" / f"{k}.npy", track[sel])
             volume.commit()
             results = list(process_rally.starmap(
-                [(match_id, path, session_type, court_payload, doubles, source, k, r["start_s"], r["end_s"])
-                 for k, r in enumerate(rallies)]))
+                [(match_id, path, session_type, court_payload, doubles, source, k, r["start_s"], r["end_s"],
+                  False, None, None, None, biomech, handedness) for k, r in enumerate(rallies)]))
             per_rally = [r["shots"] for r in results]
-            stats = compute_session_stats(per_rally, source=source, biomech=biomech, src=src, cal=cal)
+            stats = compute_session_stats(per_rally, source=source, biomech=biomech)
             score_out, points_out = (score_match_rallies(per_rally) if session_type == "match" else (None, []))
             _event(type="match.ready", match_id=match_id, status="ready", rallies_done=len(results),
                    session_type=session_type, source=source, doubles=doubles,

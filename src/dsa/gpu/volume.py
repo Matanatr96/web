@@ -20,13 +20,14 @@ volume = modal.Volume.from_name(NAME, create_if_missing=True)
 SKIP = {".git", "__pycache__", ".DS_Store", "annotation-tool"}
 
 
-CORE = ("torch", "opencv-python", "scipy", "pyyaml", "numpy")   # what WASB, TennisCourtDetector and dsa.physics import
+CORE = ("torch", "opencv-python", "scipy", "pyyaml", "numpy", "rfdetr", "rtmlib")     # the ball, court, people and
+#                                                                                            pose models and dsa.physics
 
 
 def image(*extra: str, core: bool = False) -> modal.Image:
     """The project's pinned dependencies (pyproject.toml) plus `extra`, with dsa.paths rooted at /vol. core: only
-    CORE's pins (the ball and court models' runtime), not the broadcast pipeline's (rfdetr, transformers, rtmlib,
-    scenedetect, yt-dlp, anthropic, ...): the tennis-rally image, whose upload endpoint shares it."""
+    CORE's pins (the models' runtime), not the broadcast pipeline's (scenedetect, yt-dlp, anthropic, pandas, ...):
+    the tennis-rally image, whose upload endpoint shares it."""
     deps = []
     if modal.is_local():
         import tomllib
