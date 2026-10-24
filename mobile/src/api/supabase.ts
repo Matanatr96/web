@@ -6,6 +6,9 @@ import { RESTAURANT_SELECT, mapRestaurantRow } from "@web-lib/restaurants-query"
 
 const CACHE_TTL_DAYS = 30;
 
+export const API_BASE_URL =
+  process.env.EXPO_PUBLIC_API_BASE_URL ?? "https://www.thelastmattapalli.com";
+
 export type CuisineRow = {
   id: number;
   name: string;
@@ -52,6 +55,56 @@ const RECEIPT_DETAIL_SELECT =
 let _client: SupabaseClient | null = null;
 
 /**
+ * Check whether direct-to-Supabase environment variables (`EXPO_PUBLIC_SUPABASE_URL`
+ * and `EXPO_PUBLIC_SUPABASE_ANON_KEY`) are configured locally. When false, read
+ * queries transparently fall back to `${API_BASE_URL}/api/restaurants/catalog`
+ * so the app works with zero `.env` setup.
+ *
+ * @returns True if direct Supabase credentials are configured.
+ */
+export function hasDirectSupabaseConfig(): boolean {
+  const url =
+    process.env.EXPO_PUBLIC_SUPABASE_URL ??
+    process.env.NEXT_PUBLIC_SUPABASE_URL ??
+    "";
+  const anonKey =
+    process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY ??
+    process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ??
+    "";
+  return Boolean(
+    url &&
+      anonKey &&
+      !url.includes("placeholder.supabase.co") &&
+      !anonKey.includes("placeholder"),
+  );
+}
+
+async function fetchFromCatalogEndpoint<T>(query: string = ""): Promise<T> {
+  const base = API_BASE_URL.replace(/\/$/, "");
+  const resp = await fetch(`${base}/api/restaurants/catalog${query}`);
+  const text = await resp.text();
+  let json: unknown = null;
+  if (text) {
+    try {
+      json = JSON.parse(text);
+    } catch {
+      json = null;
+    }
+  }
+  if (!resp.ok) {
+    const errMsg =
+      (json &&
+      typeof json === "object" &&
+      "error" in json &&
+      typeof (json as { error: unknown }).error === "string"
+        ? (json as { error: string }).error
+        : null) ?? `HTTP ${resp.status}: ${text || resp.statusText}`;
+    throw new Error(errMsg);
+  }
+  return json as T;
+}
+
+/**
  * Return the singleton anonymous Supabase client for the iPhone app.
  * Uses the public publishable key and relies on existing Row Level Security
  * (`FOR SELECT USING (true)`) for fast direct-to-PostgREST reads.
@@ -77,12 +130,20 @@ export function getMobileSupabase(): SupabaseClient {
 
 /**
  * Fetch the complete restaurant catalog, canonical cuisines, saved diners,
- * and recent split receipts in parallel directly from Supabase.
+ * and recent split receipts in parallel directly from Supabase (or via
+ * `${API_BASE_URL}/api/restaurants/catalog` when `EXPO_PUBLIC_SUPABASE_URL`
+ * is not configured locally).
  *
  * @param receiptLimit - Max number of recent receipts to load (defaults to 50).
  * @returns Hydrated `CatalogPayload`.
  */
 export async function fetchCatalog(receiptLimit: number = 50): Promise<CatalogPayload> {
+  if (!hasDirectSupabaseConfig()) {
+    return fetchFromCatalogEndpoint<CatalogPayload>(
+      `?limit=${encodeURIComponent(String(receiptLimit))}`,
+    );
+  }
+
   const supabase = getMobileSupabase();
 
   const [restaurantsRes, cuisinesRes, dinersRes, receiptsRes] = await Promise.all([
@@ -129,6 +190,8 @@ export async function fetchCatalog(receiptLimit: number = 50): Promise<CatalogPa
  * Fetch the full dossier for a single restaurant: its row with cuisines,
  * chronological visit history (`restaurant_visits`), and linked itemized
  * receipts (`receipts` + `receipt_items` + `receipt_item_diners`).
+ * Automatically falls back to `${API_BASE_URL}/api/restaurants/catalog?restaurantId=...`
+ * when `EXPO_PUBLIC_SUPABASE_URL` is not configured locally.
  *
  * @param restaurantId - Restaurant primary key.
  * @returns `RestaurantDetailPayload`.
@@ -136,6 +199,12 @@ export async function fetchCatalog(receiptLimit: number = 50): Promise<CatalogPa
 export async function fetchRestaurantDetail(
   restaurantId: number,
 ): Promise<RestaurantDetailPayload> {
+  if (!hasDirectSupabaseConfig()) {
+    return fetchFromCatalogEndpoint<RestaurantDetailPayload>(
+      `?restaurantId=${encodeURIComponent(String(restaurantId))}`,
+    );
+  }
+
   const supabase = getMobileSupabase();
 
   const [restRes, visitsRes, receiptsRes] = await Promise.all([
@@ -178,7 +247,9 @@ export async function fetchRestaurantDetail(
 }
 
 /**
- * Fetch recent receipts and saved diners directly from Supabase.
+ * Fetch recent receipts and saved diners directly from Supabase (or via
+ * `${API_BASE_URL}/api/restaurants/catalog?receiptsOnly=1` when `EXPO_PUBLIC_SUPABASE_URL`
+ * is not configured locally).
  *
  * @param limit - Maximum number of receipts to fetch (defaults to 50).
  * @returns Object containing `recentReceipts` and `diners`.
@@ -187,6 +258,13 @@ export async function fetchReceiptsAndDiners(limit: number = 50): Promise<{
   recentReceipts: MobileReceiptRow[];
   diners: Diner[];
 }> {
+  if (!hasDirectSupabaseConfig()) {
+    return fetchFromCatalogEndpoint<{
+      recentReceipts: MobileReceiptRow[];
+      diners: Diner[];
+    }>(`?receiptsOnly=1&limit=${encodeURIComponent(String(limit))}`);
+  }
+
   const supabase = getMobileSupabase();
   const [receiptsRes, dinersRes] = await Promise.all([
     supabase
@@ -216,8 +294,10 @@ export async function fetchReceiptsAndDiners(limit: number = 50): Promise<{
 }
 
 /**
- * Check `places_suggestion_cache` directly in Supabase for a cached
- * `(city|cuisine|category)` untried places list within the 30-day TTL.
+ * Check `places_suggestion_cache` directly in Supabase (or via
+ * `${API_BASE_URL}/api/restaurants/catalog?cacheKey=...` when `EXPO_PUBLIC_SUPABASE_URL`
+ * is not configured locally) for a cached `(city|cuisine|category)` untried
+ * places list within the 30-day TTL.
  *
  * @param cacheKey - Lowercase `${city}|${cuisine}|${category}` key.
  * @returns Cached `PlacesSuggestionItem[]` on a valid hit, or `null` on miss/expiry.
@@ -225,8 +305,19 @@ export async function fetchReceiptsAndDiners(limit: number = 50): Promise<{
 export async function fetchPlacesCache(
   cacheKey: string,
 ): Promise<PlacesSuggestionItem[] | null> {
-  const supabase = getMobileSupabase();
   const normalizedKey = cacheKey.trim().toLowerCase();
+  if (!hasDirectSupabaseConfig()) {
+    try {
+      const res = await fetchFromCatalogEndpoint<{
+        results: PlacesSuggestionItem[] | null;
+      }>(`?cacheKey=${encodeURIComponent(normalizedKey)}`);
+      return res.results ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  const supabase = getMobileSupabase();
   const { data, error } = await supabase
     .from("places_suggestion_cache")
     .select("results, cached_at")
