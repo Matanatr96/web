@@ -21,15 +21,17 @@ async function assertAdmin(): Promise<void> {
 }
 
 /**
- * Creates a `tennis_matches` row (status `uploading`) from validated Frame-0 calibration taps and
+ * Creates a `tennis_matches` row (status `uploading`) from optional Frame-0 calibration taps and
  * mints a match-scoped `X-Job-Token`, so the browser can upload the video straight to the Modal
  * `tennis-rally` API (`POST /jobs`, `PUT /jobs/{id}/parts/{n}`, `POST /jobs/{id}/commit`).
+ * When `cornersPx` is empty or omitted (user clicked "Skip Calibration (Auto-Detect Court)"),
+ * `court` is `null` and Modal runs GPU auto-calibration on the uploaded video.
  * Admin only. Idempotent for a repeated client-supplied `id`.
  *
  * @param input - Optional client UUID, title, date, session type (default `rally`), doubles flag,
- *   frame size, the 4 tapped outer corners, and the optional 2 net-post tops.
- * @returns `matchId`, `jobToken`, the Modal base URL, and the `court` JSON for `POST /jobs`.
- * @throws Error when not admin, the calibration is invalid, or the Modal URL / job secret is unset.
+ *   frame size, optional 4 tapped outer corners, and optional 2 net-post tops.
+ * @returns `matchId`, `jobToken`, the Modal base URL, and the `court` JSON (or `null`) for `POST /jobs`.
+ * @throws Error when not admin, provided calibration is invalid, or the Modal URL / job secret is unset.
  */
 export async function createTennisMatch(input: {
   id?: string;
@@ -38,24 +40,28 @@ export async function createTennisMatch(input: {
   sessionType?: TennisSessionType;
   doubles?: boolean;
   imageSize: [number, number];
-  cornersPx: Point2D[];
+  cornersPx?: Point2D[];
   netPostsPx?: Point2D[];
-}): Promise<{ matchId: string; jobToken: string; modalEndpoint: string; court: ModalCourtJson }> {
+}): Promise<{ matchId: string; jobToken: string; modalEndpoint: string; court: ModalCourtJson | null }> {
   await assertAdmin();
 
   const modalEndpoint = process.env.NEXT_PUBLIC_TENNIS_MODAL_URL;
   if (!modalEndpoint) throw new Error("NEXT_PUBLIC_TENNIS_MODAL_URL is not configured.");
 
-  const validation = validateCourtCalibration({
-    imageSize: input.imageSize,
-    cornersPx: input.cornersPx,
-    netPostsPx: input.netPostsPx,
-    doubles: input.doubles,
-  });
-  if (!validation.calibration) {
+  const hasCorners = Array.isArray(input.cornersPx) && input.cornersPx.length > 0;
+  const validation = hasCorners
+    ? validateCourtCalibration({
+        imageSize: input.imageSize,
+        cornersPx: input.cornersPx!,
+        netPostsPx: input.netPostsPx,
+        doubles: input.doubles,
+      })
+    : null;
+  if (validation && !validation.calibration) {
     throw new Error(`Invalid court calibration: ${validation.errors.join(" ")}`);
   }
 
+  const calibration = validation?.calibration ?? null;
   const matchId = input.id && isValidUuid(input.id) ? input.id.trim().toLowerCase() : crypto.randomUUID();
   const sessionType: TennisSessionType = input.sessionType === "match" ? "match" : "rally";
   const jobToken = await signModalJobToken(matchId, Date.now() / 1000 + JOB_TOKEN_TTL_S);
@@ -83,8 +89,8 @@ export async function createTennisMatch(input: {
         session_type: sessionType,
         source: "web",
         ...(preserveAdvancedStatus ? {} : { status: "uploading", error: null }),
-        court: validation.calibration,
-        doubles: validation.calibration.doubles,
+        court: calibration,
+        doubles: calibration ? calibration.doubles : Boolean(input.doubles),
         updated_at: now,
       },
       { onConflict: "id" },
@@ -96,7 +102,7 @@ export async function createTennisMatch(input: {
     matchId,
     jobToken,
     modalEndpoint: modalEndpoint.replace(/\/$/, ""),
-    court: toModalCourtJson(validation.calibration),
+    court: calibration ? toModalCourtJson(calibration) : null,
   };
 }
 

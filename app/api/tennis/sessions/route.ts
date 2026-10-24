@@ -19,9 +19,12 @@ export async function OPTIONS(): Promise<NextResponse> {
 }
 
 /**
- * `GET /api/tennis/sessions`: returns the aggregate session summary (`totalSessions`, `totalRallies`,
- * `totalShots`, `bestInStreak`, `inCallRate`) and recent sessions (`sessions`) for the iOS Home Screen
- * and web dashboard. Supports optional `?mode=all|rally|match` filtering.
+ * `GET /api/tennis/sessions`: returns the aggregate SwingVision session summary (`totalSessions`,
+ * `totalRallies`, `totalShots`, `longestRally`, `avgRallyLength`, `avgSpeedMph`, `maxSpeedMph`,
+ * `serveSpeedAvg`, `serveSpeedMax`, `fhSpeedAvg`, `fhSpeedMax`, `bhSpeedAvg`, `bhSpeedMax`,
+ * `netClearanceAvgM`, `deepPct`, plus backward-compatible `bestInStreak` and `inCallRate`) and
+ * recent sessions (`sessions`) for the iOS Home Screen and web dashboard.
+ * Supports optional `?mode=all|rally|match` filtering.
  *
  * @param req - Incoming HTTP request.
  * @returns JSON `{ summary, sessions }` with `Access-Control-Allow-Origin: *`.
