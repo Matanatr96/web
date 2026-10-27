@@ -1,6 +1,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   BlowoutRecord,
+  BracketEntry,
   DraftGradeRow,
   DraftPickGrade,
   FantasyDraftPick,
@@ -11,10 +12,14 @@ import type {
   FantasyStanding,
   FantasyTrade,
   FantasyWeeklyAverage,
+  HallOfFameEntry,
+  LegacyScoreBreakdown,
+  LegacyScoreMode,
   Rivalry,
   RivalryGame,
   ScoreRecord,
   ScheduleLotteryResult,
+  SeasonFinishSummary,
   TradeLeaderboardRow,
   WeeklyStats,
 } from "./types";
@@ -1040,4 +1045,368 @@ export function computeDraftGrades(
   });
 
   return rows;
+}
+
+function clamp(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, value));
+}
+
+/**
+ * Assigns a signature Hall of Fame archetype badge to a manager based on their
+ * career hardware, rank, scoring dominance, and schedule luck profile.
+ *
+ * @param entry - Manager's aggregated Hall of Fame entry.
+ * @param rank - 1-indexed rank on the Hall of Fame leaderboard.
+ * @param totalManagers - Total number of ranked managers in the league.
+ * @param maxWins - Highest regular-season win count across all managers.
+ * @param maxPpg - Highest career PPG across all managers.
+ * @returns Uppercase archetype badge string (e.g. `"THE DYNASTY"`, `"THE LEAGUE'S WORST"`).
+ */
+export function assignManagerArchetype(
+  entry: HallOfFameEntry,
+  rank: number,
+  totalManagers: number,
+  maxWins: number,
+  maxPpg: number,
+): string {
+  if (totalManagers >= 4 && rank === totalManagers && entry.firsts === 0) {
+    return "THE LEAGUE'S WORST";
+  }
+  if (entry.firsts >= 2 && entry.lasts === 0) {
+    return "THE DYNASTY";
+  }
+  if (entry.firsts >= 2 && entry.lasts >= 1) {
+    return "BOOM OR BUST";
+  }
+  if (entry.firsts >= 1 && entry.win_pct < 0.5) {
+    return "GIANT SLAYER";
+  }
+  if (entry.firsts >= 1) {
+    return "TITLE CONTENDER";
+  }
+  if (entry.wins === maxWins && entry.seconds >= 1) {
+    return "REGULAR SEASON KING";
+  }
+  if (Math.abs(entry.avg_ppg - maxPpg) < 0.01) {
+    return "SCORING MACHINE";
+  }
+  if (entry.seconds >= 2) {
+    return "ALWAYS THE BRIDESMAID";
+  }
+  if (entry.thirds >= 2) {
+    return "BRONZE MEDALIST";
+  }
+  if (entry.completed_seasons >= 3 && entry.playoff_appearances === 0) {
+    return "PLAYOFF DROUGHT";
+  }
+  if (entry.win_pct - entry.all_play_pct >= 0.08) {
+    return "SCHEDULE BANDIT";
+  }
+  if (entry.all_play_pct - entry.win_pct >= 0.03) {
+    return "UNLUCKY GRINDER";
+  }
+  if (entry.seconds === 1 && entry.win_pct < 0.5) {
+    return "CINDERELLA RUNNER-UP";
+  }
+  if (entry.playoff_appearances >= Math.ceil(entry.completed_seasons * 0.6)) {
+    return "PERENNIAL CONTENDER";
+  }
+  return "THE GATEKEEPER";
+}
+
+/**
+ * Computes the all-time KFL Hall of Fame leaderboard, hardware counts (`1st`, `2nd`,
+ * `3rd`, `Last`), 5-pillar Legacy Scores (`0.0–100.0`), season-by-season finish
+ * summaries, and manager archetype badges across all synced seasons.
+ *
+ * Completed seasons are identified by a `winners_bracket` Championship entry
+ * (`p === 1`) having a non-null winner (`w != null`), ensuring an in-progress
+ * season contributes regular-season wins/PPG without prematurely awarding hardware
+ * or a last-place penalty.
+ *
+ * @param matchups - All matchup rows across all seasons (`fetchAllMatchups`).
+ * @param owners - All league owners from `fantasy_owners`.
+ * @param leagues - All league metadata rows from `fantasy_leagues`.
+ * @param mode - Weighting preset (`"balanced"` default, `"rings"`, or `"dominance"`).
+ * @returns Ranked array of `HallOfFameEntry` objects sorted by Legacy Score descending.
+ */
+export function computeHallOfFame(
+  matchups: FantasyMatchup[],
+  owners: FantasyOwner[],
+  leagues: FantasyLeague[],
+  mode: LegacyScoreMode = "balanced",
+): HallOfFameEntry[] {
+  const regSeasonAll = regularSeasonOnly(matchups, leagues);
+  const sortedLeagues = [...leagues].sort((a, b) => a.season - b.season);
+  const ownerById = new Map(owners.map((o) => [o.user_id, o]));
+
+  type Acc = {
+    owner_id: string;
+    seasons_played: number;
+    completed_seasons: number;
+    wins: number;
+    losses: number;
+    ties: number;
+    games: number;
+    points_for: number;
+    unrealized_wins: number;
+    unrealized_losses: number;
+    firsts: number;
+    seconds: number;
+    thirds: number;
+    lasts: number;
+    reg_season_firsts: number;
+    playoff_appearances: number;
+    playoff_wins: number;
+    season_finishes: SeasonFinishSummary[];
+  };
+
+  const accMap = new Map<string, Acc>();
+  const ensureAcc = (ownerId: string): Acc => {
+    const existing = accMap.get(ownerId);
+    if (existing) return existing;
+    const created: Acc = {
+      owner_id: ownerId,
+      seasons_played: 0,
+      completed_seasons: 0,
+      wins: 0,
+      losses: 0,
+      ties: 0,
+      games: 0,
+      points_for: 0,
+      unrealized_wins: 0,
+      unrealized_losses: 0,
+      firsts: 0,
+      seconds: 0,
+      thirds: 0,
+      lasts: 0,
+      reg_season_firsts: 0,
+      playoff_appearances: 0,
+      playoff_wins: 0,
+      season_finishes: [],
+    };
+    accMap.set(ownerId, created);
+    return created;
+  };
+
+  for (const league of sortedLeagues) {
+    const season = league.season;
+    const standings = buildStandings(regSeasonAll, owners, season);
+    if (standings.length === 0) continue;
+
+    const seasonRegRows = regSeasonAll.filter((m) => m.season === season);
+    const gamesByOwner = new Map<string, { games: number; pf: number }>();
+    for (const m of seasonRegRows) {
+      if (m.points === 0 && m.opponent_points === 0) continue;
+      const g = gamesByOwner.get(m.owner_id) ?? { games: 0, pf: 0 };
+      g.games += 1;
+      g.pf += m.points;
+      gamesByOwner.set(m.owner_id, g);
+    }
+
+    const bracket = (league.winners_bracket ?? null) as BracketEntry[] | null;
+    const champEntry = bracket?.find((b) => b.p === 1) ?? null;
+    const thirdEntry = bracket?.find((b) => b.p === 3) ?? null;
+    const isCompleted = Boolean(champEntry && champEntry.w != null);
+
+    const playoffParticipants = new Set<string>();
+    const playoffWinsByOwner = new Map<string, number>();
+    if (isCompleted && bracket) {
+      for (const b of bracket) {
+        if (b.t1) playoffParticipants.add(b.t1);
+        if (b.t2) playoffParticipants.add(b.t2);
+        // Count Winners Bracket round wins (excluding the 5th-place consolation match).
+        if (b.w && b.p !== 5) {
+          playoffWinsByOwner.set(b.w, (playoffWinsByOwner.get(b.w) ?? 0) + 1);
+        }
+      }
+    }
+
+    const teamCount = standings.length;
+    standings.forEach((row, idx) => {
+      const a = ensureAcc(row.owner_id);
+      const g = gamesByOwner.get(row.owner_id) ?? {
+        games: row.wins + row.losses + row.ties,
+        pf: row.avg_ppg * (row.wins + row.losses + row.ties),
+      };
+
+      a.seasons_played += 1;
+      a.wins += row.wins;
+      a.losses += row.losses;
+      a.ties += row.ties;
+      a.games += g.games;
+      a.points_for += g.pf;
+      a.unrealized_wins += row.unrealized_wins;
+      a.unrealized_losses += row.unrealized_losses;
+
+      const regRank = idx + 1;
+      let finish: SeasonFinishSummary["finish"] = "In Progress";
+
+      if (isCompleted) {
+        a.completed_seasons += 1;
+        if (regRank === 1) a.reg_season_firsts += 1;
+        const isLastReg = teamCount >= 2 && regRank === teamCount;
+        if (isLastReg) a.lasts += 1;
+
+        const madePlayoffs = playoffParticipants.has(row.owner_id);
+        if (madePlayoffs) a.playoff_appearances += 1;
+        a.playoff_wins += playoffWinsByOwner.get(row.owner_id) ?? 0;
+
+        if (champEntry?.w === row.owner_id) {
+          a.firsts += 1;
+          finish = "1st";
+        } else if (champEntry?.l === row.owner_id) {
+          a.seconds += 1;
+          finish = "2nd";
+        } else if (thirdEntry?.w === row.owner_id) {
+          a.thirds += 1;
+          finish = "3rd";
+        } else if (isLastReg) {
+          finish = "Last";
+        } else if (madePlayoffs) {
+          finish = "Playoffs";
+        } else {
+          finish = "Reg";
+        }
+
+        a.season_finishes.push({
+          season,
+          wins: row.wins,
+          losses: row.losses,
+          ties: row.ties,
+          avg_ppg: row.avg_ppg,
+          reg_rank: regRank,
+          team_count: teamCount,
+          is_completed: true,
+          made_playoffs: madePlayoffs,
+          finish,
+        });
+      } else {
+        a.season_finishes.push({
+          season,
+          wins: row.wins,
+          losses: row.losses,
+          ties: row.ties,
+          avg_ppg: row.avg_ppg,
+          reg_rank: regRank,
+          team_count: teamCount,
+          is_completed: false,
+          made_playoffs: false,
+          finish: "In Progress",
+        });
+      }
+    });
+  }
+
+  const accList = [...accMap.values()].filter((a) => a.games > 0);
+  if (accList.length === 0) return [];
+
+  const leagueMeanPpg = mean(accList.map((a) => a.points_for / a.games));
+
+  const entries: HallOfFameEntry[] = accList.map((a) => {
+    const win_pct = (a.wins + a.ties * 0.5) / a.games;
+    const allPlayTotal = a.unrealized_wins + a.unrealized_losses;
+    const all_play_pct = allPlayTotal > 0 ? a.unrealized_wins / allPlayTotal : 0.5;
+    const avg_ppg = a.points_for / a.games;
+    const playoffRate =
+      a.completed_seasons > 0 ? a.playoff_appearances / a.completed_seasons : 0;
+
+    let hardware_pts: number;
+    let win_rate_pts: number;
+    let dominance_pts: number;
+    let playoff_pts: number;
+    let toilet_penalty_pts: number;
+
+    if (mode === "rings") {
+      hardware_pts = Math.min(50, a.firsts * 20 + a.seconds * 8 + a.thirds * 3.5);
+      win_rate_pts = clamp(win_pct * 26, 0, 18);
+      const apPts = clamp(all_play_pct * 16, 0, 10);
+      const ppgPts = clamp(3.5 + (avg_ppg - leagueMeanPpg) * 0.3, 0.5, 7);
+      dominance_pts = apPts + ppgPts;
+      playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 1.0);
+      toilet_penalty_pts = a.lasts * 3.0;
+    } else if (mode === "dominance") {
+      hardware_pts = Math.min(20, a.firsts * 8 + a.seconds * 4 + a.thirds * 2);
+      win_rate_pts = clamp(win_pct * 36, 0, 25);
+      const apPts = clamp(all_play_pct * 40, 0, 25);
+      const ppgPts = clamp(8.0 + (avg_ppg - leagueMeanPpg) * 0.65, 1.5, 15);
+      dominance_pts = apPts + ppgPts;
+      playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 0.85);
+      toilet_penalty_pts = a.lasts * 2.5;
+    } else {
+      hardware_pts = Math.min(35, a.firsts * 14 + a.seconds * 6 + a.thirds * 2.5);
+      win_rate_pts = clamp(win_pct * 36, 0, 25);
+      const apPts = clamp(all_play_pct * 24, 0, 15);
+      const ppgPts = clamp(5.5 + (avg_ppg - leagueMeanPpg) * 0.42, 1, 10);
+      dominance_pts = apPts + ppgPts;
+      playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 0.85);
+      toilet_penalty_pts = a.lasts * 2.5;
+    }
+
+    const raw_total = clamp(
+      hardware_pts + win_rate_pts + dominance_pts + playoff_pts - toilet_penalty_pts,
+      0,
+      100,
+    );
+    const legacy_score = Math.round(raw_total * 10) / 10;
+
+    const breakdown: LegacyScoreBreakdown = {
+      hardware_pts: Math.round(hardware_pts * 10) / 10,
+      win_rate_pts: Math.round(win_rate_pts * 10) / 10,
+      dominance_pts: Math.round(dominance_pts * 10) / 10,
+      playoff_pts: Math.round(playoff_pts * 10) / 10,
+      toilet_penalty_pts: Math.round(toilet_penalty_pts * 10) / 10,
+      raw_total,
+    };
+
+    return {
+      owner_id: a.owner_id,
+      display_name: ownerById.get(a.owner_id)?.display_name ?? a.owner_id,
+      seasons_played: a.seasons_played,
+      completed_seasons: a.completed_seasons,
+      wins: a.wins,
+      losses: a.losses,
+      ties: a.ties,
+      win_pct,
+      unrealized_wins: a.unrealized_wins,
+      unrealized_losses: a.unrealized_losses,
+      all_play_pct,
+      avg_ppg,
+      points_for: a.points_for,
+      firsts: a.firsts,
+      seconds: a.seconds,
+      thirds: a.thirds,
+      lasts: a.lasts,
+      reg_season_firsts: a.reg_season_firsts,
+      playoff_appearances: a.playoff_appearances,
+      playoff_wins: a.playoff_wins,
+      archetype: "",
+      legacy_score,
+      breakdown,
+      season_finishes: [...a.season_finishes].sort((x, y) => y.season - x.season),
+    };
+  });
+
+  entries.sort(
+    (a, b) =>
+      b.breakdown.raw_total - a.breakdown.raw_total ||
+      b.firsts - a.firsts ||
+      b.seconds - a.seconds ||
+      b.wins - a.wins ||
+      b.avg_ppg - a.avg_ppg,
+  );
+
+  const maxWins = Math.max(0, ...entries.map((e) => e.wins));
+  const maxPpg = Math.max(0, ...entries.map((e) => e.avg_ppg));
+  entries.forEach((entry, idx) => {
+    entry.archetype = assignManagerArchetype(
+      entry,
+      idx + 1,
+      entries.length,
+      maxWins,
+      maxPpg,
+    );
+  });
+
+  return entries;
 }

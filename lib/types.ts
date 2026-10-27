@@ -419,3 +419,54 @@ export type ScheduleLotteryResult = {
   // luck delta per owner: actual_wins - median_wins_across_all_schedules
   luckDeltas: { owner_id: string; display_name: string; actual_wins: number; median_wins: number; delta: number }[];
 };
+
+export type LegacyScoreMode = "balanced" | "rings" | "dominance";
+
+export type LegacyScoreBreakdown = {
+  hardware_pts: number;
+  win_rate_pts: number;
+  dominance_pts: number;
+  playoff_pts: number;
+  toilet_penalty_pts: number;
+  raw_total: number;
+};
+
+export type SeasonFinishSummary = {
+  season: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  avg_ppg: number;
+  reg_rank: number;
+  team_count: number;
+  is_completed: boolean;
+  made_playoffs: boolean;
+  finish: "1st" | "2nd" | "3rd" | "Playoffs" | "Last" | "Reg" | "In Progress";
+};
+
+export type HallOfFameEntry = {
+  owner_id: string;
+  display_name: string;
+  seasons_played: number;
+  completed_seasons: number;
+  wins: number;
+  losses: number;
+  ties: number;
+  win_pct: number;
+  unrealized_wins: number;
+  unrealized_losses: number;
+  all_play_pct: number;
+  avg_ppg: number;
+  points_for: number;
+  firsts: number;
+  seconds: number;
+  thirds: number;
+  lasts: number;
+  reg_season_firsts: number;
+  playoff_appearances: number;
+  playoff_wins: number;
+  archetype: string;
+  legacy_score: number;
+  breakdown: LegacyScoreBreakdown;
+  season_finishes: SeasonFinishSummary[];
+};

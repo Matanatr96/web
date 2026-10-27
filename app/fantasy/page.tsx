@@ -69,7 +69,15 @@ export default async function FantasyPage() {
         <RefreshMatchupsButton />
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 lg:grid-cols-5 gap-4 max-w-3xl mb-12">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 max-w-4xl mb-12">
+        <Link
+          href="/fantasy/hall-of-fame"
+          className="flex flex-col gap-1 rounded-lg border border-amber-500/40 dark:border-amber-500/30 bg-amber-50/40 dark:bg-amber-950/20 p-5 hover:bg-amber-50 dark:hover:bg-amber-950/40 transition"
+        >
+          <span className="font-semibold text-amber-900 dark:text-amber-300">🏆 Hall of Fame</span>
+          <span className="text-sm text-stone-500">Legacy scores, hardware, and manager archetypes</span>
+        </Link>
+
         <Link
           href="/fantasy/matchups"
           className="flex flex-col gap-1 rounded-lg border border-stone-200 dark:border-stone-800 p-5 hover:bg-stone-50 dark:hover:bg-stone-900 transition"
@@ -131,7 +139,15 @@ export default async function FantasyPage() {
       <div className="grid gap-8 md:grid-cols-2 max-w-2xl">
         {/* Champions */}
         <div>
-          <h2 className="text-lg font-semibold mb-3">Champions</h2>
+          <div className="flex items-baseline justify-between mb-3">
+            <h2 className="text-lg font-semibold">Champions</h2>
+            <Link
+              href="/fantasy/hall-of-fame"
+              className="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline"
+            >
+              Full Hall of Fame &amp; Legacy Scores &rarr;
+            </Link>
+          </div>
           <ol className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 divide-y divide-stone-100 dark:divide-stone-800">
             {champions.map((c) => (
               <li
