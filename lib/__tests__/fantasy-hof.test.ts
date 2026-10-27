@@ -166,6 +166,10 @@ describe("computeHallOfFame", () => {
     expect(u3.firsts).toBe(1);
     expect(u3.thirds).toBe(1);
 
+    // 1-ring champions (u1, u3) rank strictly above 0-ring 2x runner-up regular-season juggernaut (u2) in balanced mode
+    expect(u1.legacy_score).toBeGreaterThan(u2.legacy_score);
+    expect(u3.legacy_score).toBeGreaterThan(u2.legacy_score);
+
     // u4 finished last in 2024 and 2025, NOT penalized yet for in-progress 2026
     expect(u4.lasts).toBe(2);
     expect(u4.wins).toBe(0);

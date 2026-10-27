@@ -1318,29 +1318,29 @@ export function computeHallOfFame(
     let toilet_penalty_pts: number;
 
     if (mode === "rings") {
-      hardware_pts = Math.min(50, a.firsts * 20 + a.seconds * 8 + a.thirds * 3.5);
-      win_rate_pts = clamp(win_pct * 26, 0, 18);
-      const apPts = clamp(all_play_pct * 16, 0, 10);
-      const ppgPts = clamp(3.5 + (avg_ppg - leagueMeanPpg) * 0.3, 0.5, 7);
+      hardware_pts = Math.min(70, a.firsts * 32 + a.seconds * 6.5 + a.thirds * 2.5);
+      win_rate_pts = clamp(win_pct * 12, 0, 8);
+      const apPts = clamp(all_play_pct * 8, 0, 5);
+      const ppgPts = clamp(1.5 + (avg_ppg - leagueMeanPpg) * 0.15, 0.5, 3);
       dominance_pts = apPts + ppgPts;
-      playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 1.0);
-      toilet_penalty_pts = a.lasts * 3.0;
+      playoff_pts = playoffRate * 7 + Math.min(7, a.playoff_wins * 1.4);
+      toilet_penalty_pts = a.lasts * 4.0;
     } else if (mode === "dominance") {
-      hardware_pts = Math.min(20, a.firsts * 8 + a.seconds * 4 + a.thirds * 2);
+      hardware_pts = Math.min(25, a.firsts * 10 + a.seconds * 4.5 + a.thirds * 2);
       win_rate_pts = clamp(win_pct * 36, 0, 25);
-      const apPts = clamp(all_play_pct * 40, 0, 25);
-      const ppgPts = clamp(8.0 + (avg_ppg - leagueMeanPpg) * 0.65, 1.5, 15);
+      const apPts = clamp(all_play_pct * 35, 0, 22);
+      const ppgPts = clamp(7.0 + (avg_ppg - leagueMeanPpg) * 0.55, 1.5, 13);
       dominance_pts = apPts + ppgPts;
       playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 0.85);
       toilet_penalty_pts = a.lasts * 2.5;
     } else {
-      hardware_pts = Math.min(35, a.firsts * 14 + a.seconds * 6 + a.thirds * 2.5);
-      win_rate_pts = clamp(win_pct * 36, 0, 25);
-      const apPts = clamp(all_play_pct * 24, 0, 15);
-      const ppgPts = clamp(5.5 + (avg_ppg - leagueMeanPpg) * 0.42, 1, 10);
+      hardware_pts = Math.min(60, a.firsts * 28 + a.seconds * 6 + a.thirds * 2.5);
+      win_rate_pts = clamp(win_pct * 18, 0, 12);
+      const apPts = clamp(all_play_pct * 11, 0, 7);
+      const ppgPts = clamp(2.5 + (avg_ppg - leagueMeanPpg) * 0.22, 0.5, 5);
       dominance_pts = apPts + ppgPts;
-      playoff_pts = playoffRate * 10 + Math.min(5, a.playoff_wins * 0.85);
-      toilet_penalty_pts = a.lasts * 2.5;
+      playoff_pts = playoffRate * 8 + Math.min(8, a.playoff_wins * 1.4);
+      toilet_penalty_pts = a.lasts * 3.5;
     }
 
     const raw_total = clamp(

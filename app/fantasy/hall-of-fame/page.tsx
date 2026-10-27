@@ -19,17 +19,17 @@ const MODES: { id: LegacyScoreMode; label: string; subtitle: string }[] = [
   {
     id: "balanced",
     label: "Balanced",
-    subtitle: "35 Hardware · 25 Win% · 25 Dominance · 15 Playoffs · −2.5/Last",
+    subtitle: "60 Hardware · 16 Playoffs · 12 Win% · 12 Dominance · −3.5/Last",
   },
   {
     id: "rings",
     label: "Rings First",
-    subtitle: "50 Hardware · 18 Win% · 17 Dominance · 15 Playoffs · −3.0/Last",
+    subtitle: "70 Hardware · 14 Playoffs · 8 Win% · 8 Dominance · −4.0/Last",
   },
   {
     id: "dominance",
     label: "No-Luck Dominance",
-    subtitle: "20 Hardware · 25 Win% · 40 All-Play & PPG · 15 Playoffs · −2.5/Last",
+    subtitle: "25 Hardware · 25 Win% · 35 All-Play & PPG · 15 Playoffs · −2.5/Last",
   },
 ];
 
