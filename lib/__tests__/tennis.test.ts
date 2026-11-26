@@ -9,6 +9,8 @@ import {
   computeHomography4pt,
   computeInStreak,
   courtToSvg,
+  deleteModalSession,
+  deleteTennisMatchRecord,
   formatScore,
   formatSessionSource,
   getOuterCourtCornersM,
@@ -32,6 +34,7 @@ import {
   toClipLocalTimeS,
   toModalCourtJson,
   validateCourtCalibration,
+  verifyModalJobToken,
   verifyWebhookAuth,
 } from "../tennis";
 
@@ -678,6 +681,35 @@ describe("webhook auth and job tokens", () => {
     }).toEqual({ exact: expected, fractionalExpFloored: expected });
     await expect(signModalJobToken(MATCH_ID, 1767225600, "")).rejects.toThrow("TENNIS_JOB_SECRET is not configured.");
   });
+
+  it("verifies match-scoped and 'any' Modal job tokens and rejects expired, wrong-scope, or tampered tokens", async () => {
+    const now = 1_800_000_000;
+    const matchTok = await signModalJobToken(MATCH_ID, now + 60, "secret123");
+    const anyTok = await signModalJobToken("any", now + 60, "secret123");
+    const expiredTok = await signModalJobToken(MATCH_ID, now - 1, "secret123");
+    const otherTok = await signModalJobToken("223e4567-e89b-42d3-a456-426614174000", now + 60, "secret123");
+    const tampered = `${matchTok.slice(0, -1)}${matchTok.endsWith("0") ? "1" : "0"}`;
+
+    expect({
+      matchValid: await verifyModalJobToken(matchTok, MATCH_ID, now, "secret123"),
+      anyValid: await verifyModalJobToken(anyTok, MATCH_ID, now, "secret123"),
+      expired: await verifyModalJobToken(expiredTok, MATCH_ID, now, "secret123"),
+      otherScope: await verifyModalJobToken(otherTok, MATCH_ID, now, "secret123"),
+      tampered: await verifyModalJobToken(tampered, MATCH_ID, now, "secret123"),
+      wrongSecret: await verifyModalJobToken(matchTok, MATCH_ID, now, "other"),
+      noSecret: await verifyModalJobToken(matchTok, MATCH_ID, now, ""),
+      malformed: await verifyModalJobToken("garbage", MATCH_ID, now, "secret123"),
+    }).toEqual({
+      matchValid: true,
+      anyValid: true,
+      expired: false,
+      otherScope: false,
+      tampered: false,
+      wrongSecret: false,
+      noSecret: false,
+      malformed: false,
+    });
+  });
 });
 
 describe("parseWebhookEvent", () => {
@@ -948,9 +980,22 @@ function createInMemorySupabase() {
         delete() {
           const filters: Array<(r: Record<string, unknown>) => boolean> = [];
           const runDelete = () => {
+            const removedIds: unknown[] = [];
             for (let i = rows.length - 1; i >= 0; i--) {
               if (filters.every((fn) => fn(rows[i]))) {
+                removedIds.push(rows[i].id);
                 rows.splice(i, 1);
+              }
+            }
+            if (table === "tennis_matches" && removedIds.length > 0) {
+              const idSet = new Set(removedIds);
+              for (const childTable of ["tennis_rallies", "tennis_shots", "tennis_points"]) {
+                const childRows = tables[childTable] ?? [];
+                for (let i = childRows.length - 1; i >= 0; i--) {
+                  if (idSet.has(childRows[i].match_id)) {
+                    childRows.splice(i, 1);
+                  }
+                }
               }
             }
             return Promise.resolve({ error: null });
@@ -1473,6 +1518,103 @@ describe("applyWebhookEvent and getTennisMatch", () => {
       pointsLen: 3,
       pointIdxs: [0, 1, 2],
       scoreFormatted: "0-0 (40-0)",
+    });
+  });
+
+  it("deletes a session and cascades rallies, shots, and points without affecting other sessions", async () => {
+    const client = createInMemorySupabase();
+    const otherId = "223e4567-e89b-42d3-a456-426614174000";
+
+    for (const id of [MATCH_ID, otherId]) {
+      await applyWebhookEvent(
+        parseWebhookEvent({
+          type: "rally.ready",
+          match_id: id,
+          source: "ios",
+          session_type: "rally",
+          rally: { rally_idx: 0, start_s: 1, end_s: 6, shot_count: 2 },
+          shots: [
+            { shot_idx: 0, hitter: "near", stroke: "fh", call: "in" },
+            { shot_idx: 1, hitter: "far", stroke: "bh", call: "in" },
+          ],
+          points: [{ point_idx: 0, winner: "me", server: "me", timestamp_s: 5.5 }],
+        }),
+        client,
+      );
+    }
+
+    const firstDelete = await deleteTennisMatchRecord(MATCH_ID.toUpperCase(), client);
+    const secondDelete = await deleteTennisMatchRecord(MATCH_ID, client);
+    const remaining = await listTennisMatches("all", client);
+    const deletedDetail = await getTennisMatch(MATCH_ID, true, client);
+    const otherDetail = await getTennisMatch(otherId, true, client);
+
+    expect({
+      firstDelete,
+      secondDelete,
+      remainingIds: remaining.map((m) => m.id),
+      deletedDetail,
+      otherRallies: otherDetail?.rallies.length,
+      otherShots: otherDetail?.rallies[0]?.shots.length,
+      otherPoints: otherDetail?.points.length,
+    }).toEqual({
+      firstDelete: { deleted: true, matchId: MATCH_ID },
+      secondDelete: { deleted: false, matchId: MATCH_ID },
+      remainingIds: [otherId],
+      deletedDetail: null,
+      otherRallies: 1,
+      otherShots: 2,
+      otherPoints: 1,
+    });
+
+    await expect(deleteTennisMatchRecord("not-a-uuid", client)).rejects.toThrow(
+      "INVALID_ARGUMENT: Invalid session id.",
+    );
+  });
+
+  it("calls Modal DELETE /sessions/{id} best-effort and never throws on network failures", async () => {
+    const calls: Array<{ url: string; method?: string; token?: string | null }> = [];
+    const okFetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      calls.push({ url: String(input), method: init?.method, token: headers.get("X-Job-Token") });
+      return new Response(JSON.stringify({ match_id: MATCH_ID, deleted: true }), { status: 200 });
+    }) as typeof fetch;
+
+    const ok = await deleteModalSession(MATCH_ID, {
+      modalBase: "https://tennis.modal.run/",
+      jobSecret: "secret123",
+      fetchImpl: okFetch,
+    });
+    const failedFetch = (async () => {
+      throw new Error("network down");
+    }) as unknown as typeof fetch;
+    const failed = await deleteModalSession(MATCH_ID, {
+      modalBase: "https://tennis.modal.run",
+      jobSecret: "secret123",
+      fetchImpl: failedFetch,
+    });
+    const unconfigured = await deleteModalSession(MATCH_ID, {
+      modalBase: "",
+      jobSecret: "",
+      fetchImpl: okFetch,
+    });
+
+    expect({
+      ok,
+      failed,
+      unconfigured,
+      callCount: calls.length,
+      url: calls[0]?.url,
+      method: calls[0]?.method,
+      tokenValid: await verifyModalJobToken(calls[0]?.token, MATCH_ID, Date.now() / 1000, "secret123"),
+    }).toEqual({
+      ok: true,
+      failed: false,
+      unconfigured: false,
+      callCount: 1,
+      url: `https://tennis.modal.run/sessions/${MATCH_ID}`,
+      method: "DELETE",
+      tokenValid: true,
     });
   });
 });
