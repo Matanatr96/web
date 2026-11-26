@@ -4,6 +4,8 @@ import { revalidatePath } from "next/cache";
 import { isAdmin } from "@/lib/auth";
 import { getServiceClient } from "@/lib/supabase";
 import {
+  deleteModalSession,
+  deleteTennisMatchRecord,
   isValidUuid,
   type ModalCourtJson,
   type Point2D,
@@ -152,4 +154,27 @@ export async function toggleRallyBookmark(matchId: string, rallyIdx: number, boo
   if (error) throw new Error(`Bookmark update failed: ${error.message}`);
 
   revalidatePath(`/tennis/${matchId}`);
+}
+
+/**
+ * Permanently deletes a tennis rally/match session from Postgres (cascading to rallies, shots,
+ * and points) and performs best-effort cleanup of its video clips on Modal. Admin only.
+ *
+ * @param matchId - Session UUID.
+ * @returns `{ ok: true, matchId, deleted }`.
+ * @throws Error when not admin, the UUID is invalid, or the database delete fails.
+ */
+export async function deleteTennisMatch(
+  matchId: string,
+): Promise<{ ok: true; matchId: string; deleted: boolean }> {
+  await assertAdmin();
+  if (!isValidUuid(matchId)) throw new Error("Invalid matchId.");
+
+  const normalizedId = matchId.trim().toLowerCase();
+  const { deleted } = await deleteTennisMatchRecord(normalizedId);
+  await deleteModalSession(normalizedId);
+
+  revalidatePath("/tennis");
+  revalidatePath(`/tennis/${normalizedId}`);
+  return { ok: true, matchId: normalizedId, deleted };
 }

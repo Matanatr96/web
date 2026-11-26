@@ -1257,6 +1257,33 @@ export async function signModalJobToken(
   return `${scope}.${exp}.${await hmacSha256Hex(secret, `${scope}.${exp}`)}`;
 }
 
+/**
+ * Verifies a Modal `X-Job-Token` (`"{scope}.{exp}.{hex HMAC-SHA256}"`) against `TENNIS_JOB_SECRET`,
+ * matching Python `rally_api.verify_token`. Accepts either the match's UUID or `"any"` (iOS device token).
+ *
+ * @param token - Raw `X-Job-Token` header value.
+ * @param matchId - Target session UUID.
+ * @param nowUnixS - Current Unix timestamp in seconds (defaults to `Date.now() / 1000`).
+ * @param secret - Shared secret (defaults to `process.env.TENNIS_JOB_SECRET`).
+ * @returns `true` when the signature, scope, and expiry are all valid.
+ */
+export async function verifyModalJobToken(
+  token: string | null | undefined,
+  matchId: string,
+  nowUnixS: number = Date.now() / 1000,
+  secret: string | undefined = process.env.TENNIS_JOB_SECRET,
+): Promise<boolean> {
+  if (!secret || !token) return false;
+  const parts = token.trim().split(".");
+  if (parts.length !== 3 || !/^\d+$/.test(parts[1])) return false;
+  const [scope, expStr, sig] = parts;
+  const normalizedMatch = matchId.trim().toLowerCase();
+  if (scope.toLowerCase() !== normalizedMatch && scope !== "any") return false;
+  if (Number(expStr) <= nowUnixS) return false;
+  const expected = await hmacSha256Hex(secret, `${scope}.${expStr}`);
+  return constantTimeEqual(sig.toLowerCase(), expected);
+}
+
 function num(val: unknown): number | null {
   if (val === null || val === undefined || val === "") return null;
   const n = Number(val);
@@ -2002,4 +2029,75 @@ export async function getTennisMatch(
     coachNotes: match.stats.coachNotes,
   });
   return { ...match, rallies, points, summary };
+}
+
+/**
+ * Deletes a tennis session (`tennis_matches` row) from Postgres using the service-role client.
+ * Child rows in `tennis_rallies`, `tennis_shots`, and `tennis_points` are removed automatically
+ * via `ON DELETE CASCADE`.
+ *
+ * @param id - Session UUID.
+ * @param client - Optional Supabase client override for testing.
+ * @returns `{ deleted, matchId }` where `deleted` is `false` if no matching row existed.
+ * @throws Error when `id` is not a valid UUID or the database operation fails.
+ */
+export async function deleteTennisMatchRecord(
+  id: string,
+  client?: ReturnType<typeof getServiceClient>,
+): Promise<{ deleted: boolean; matchId: string }> {
+  if (!isValidUuid(id)) {
+    throw new Error("INVALID_ARGUMENT: Invalid session id.");
+  }
+  const normalizedId = id.trim().toLowerCase();
+  const supabase = client ?? getServiceClient();
+
+  const { data: existing, error: lookupErr } = await supabase
+    .from("tennis_matches")
+    .select("id")
+    .eq("id", normalizedId)
+    .maybeSingle();
+  if (lookupErr) throw new Error(`tennis_matches lookup failed: ${lookupErr.message}`);
+  if (!existing) return { deleted: false, matchId: normalizedId };
+
+  const { error } = await supabase.from("tennis_matches").delete().eq("id", normalizedId);
+  if (error) throw new Error(`tennis_matches delete failed: ${error.message}`);
+  return { deleted: true, matchId: normalizedId };
+}
+
+/**
+ * Best-effort cleanup of stored video/clip files on the Modal volume (`DELETE /sessions/{match_id}`).
+ * Never throws so a temporary Modal outage never blocks deleting a session from Postgres.
+ *
+ * @param matchId - Session UUID.
+ * @param opts - Optional overrides for Modal base URL, job secret, and `fetch` implementation.
+ * @returns `true` when Modal acknowledged deletion with a 2xx status.
+ */
+export async function deleteModalSession(
+  matchId: string,
+  opts?: { modalBase?: string; jobSecret?: string; fetchImpl?: typeof fetch },
+): Promise<boolean> {
+  if (!isValidUuid(matchId)) return false;
+  const modalBase = (opts?.modalBase ?? process.env.NEXT_PUBLIC_TENNIS_MODAL_URL)?.trim();
+  const jobSecret = opts?.jobSecret ?? process.env.TENNIS_JOB_SECRET;
+  if (!modalBase || !jobSecret) return false;
+
+  const normalizedId = matchId.trim().toLowerCase();
+  const fetchImpl = opts?.fetchImpl ?? fetch;
+  try {
+    const token = await signModalJobToken(normalizedId, Date.now() / 1000 + 300, jobSecret);
+    const url = `${modalBase.replace(/\/$/, "")}/sessions/${normalizedId}`;
+    const res = await fetchImpl(url, {
+      method: "DELETE",
+      headers: { "X-Job-Token": token },
+      signal: typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(8000) : undefined,
+    });
+    if (!res.ok) {
+      console.warn(`[tennis] Modal clip cleanup returned HTTP ${res.status} for ${normalizedId}`);
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.warn(`[tennis] Modal clip cleanup skipped for ${normalizedId}:`, err);
+    return false;
+  }
 }

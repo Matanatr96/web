@@ -1,5 +1,6 @@
 import Link from "next/link";
 import TennisCalibUploader from "@/components/tennis-calib-uploader";
+import DeleteTennisSessionButton from "@/components/tennis-delete-button";
 import { isAdmin } from "@/lib/auth";
 import {
   formatScore,
@@ -250,11 +251,11 @@ export default async function TennisIndexPage({ searchParams }: Props) {
             const courtLabel = m.doubles ? "Doubles" : "Singles";
 
             return (
-              <Link
+              <div
                 key={m.id}
-                href={`/tennis/${m.id}`}
-                className="block rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-5 hover:border-stone-400 dark:hover:border-stone-700 transition"
+                className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 hover:border-stone-400 dark:hover:border-stone-700 transition"
               >
+                <Link href={`/tennis/${m.id}`} className="block p-5">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <span
@@ -349,7 +350,13 @@ export default async function TennisIndexPage({ searchParams }: Props) {
                     </div>
                   </div>
                 </div>
-              </Link>
+                </Link>
+                {admin && (
+                  <div className="flex items-center justify-end border-t border-stone-100 dark:border-stone-800 px-5 py-2.5">
+                    <DeleteTennisSessionButton matchId={m.id} compact />
+                  </div>
+                )}
+              </div>
             );
           })}
         </div>
