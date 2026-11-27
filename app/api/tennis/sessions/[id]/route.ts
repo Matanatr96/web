@@ -52,9 +52,7 @@ export async function GET(_req: Request, context: RouteContext): Promise<NextRes
         ? rawStats.condensed_clip_url
         : typeof rawStats.condensedClipUrl === "string"
           ? rawStats.condensedClipUrl
-          : detail.rallies.length > 0
-            ? `/clips/${detail.id}/condensed.mp4`
-            : null;
+          : null;
     const condensedClipUrl = resolveClipUrl(rawCondensed, modalBase);
 
     const rallies = detail.rallies.map((r) => ({

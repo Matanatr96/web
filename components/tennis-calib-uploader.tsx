@@ -147,7 +147,6 @@ export default function TennisCalibUploader() {
   const [title, setTitle] = useState("");
   const [playedOn, setPlayedOn] = useState(() => new Date().toISOString().slice(0, 10));
   const [doubles, setDoubles] = useState(false);
-  const [runBiomech, setRunBiomech] = useState(true);
   const [skipCalibration, setSkipCalibration] = useState(false);
 
   const [videoFile, setVideoFile] = useState<File | null>(null);
@@ -398,7 +397,7 @@ export default function TennisCalibUploader() {
           mimeType: videoFile.type,
           title,
           playedOn,
-          biomech: runBiomech,
+          biomech: false,
         });
         const jobRes = await modalFetch(`${modalEndpoint}/jobs`, jobToken, {
           method: "POST",
@@ -535,12 +534,12 @@ export default function TennisCalibUploader() {
         {modeCard(
           "rally",
           "Rally Session (Default)",
-          "Practice & cooperative hitting. Segments rallies automatically and computes FH/BH/Serve speeds, net clearance, deep-zone %, and 3D biomechanics.",
+          "Practice & cooperative hitting. Segments rallies automatically and computes FH/BH/Serve speeds, net clearance, deep-zone %, and condensed highlights.",
         )}
         {modeCard(
           "match",
           "Scored Match",
-          "Full match tracking with serve speeds, rally breakdown, stroke biomechanics, and set/game/point scoreboard.",
+          "Full match tracking with serve speeds, rally breakdown, 2D bounce placement, and set/game/point scoreboard.",
         )}
       </div>
 
@@ -568,10 +567,6 @@ export default function TennisCalibUploader() {
           <label className="inline-flex items-center gap-2">
             <input type="checkbox" checked={doubles} onChange={(e) => setDoubles(e.target.checked)} />
             Doubles lines
-          </label>
-          <label className="inline-flex items-center gap-2">
-            <input type="checkbox" checked={runBiomech} onChange={(e) => setRunBiomech(e.target.checked)} />
-            Run biomechanics &amp; speed analysis
           </label>
         </div>
       </div>

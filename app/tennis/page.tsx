@@ -87,7 +87,7 @@ export default async function TennisIndexPage({ searchParams }: Props) {
             Tennis Vision &amp; Rally Coach
           </h1>
           <p className="mt-1 text-sm text-stone-500">
-            Offline SwingVision rally segmentation, serve &amp; groundstroke ball speeds (mph), net clearance, court depth placement, and pro-level stroke biomechanics from a single phone video.
+            Offline SwingVision rally segmentation, serve &amp; groundstroke ball speeds (mph), net clearance, court depth placement, and condensed highlights from a single phone video.
           </p>
         </div>
       </header>
@@ -219,10 +219,10 @@ export default async function TennisIndexPage({ searchParams }: Props) {
                 Step 3
               </div>
               <div className="mt-1 text-sm font-semibold">
-                3. Review Shot Speeds, 2D Placement &amp; Biomechanics
+                3. Review Shot Speeds, 2D Placement &amp; Highlights
               </div>
               <p className="mt-1 text-xs text-stone-500">
-                Scrub rally-by-rally clips, inspect Serve/FH/BH speeds, net clearance, and bounce depth zones, and compare your swing against ATP pros.
+                Scrub rally-by-rally clips, inspect Serve/FH/BH speeds, net clearance, and bounce depth zones, and watch dead-air-free condensed highlights.
               </p>
             </div>
           </div>
