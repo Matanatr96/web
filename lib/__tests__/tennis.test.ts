@@ -1620,7 +1620,7 @@ describe("applyWebhookEvent and getTennisMatch", () => {
 });
 
 describe("buildJobRequest and bounceStyle", () => {
-  it("defaults biomech to true and supports skipping calibration with court: null", () => {
+  it("defaults biomech to false and supports skipping calibration with court: null", () => {
     const H = computeHomography4pt(CORNERS_PX, getOuterCourtCornersM());
     const calibrated = buildJobRequest({
       matchId: MATCH_ID,
@@ -1656,11 +1656,11 @@ describe("buildJobRequest and bounceStyle", () => {
       skippedDoubles: skippedCalib.doubles,
       skippedContentType: skippedCalib.content_type,
     }).toEqual({
-      calibratedBiomech: true,
+      calibratedBiomech: false,
       calibratedSource: "web",
       calibratedContentType: "video/quicktime",
       hasCalibratedCourtPx: true,
-      skippedBiomech: true,
+      skippedBiomech: false,
       skippedCourt: null,
       skippedDoubles: true,
       skippedContentType: "video/mp4",

@@ -185,6 +185,7 @@ export interface TennisSessionSummary {
   biomechTraits?: BiomechTraitScore[];
   coachNotes?: string | null;
   originSource?: string;
+  condensedClipUrl?: string | null;
 }
 
 /** Top-level session row (`tennis_matches`). */
@@ -311,6 +312,8 @@ export interface MatchStatusEvent {
   fps: number | null;
   doubles?: boolean | null;
   court?: CourtCalibrationV1 | Record<string, unknown> | null;
+  title?: string | null;
+  playedOn?: string | null;
 }
 
 /** `rally.ready` webhook: one processed rally and its shots, plus optional session metadata (e.g. from iOS). */
@@ -327,6 +330,8 @@ export interface RallyReadyEvent {
   score: TennisMatchScore | null;
   stats: Partial<TennisSessionSummary> | null;
   points: TennisPoint[];
+  title?: string | null;
+  playedOn?: string | null;
 }
 
 /** `match.ready` webhook: all rallies processed. */
@@ -343,6 +348,8 @@ export interface MatchReadyEvent {
   court: CourtCalibrationV1 | Record<string, unknown> | null;
   stats: Partial<TennisSessionSummary> | null;
   points: TennisPoint[];
+  title?: string | null;
+  playedOn?: string | null;
 }
 
 /** Webhook event sent by the Modal `tennis-rally` app to `/api/tennis/webhook`. */
@@ -725,7 +732,7 @@ export function buildJobRequest(input: ModalJobRequestInput): ModalJobRequestPay
     content_type: isMov ? "video/quicktime" : "video/mp4",
     title: input.title?.trim() ? input.title.trim() : null,
     played_on: input.playedOn?.trim() ? input.playedOn.trim() : null,
-    biomech: input.biomech ?? true,
+    biomech: input.biomech ?? false,
   };
 }
 
@@ -1472,6 +1479,10 @@ function normalizeStatsRecord(raw: unknown): Partial<TennisSessionSummary> {
   if (originSource !== null) {
     out.originSource = originSource;
   }
+  const condensedClipUrl = str(s.condensedClipUrl) ?? str(s.condensed_clip_url);
+  if (condensedClipUrl !== null) {
+    out.condensedClipUrl = condensedClipUrl;
+  }
   return out;
 }
 
@@ -1563,6 +1574,8 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
     throw new Error("INVALID_ARGUMENT: match_id must be a valid UUID.");
   }
   const eventId = str(obj.event_id);
+  const title = str(obj.title)?.trim() || null;
+  const playedOn = str(obj.played_on ?? obj.playedOn)?.trim() || null;
 
   switch (obj.type) {
     case "match.failed":
@@ -1587,6 +1600,8 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
         fps: num(obj.fps),
         ...(doubles !== null ? { doubles } : {}),
         ...(court !== null ? { court } : {}),
+        ...(title ? { title } : {}),
+        ...(playedOn ? { playedOn } : {}),
       };
     }
     case "rally.ready": {
@@ -1635,6 +1650,8 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
         score,
         stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
         points: parseWebhookPoints(rawPoints),
+        ...(title ? { title } : {}),
+        ...(playedOn ? { playedOn } : {}),
       };
       if (Array.isArray(rawPoints)) explicitPointsEvents.add(evt);
       return evt;
@@ -1658,6 +1675,8 @@ export function parseWebhookEvent(raw: unknown): TennisWebhookEvent {
         court: normalizeWebhookCourt(obj.court, doubles ?? false),
         stats: obj.stats && typeof obj.stats === "object" ? normalizeStatsRecord(obj.stats) : null,
         points: parseWebhookPoints(rawPoints),
+        ...(title ? { title } : {}),
+        ...(playedOn ? { playedOn } : {}),
       };
       if (Array.isArray(rawPoints)) explicitPointsEvents.add(evt);
       return evt;
@@ -1711,6 +1730,8 @@ export async function applyWebhookEvent(
   if (typeof event.doubles === "boolean") seed.doubles = event.doubles;
   if (resolvedCourt) seed.court = resolvedCourt;
   if (event.originSource) seed.stats = { originSource: event.originSource };
+  if (event.title) seed.title = event.title;
+  if (event.playedOn) seed.played_on = event.playedOn;
 
   const { error: seedErr } = await supabase
     .from("tennis_matches")
@@ -1867,12 +1888,18 @@ export async function applyWebhookEvent(
       event.originSource ??
       (eventStats && "originSource" in eventStats ? str((eventStats as Record<string, unknown>).originSource) : null) ??
       (detail.stats && "originSource" in detail.stats ? str((detail.stats as Record<string, unknown>).originSource) : null);
+    const condensedClipUrl =
+      eventStats?.condensedClipUrl ??
+      (eventStats && "condensed_clip_url" in eventStats ? str((eventStats as Record<string, unknown>).condensed_clip_url) : null) ??
+      detail.stats.condensedClipUrl ??
+      (detail.stats && "condensed_clip_url" in detail.stats ? str((detail.stats as Record<string, unknown>).condensed_clip_url) : null);
     const mergedStats: TennisSessionSummary & Record<string, unknown> = {
       ...detail.summary,
       ...(mergedBiomechTraits ? { biomechTraits: mergedBiomechTraits } : {}),
       ...(mergedCoachNotes !== undefined ? { coachNotes: mergedCoachNotes } : {}),
       ...(rawBiomech !== undefined ? { biomechanics: rawBiomech } : {}),
       ...(originSource ? { originSource } : {}),
+      ...(condensedClipUrl ? { condensedClipUrl } : {}),
     };
 
     const statsUpdate: Record<string, unknown> = {

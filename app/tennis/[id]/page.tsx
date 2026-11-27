@@ -30,17 +30,6 @@ type Props = {
   }>;
 };
 
-function zScoreBadgeClass(z: number): string {
-  const absZ = Math.abs(z);
-  if (absZ <= 0.75) {
-    return "bg-emerald-100 text-emerald-800 dark:bg-emerald-950/70 dark:text-emerald-300";
-  }
-  if (absZ <= 1.5) {
-    return "bg-amber-100 text-amber-800 dark:bg-amber-950/70 dark:text-amber-300";
-  }
-  return "bg-rose-100 text-rose-800 dark:bg-rose-950/70 dark:text-rose-300";
-}
-
 function formatPlayerLabel(hitter: TennisShot["hitter"]): string {
   if (hitter === "near") return "Near";
   if (hitter === "far") return "Far";
@@ -99,7 +88,6 @@ function formatBounceDepthLabel(zone: TennisShot["depthZone"]): {
  * - Interactive 2D SVG Court Minimap with shaded Deep Target Zones ($6.4\text{–}11.885\text{ m}$)
  * - `<video>` player streaming 720p rally clips via HTTP `Range` (`206 Partial Content`) from Modal
  * - Shot-by-Shot Scrubber strip + Shot Table (Shot #, Player, Stroke, Direction, Ball Speed, Net Clearance, Bounce Depth)
- * - 65-Joint Biomechanics ATP Pro Z-Score comparison table
  *
  * @param props - Route params (`id`) and searchParams (`filter`, `rally`, `hide1`, `shot`, `slowmo`).
  * @returns Rendered session detail dashboard.
@@ -208,10 +196,18 @@ export default async function TennisSessionDetailPage({
     .sort((a, b) => b.speedMph - a.speedMph)
     .slice(0, 8);
 
-  const biomechRows = summary.biomechTraits ?? [];
   const clipSrc = activeRally
     ? resolveClipUrl(activeRally.clipUrl, process.env.NEXT_PUBLIC_TENNIS_MODAL_URL)
     : null;
+  const rawStatsRecord = detail.stats as Record<string, unknown>;
+  const condensedClipSrc = resolveClipUrl(
+    typeof rawStatsRecord.condensedClipUrl === "string"
+      ? rawStatsRecord.condensedClipUrl
+      : typeof rawStatsRecord.condensed_clip_url === "string"
+        ? rawStatsRecord.condensed_clip_url
+        : null,
+    process.env.NEXT_PUBLIC_TENNIS_MODAL_URL,
+  );
 
   const sourceBadgeLabel = formatSessionSource(
     detail.source,
@@ -486,27 +482,39 @@ export default async function TennisSessionDetailPage({
                       {(activeRally.endS - activeRally.startS).toFixed(1)}s duration)
                     </p>
                   </div>
-                  {admin && (
-                    <form
-                      action={toggleRallyBookmark.bind(
-                        null,
-                        detail.id,
-                        activeRally.rallyIdx,
-                        !activeRally.bookmarked,
-                      )}
-                    >
-                      <button
-                        type="submit"
-                        className={`rounded-md border px-3 py-1 text-xs font-medium cursor-pointer ${
-                          activeRally.bookmarked
-                            ? "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
-                            : "border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400"
-                        }`}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {condensedClipSrc && (
+                      <a
+                        href={condensedClipSrc}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="rounded-md border border-emerald-300 dark:border-emerald-800 bg-emerald-50/70 dark:bg-emerald-950/40 px-3 py-1 text-xs font-medium text-emerald-800 dark:text-emerald-300 hover:bg-emerald-100 dark:hover:bg-emerald-950/70 transition"
                       >
-                        {activeRally.bookmarked ? "⭐ Bookmarked" : "☆ Bookmark Rally"}
-                      </button>
-                    </form>
-                  )}
+                        ▶ Condensed Highlights
+                      </a>
+                    )}
+                    {admin && (
+                      <form
+                        action={toggleRallyBookmark.bind(
+                          null,
+                          detail.id,
+                          activeRally.rallyIdx,
+                          !activeRally.bookmarked,
+                        )}
+                      >
+                        <button
+                          type="submit"
+                          className={`rounded-md border px-3 py-1 text-xs font-medium cursor-pointer ${
+                            activeRally.bookmarked
+                              ? "border-amber-400 bg-amber-50 text-amber-800 dark:bg-amber-950/60 dark:text-amber-300"
+                              : "border-stone-200 dark:border-stone-700 text-stone-600 dark:text-stone-400"
+                          }`}
+                        >
+                          {activeRally.bookmarked ? "⭐ Bookmarked" : "☆ Bookmark Rally"}
+                        </button>
+                      </form>
+                    )}
+                  </div>
                 </div>
 
                 {/* Modal HTTP Byte-Range 720p Clip Stream */}
@@ -788,74 +796,6 @@ export default async function TennisSessionDetailPage({
           </div>
         </div>
       </div>
-
-      {/* 65-Joint Biomechanics & ATP Pro Z-Score Comparison Table */}
-      <section className="rounded-lg border border-stone-200 dark:border-stone-800 bg-white dark:bg-stone-900 p-6">
-        <div className="flex flex-wrap items-baseline justify-between gap-2 mb-4">
-          <div>
-            <h2 className="text-base font-semibold tracking-tight">
-              65-Joint Biomechanics vs. 11-Pro ATP Baseline (RTMW-x + F3ED)
-            </h2>
-            <p className="text-xs text-stone-500">
-              Normalized for player stature and camera perspective. Z-scores compare your stroke kinematics against the 11-pro ATP reference distribution.
-            </p>
-          </div>
-        </div>
-
-        {summary.coachNotes && (
-          <div className="mb-4 rounded-md border border-emerald-200 dark:border-emerald-900/60 bg-emerald-50/50 dark:bg-emerald-950/20 p-3.5 text-sm text-stone-700 dark:text-stone-300">
-            <div className="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400 mb-1">
-              Claude Biomechanics Coach Breakdown
-            </div>
-            <p className="whitespace-pre-wrap">{summary.coachNotes}</p>
-          </div>
-        )}
-
-        {biomechRows.length === 0 ? (
-          <p className="text-sm text-stone-500 italic">
-            Biomechanics have not been computed for this session. Tick &quot;Run biomechanics&quot; when uploading (Phase 3).
-          </p>
-        ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left text-xs">
-            <thead>
-              <tr className="border-b border-stone-200 dark:border-stone-800 text-stone-500">
-                <th className="py-2 pr-4">Stroke</th>
-                <th className="py-2 pr-4">Biomechanical Trait (65-Joint Skeleton)</th>
-                <th className="py-2 pr-4">Your Mean</th>
-                <th className="py-2 pr-4">ATP Pro Mean (±1σ)</th>
-                <th className="py-2">Z-Score vs. Pros</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-stone-100 dark:divide-stone-800 tabular-nums">
-              {biomechRows.map((row) => (
-                <tr key={`${row.stroke}-${row.trait}`}>
-                  <td className="py-2.5 pr-4 uppercase font-semibold text-stone-600 dark:text-stone-400">
-                    {row.stroke}
-                  </td>
-                  <td className="py-2.5 pr-4 font-medium">{row.trait}</td>
-                  <td className="py-2.5 pr-4">
-                    {row.userValue} {row.unit}
-                  </td>
-                  <td className="py-2.5 pr-4 text-stone-500">
-                    {row.proMean} ± {row.proStd} {row.unit}
-                  </td>
-                  <td className="py-2.5">
-                    <span
-                      className={`rounded-full px-2.5 py-0.5 font-semibold ${zScoreBadgeClass(
-                        row.zScore,
-                      )}`}
-                    >
-                      {row.zScore >= 0 ? `+${row.zScore.toFixed(2)}σ` : `${row.zScore.toFixed(2)}σ`}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        )}
-      </section>
     </article>
   );
 }
